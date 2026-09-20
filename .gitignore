@@ -17,6 +17,7 @@ vendor/
 
 .agents/
 .codex/
+.worktrees/
 docs/superpowers/
 progress.md
 
