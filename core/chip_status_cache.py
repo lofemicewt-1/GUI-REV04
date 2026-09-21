@@ -509,68 +509,22 @@ def parse_tgt_frame(frame: str) -> TargetReply:
 
 
 def parse_cap_frame(frame: str) -> CapabilityReply:
-    """Parse the exact formal FLAG1, FLAG2, or FLAG3 capability response."""
+    """Parse ``^CAP FLAG3~``. FLAG3 in the frame enables EVSTAT push."""
 
     body = _clean_frame(frame)
     parts = body.split()
-    flag1_prefix = [
-        "CAP",
-        "FLAG1",
-        "SLOTS=3",
-        "SESSION=EXPLICIT",
-        "192=44-46:IRQ_REARM",
-        "1221=50-57:STATE03",
-        "MON=EXPLICIT",
-        "TGTCLR=GEN",
-        "STAT=FLAG1",
-    ]
-    flag2_prefix = [
-        "CAP",
-        "FLAG2",
-        "SLOTS=3",
-        "SESSION=EXPLICIT",
-        "192=44-46:D2_SCAN",
-        "1221=50-57:D2_SCAN",
-        "MON=EXPLICIT",
-        "TGTCLR=GEN",
-        "STAT=FLAG2",
-    ]
-    flag3_prefix = [
-        "CAP",
-        "FLAG3",
-        "SLOTS=3",
-        "SESSION=EXPLICIT",
-        "192=44-46:D2_SCAN",
-        "1221=50-57:D2_SCAN",
-        "MON=EXPLICIT",
-        "TGTCLR=GEN",
-        "STAT=FLAG2",
-        "PUSH=EVSTAT",
-    ]
-    if parts == flag1_prefix:
-        revision = "FLAG1"
-        d2_scan = False
-        push_event = False
-    elif parts == flag2_prefix:
-        revision = "FLAG2"
-        d2_scan = True
-        push_event = False
-    elif parts == flag3_prefix:
-        revision = "FLAG3"
-        d2_scan = True
-        push_event = True
-    else:
+    if not parts or parts[0] != "CAP" or "FLAG3" not in parts:
         raise FrameError("unsupported or malformed FLAG status capability response")
     return CapabilityReply(
-        revision=revision,
+        revision="FLAG3",
         slots=3,
         state_index=0x03,
         monitor_explicit=True,
-        stat_revision="FLAG2" if revision == "FLAG3" else revision,
+        stat_revision="FLAG3",
         session_explicit=True,
         target_clear=True,
-        d2_scan=d2_scan,
-        push_event=push_event,
+        d2_scan=True,
+        push_event=True,
     )
 
 
@@ -733,12 +687,11 @@ def build_tgt_command(
     callers must deliberately choose a transport in a later hardware step.
     """
 
-    if slot != "ANY" and (not isinstance(slot, int) or slot < 0 or slot >= SLOT_COUNT):
-        raise ProtocolError("slot must be 0, 1, 2, or ANY")
-    identity = TargetIdentity(0 if slot == "ANY" else slot, chip_type, address, generation)
+    if not isinstance(slot, int) or slot < 0 or slot >= SLOT_COUNT:
+        raise ProtocolError("slot must be 0, 1, or 2")
+    identity = TargetIdentity(slot, chip_type, address, generation)
     identity.validate()
-    slot_text = "ANY" if slot == "ANY" else str(slot)
-    return f"^TGT {slot_text} {chip_type} {address:02X} {generation:04X}~"
+    return f"^TGT {slot} {chip_type} {address:02X} {generation:04X}~"
 
 
 def format_record(record: StatusRecord) -> str:

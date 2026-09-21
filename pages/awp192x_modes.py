@@ -16,6 +16,7 @@ from core.awp192x_button_runtime import (
     Awp192xButtonPayloadV2,
     Awp192xSineWaveformRecipe,
     Awp192xWaveformRecipe,
+    derive_wait_release_adc_event,
     generate_awp192x_sinc_points,
     generate_awp192x_waveform_points,
     required_awp192x_button_waveform_slices,
@@ -27,7 +28,7 @@ from core.base_tool import (
 )
 from core.chip_discovery import AWP192X_PROBE
 from core.waveform_storage import WaveformStorage
-from pages.base_page import BasePage, SimpleTooltip
+from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
 from pages.waveform_generator import WAVEFORM_DEFAULT_POINTS_PER_WRITE, WaveformGeneratorPage
 
 
@@ -295,42 +296,7 @@ def _format_preset_number(value: Any) -> str:
     return str(value)
 
 
-def format_button_preset_summary(config: dict[str, Any], *, language: str = "en") -> str:
-    duration = int(config["duration"])
-    points = config.get("sinc_points", BUTTON_PRESET_SINC_POINTS)
-    period_ms = sum(points) * duration / 1000
-    sinc_positive = config["sinc_positive"]
-    sinc_negative = config.get("sinc_negative", BUTTON_PRESET_SINC_NEGATIVE_VOLTAGE)
 
-    if language == "zh":
-        labels = {
-            "duration": "单点时长",
-            "period": "波形周期总时间",
-            "press_repeat": "按下重复次数",
-            "release_repeat": "释放重复次数",
-            "sinc_positive": "SINC 正电压",
-            "sinc_negative": "SINC 负电压",
-        }
-    else:
-        labels = {
-            "duration": "Duration",
-            "period": "Waveform period",
-            "press_repeat": "Press repeat",
-            "release_repeat": "Release repeat",
-            "sinc_positive": "SINC Positive Voltage",
-            "sinc_negative": "SINC Negative Voltage",
-        }
-
-    return "\n".join(
-        (
-            f"{labels['duration']}: {duration} us",
-            f"{labels['period']}: {period_ms:.3f} ms",
-            f"{labels['press_repeat']}: {config['press_repeat']}",
-            f"{labels['release_repeat']}: {config['release_repeat']}",
-            f"{labels['sinc_positive']}: {_format_preset_number(sinc_positive)} V",
-            f"{labels['sinc_negative']}: {_format_preset_number(sinc_negative)} V",
-        )
-    )
 
 
 class ButtonModePage(BasePage):
@@ -442,6 +408,9 @@ class ButtonModePage(BasePage):
     STATUS_PRESS_COLOR = "#2563EB"
     STATUS_RELEASE_COLOR = "#9333EA"
     STATUS_TIMEOUT_COLOR = "#DC2626"
+    DETECT_ADC_BUSY_RETRY_MS = 250
+    DETECT_STATUS_PRESS = 0x0800
+    DETECT_STATUS_RELEASE = 0x0200
 
     def __init__(self, parent: tk.Misc, ctx: Any) -> None:
         super().__init__(parent, ctx)
@@ -458,9 +427,7 @@ class ButtonModePage(BasePage):
         self.press_repeat_count_var = tk.StringVar(value="1")
         self.release_repeat_count_var = tk.StringVar(value="1")
         self.play_repeat_count_var = tk.StringVar(value="1")
-        self.press_playback_time_var = tk.StringVar(value="—")
-        self.release_playback_time_var = tk.StringVar(value="—")
-        self.play_playback_time_var = tk.StringVar(value="—")
+
         self.press_waveform_var = tk.StringVar(value="slice0")
         self.release_waveform_var = tk.StringVar(value="slice0")
         self.play_waveform_var = tk.StringVar(value="slice0")
@@ -490,8 +457,17 @@ class ButtonModePage(BasePage):
         self._reading_current_settings = False
         self._button_runtime_dirty = True
         self._direct_detection_active = False
+        self._detect_phase = "press"
+        self._detect_gui_state = "idle"
+        self._detect_generation = 0
+        self._detect_target_addr: int | None = None
+        self._detect_reconfigure_pending = False
+        self._detect_await_adc_busy = False
+        self._detect_adc_busy_tries = 0
+        self._detect_poll_job: str | None = None
         self._preset_tooltip: tk.Toplevel | None = None
         self._preset_tooltip_label: tk.Label | None = None
+        self._tooltips: list[SimpleTooltip] = []
 
         self._build_ui()
         self._update_period_hint()
@@ -521,18 +497,18 @@ class ButtonModePage(BasePage):
             key = f"button_mode_preset_{index + 1}"
             button = ttk.Button(
                 preset_frame,
-                style="Secondary.TButton",
+                style="Bg.TButton",
                 command=lambda preset_index=index: self.apply_preset(preset_index),
             )
             button.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 6, 0))
-            button.bind("<Enter>", lambda event, preset_index=index: self._show_preset_tooltip(event, preset_index), add="+")
-            button.bind("<Leave>", lambda _event: self._hide_preset_tooltip(), add="+")
-            button.bind("<ButtonPress>", lambda _event: self._hide_preset_tooltip(), add="+")
             self._buttons[key] = button
+            self._tooltips.append(
+                SimpleTooltip(button, lambda preset_index=index: self._software_preset_tooltip_text(preset_index))
+            )
 
         import_button = ttk.Button(
             preset_frame,
-            style="Secondary.TButton",
+            style="Bg.TButton",
             command=self.import_user_preset_script,
         )
         import_button.grid(row=0, column=3, sticky="ew", padx=(6, 0))
@@ -541,7 +517,7 @@ class ButtonModePage(BasePage):
 
         export_button = ttk.Button(
             preset_frame,
-            style="Secondary.TButton",
+            style="Bg.TButton",
             command=self.export_user_preset_script,
         )
         export_button.grid(row=0, column=4, sticky="ew", padx=(6, 0))
@@ -560,7 +536,7 @@ class ButtonModePage(BasePage):
 
         save_board_button = ttk.Button(
             preset_frame,
-            style="Secondary.TButton",
+            style="Bg.TButton",
             command=self.save_board_preset,
         )
         save_board_button.grid(row=1, column=1, sticky="ew", pady=(8, 0), padx=(6, 0))
@@ -569,7 +545,7 @@ class ButtonModePage(BasePage):
 
         set_active_button = ttk.Button(
             preset_frame,
-            style="Secondary.TButton",
+            style="Bg.TButton",
             command=self.set_board_preset_active,
         )
         set_active_button.grid(row=1, column=2, sticky="ew", pady=(8, 0), padx=(6, 0))
@@ -578,7 +554,7 @@ class ButtonModePage(BasePage):
 
         apply_board_button = ttk.Button(
             preset_frame,
-            style="Secondary.TButton",
+            style="Bg.TButton",
             command=self.apply_board_preset,
         )
         apply_board_button.grid(row=1, column=3, sticky="ew", pady=(8, 0), padx=(6, 0))
@@ -587,7 +563,7 @@ class ButtonModePage(BasePage):
 
         read_board_button = ttk.Button(
             preset_frame,
-            style="Secondary.TButton",
+            style="Bg.TButton",
             command=self.read_current_settings,
         )
         read_board_button.grid(row=1, column=4, sticky="ew", pady=(8, 0), padx=(6, 0))
@@ -813,7 +789,6 @@ class ButtonModePage(BasePage):
 
     def _on_button_runtime_playback_changed(self) -> None:
         self._mark_button_runtime_dirty()
-        self._refresh_repeat_playback_times()
 
     def _on_button_runtime_threshold_changed(self) -> None:
         self._mark_button_runtime_dirty()
@@ -846,15 +821,14 @@ class ButtonModePage(BasePage):
     ) -> None:
         frame = ttk.Frame(parent, style="Panel.TFrame")
         frame.grid(row=row, column=0, columnspan=6, sticky="ew", pady=7)
-        frame.columnconfigure(0, weight=1, uniform="threshold_pair")
-        frame.columnconfigure(1, weight=1, uniform="threshold_pair")
+        frame.columnconfigure(0, weight=1)
 
         first = ttk.Frame(frame, style="Panel.TFrame")
-        first.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        first.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         first.columnconfigure(1, weight=1)
 
         second = ttk.Frame(frame, style="Panel.TFrame")
-        second.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        second.grid(row=1, column=0, sticky="ew")
         second.columnconfigure(1, weight=1)
 
         label1 = ttk.Label(first, style="Panel.TLabel")
@@ -911,19 +885,6 @@ class ButtonModePage(BasePage):
         entry.grid(row=0, column=0, sticky="w")
         self._repeat_entries[key] = entry
 
-        time_var = {
-            "press_repeat_count": self.press_playback_time_var,
-            "release_repeat_count": self.release_playback_time_var,
-            "play_repeat_count": self.play_playback_time_var,
-        }[key]
-        ttk.Label(parent, textvariable=time_var, style="Muted.TLabel").grid(
-            row=row,
-            column=3,
-            sticky="w",
-            pady=7,
-            padx=(8, 0),
-        )
-
         combo = ttk.Combobox(
             repeat_controls,
             textvariable=waveform_var,
@@ -933,10 +894,13 @@ class ButtonModePage(BasePage):
         )
         combo.grid(row=0, column=1, sticky="w", padx=(8, 0))
 
+        hover_widgets: list[tk.Misc] = [label, entry, combo]
         if include_endless:
-            check = ttk.Checkbutton(parent, variable=self.endless_play_var)
-            check.grid(row=row, column=4, sticky="w", pady=7, padx=(8, 0))
+            check = ttk.Checkbutton(repeat_controls, variable=self.endless_play_var)
+            check.grid(row=0, column=2, sticky="w", padx=(8, 0))
             self._checks["endless_play"] = check
+            hover_widgets.append(check)
+        self._bind_repeat_playback_tooltip(hover_widgets, count_var, waveform_var)
 
     def _selected_slice_points(self, waveform_var: tk.StringVar) -> int | None:
         try:
@@ -959,37 +923,39 @@ class ButtonModePage(BasePage):
         item = self.storage.slices.get(slice_index)
         return item.points if item is not None else None
 
-    def _repeat_playback_time_text(self, count_var: tk.StringVar, waveform_var: tk.StringVar) -> str:
+    def _repeat_playback_metrics(self, count_var: tk.StringVar, waveform_var: tk.StringVar) -> tuple[str, str]:
         try:
             count = int(count_var.get().strip(), 0)
             duration_us = int(self.duration_var.get().strip(), 0)
             if count < 1 or duration_us < 1:
-                return "—"
+                return "—", "—"
             points = self._selected_slice_points(waveform_var)
             if points is None:
-                return "—"
-            return f"{count * points * duration_us / 1000:.3f} ms"
-        except (AttributeError, ValueError):
-            return "—"
+                return "—", "—"
+            total_us = count * points * duration_us
+            time_text = f"{total_us / 1000:.3f} ms"
+            hz = 1_000_000 / total_us
+            freq_text = f"{hz / 1000:.3f} kHz" if hz >= 1000 else f"{hz:.3f} Hz"
+            return time_text, freq_text
+        except (AttributeError, ValueError, ZeroDivisionError):
+            return "—", "—"
 
-    def _refresh_repeat_playback_times(self) -> None:
-        if not hasattr(self, "press_playback_time_var"):
-            return
-        self.press_playback_time_var.set(
-            self.tr("press_playback_total_time").format(
-                time=self._repeat_playback_time_text(self.press_repeat_count_var, self.press_waveform_var)
+    def _bind_repeat_playback_tooltip(
+        self,
+        widgets: list[tk.Misc],
+        count_var: tk.StringVar,
+        waveform_var: tk.StringVar,
+    ) -> None:
+        def show(event: tk.Event, cv: tk.StringVar = count_var, wv: tk.StringVar = waveform_var) -> None:
+            time_text, freq_text = self._repeat_playback_metrics(cv, wv)
+            self._show_tooltip_text(
+                event,
+                self.tr("repeat_playback_hover_tip").format(time=time_text, freq=freq_text),
             )
-        )
-        self.release_playback_time_var.set(
-            self.tr("release_playback_total_time").format(
-                time=self._repeat_playback_time_text(self.release_repeat_count_var, self.release_waveform_var)
-            )
-        )
-        self.play_playback_time_var.set(
-            self.tr("manual_playback_total_time").format(
-                time=self._repeat_playback_time_text(self.play_repeat_count_var, self.play_waveform_var)
-            )
-        )
+
+        for widget in widgets:
+            widget.bind("<Enter>", show, add="+")
+            widget.bind("<Leave>", lambda _event: self._hide_preset_tooltip(), add="+")
 
     def _add_combo(self, parent: tk.Misc, row: int, key: str, variable: tk.StringVar, values: list[str]) -> None:
         label = ttk.Label(parent, style="Panel.TLabel")
@@ -1051,9 +1017,9 @@ class ButtonModePage(BasePage):
         self._show_tooltip_text(event, self.tr(tooltip_key))
 
     def _show_preset_tooltip(self, event: tk.Event, preset_index: int) -> None:
-        if not 0 <= preset_index < len(self.BUTTON_PRESETS):
+        text = self._software_preset_tooltip_text(preset_index)
+        if not text:
             return
-        text = format_button_preset_summary(self.BUTTON_PRESETS[preset_index], language=self.language)
         self._show_tooltip_text(event, text)
 
     def _show_tooltip_text(self, event: tk.Event, text: str) -> None:
@@ -1076,8 +1042,13 @@ class ButtonModePage(BasePage):
             x = widget.winfo_rootx()
             y = widget.winfo_rooty() + widget.winfo_height() + 8
             width = tooltip.winfo_reqwidth()
+            height = tooltip.winfo_reqheight()
             screen_width = tooltip.winfo_screenwidth()
+            screen_height = tooltip.winfo_screenheight()
             x = min(max(8, x), max(8, screen_width - width - 8))
+            if y + height + 8 > screen_height:
+                y = max(8, widget.winfo_rooty() - height - 8)
+            y = min(max(8, y), max(8, screen_height - height - 8))
             tooltip.geometry(f"+{x}+{y}")
             tooltip.deiconify()
             tooltip.lift()
@@ -1111,7 +1082,7 @@ class ButtonModePage(BasePage):
             label.configure(
                 bg=self.colors["panel"],
                 fg=self.colors["text"],
-                font=("Microsoft YaHei UI", int(getattr(self.winfo_toplevel(), "_piezo_body_font_size", 10))),
+                font=("Microsoft YaHei UI", int(getattr(self.winfo_toplevel(), "_piezo_body_font_size", 12))),
             )
         except tk.TclError:
             pass
@@ -1464,8 +1435,6 @@ class ButtonModePage(BasePage):
                 self.period_hint_var.set(f"Waveform period about {period_ms:.3f} ms\nFrequency about {freq:.1f} Hz")
         except Exception:
             self.period_hint_var.set("")
-        finally:
-            self._refresh_repeat_playback_times()
 
     def _on_voltage_changed(self) -> None:
         selected = self.max_voltage_var.get()
@@ -1667,6 +1636,25 @@ class ButtonModePage(BasePage):
         else:
             current_mode &= ~self.ENDLESS_PLAY_BIT
         return self.write_reg(0x13, current_mode, show_error=False)
+
+    def _software_preset_tooltip_text(self, preset_index: int) -> str:
+        if not 0 <= preset_index < len(self.BUTTON_PRESETS):
+            return ""
+        config = self.BUTTON_PRESETS[preset_index]
+        duration = int(config["duration"])
+        points = config.get("sinc_points", BUTTON_PRESET_SINC_POINTS)
+        press_repeat = int(config["press_repeat"])
+        period_us = sum(int(point) for point in points) * duration * press_repeat
+        sinc_positive = config["sinc_positive"]
+        sinc_negative = config.get("sinc_negative", BUTTON_PRESET_SINC_NEGATIVE_VOLTAGE)
+        return self.tr(
+            "sinc_software_preset_tooltip",
+            max_voltage=_format_preset_number(sinc_positive),
+            min_voltage=_format_preset_number(sinc_negative),
+            period_ms=f"{period_us / 1000:.3f}",
+            repeat=press_repeat,
+            segment_times="/".join(str(int(point) * duration) for point in points) + " us",
+        )
 
     def apply_preset(self, preset_index: int) -> None:
         if not 0 <= preset_index < len(self.BUTTON_PRESETS):
@@ -2651,7 +2639,17 @@ class ButtonModePage(BasePage):
     def start_detection(self) -> None:
         self._start_detection_direct()
 
+    def _invalidate_detect_session(self) -> None:
+        self._cancel_sense_jobs()
+        self._detect_generation = getattr(self, "_detect_generation", 0) + 1
+        self._detect_await_adc_busy = False
+        self._detect_reconfigure_pending = False
+        self._direct_detection_active = False
+        self._sense_status_active = False
+        self._detect_target_addr = None
+
     def _start_detection_direct(self) -> None:
+        self._invalidate_detect_session()
         if not self._write_button_output_timing_config():
             return
         if not self._apply_adc_threshold_config():
@@ -2662,12 +2660,16 @@ class ButtonModePage(BasePage):
             return
         if not self._write_button_adc_event_config(show_error=True):
             return
-        if self.write_reg(0x06, 0x0001):
-            self._direct_detection_active = True
-            self._set_sense_ready()
-            self._set_button_selected("start_detection", True)
+        if not self.write_reg(0x06, 0x0001):
+            return
+        self._direct_detection_active = True
+        self._reset_direct_detect_cycle()
+        self._detect_gui_state = "ready"
+        self._set_button_selected("start_detection", True)
+        self._set_sense_ready()
 
     def stop_detection(self) -> None:
+        self._invalidate_detect_session()
         if not self.write_reg(0x06, 0x0002):
             return
         self._clear_sense_playback_registers(show_error=False)
@@ -2771,6 +2773,7 @@ class ButtonModePage(BasePage):
             )
 
     def _prepare_playback_without_detection(self) -> bool:
+        self._invalidate_detect_session()
         self.write_reg(0x06, 0x0002, show_error=False)
         if not self._clear_sense_playback_registers(show_error=True):
             return False
@@ -2797,7 +2800,7 @@ class ButtonModePage(BasePage):
         return self.write_reg(0x0F, current & ~self.ADC_DETECT_ENABLE, show_error=show_error)
 
     def _set_sense_status_color(self, color: str) -> None:
-        if self._sense_status_block is None:
+        if getattr(self, "_sense_status_block", None) is None:
             return
         self._sense_status_block.configure(bg=color, highlightbackground=self.colors["border"])
 
@@ -2808,7 +2811,10 @@ class ButtonModePage(BasePage):
         self._set_sense_status_color(self.STATUS_READY_COLOR)
 
     def _cancel_sense_jobs(self) -> None:
-        for job in (self._sense_blink_job, self._sense_ready_poll_job):
+        for job in (
+            getattr(self, "_sense_blink_job", None),
+            getattr(self, "_sense_ready_poll_job", None),
+        ):
             if job is not None:
                 try:
                     self.after_cancel(job)
@@ -2816,30 +2822,248 @@ class ButtonModePage(BasePage):
                     pass
         self._sense_blink_job = None
         self._sense_ready_poll_job = None
+        self._cancel_detect_status_poll()
+
+    def _reset_direct_detect_cycle(self) -> None:
+        self._detect_phase = "press"
+        self._detect_gui_state = "idle"
+        self._detect_reconfigure_pending = False
+        self._detect_await_adc_busy = False
+        self._detect_adc_busy_tries = 0
+
+    def _detect_phase_register_values(self, *, wait_release: bool) -> tuple[int, int, int] | None:
+        press_repeat = self._parse_repeat_count(self.press_repeat_count_var)
+        release_repeat = self._parse_repeat_count(self.release_repeat_count_var)
+        press_slice = self._parse_waveform_slice(self.press_waveform_var)
+        release_slice = self._parse_waveform_slice(self.release_waveform_var)
+        if None in (press_repeat, release_repeat, press_slice, release_slice):
+            return None
+        press_base = self._set_repeat_and_waveform_fields(0, press_repeat, press_slice)
+        release_base = self._set_repeat_and_waveform_fields(0, release_repeat, release_slice)
+        press_event = self._compose_button_adc_event_config()
+        if wait_release:
+            return (
+                derive_wait_release_adc_event(press_event),
+                press_base & ~self.ADC_DETECT_ENABLE,
+                release_base | self.ADC_DETECT_ENABLE,
+            )
+        return (
+            press_event,
+            press_base | self.ADC_DETECT_ENABLE,
+            release_base & ~self.ADC_DETECT_ENABLE,
+        )
+
+    def _apply_detect_phase(self, *, wait_release: bool) -> bool:
+        values = self._detect_phase_register_values(wait_release=wait_release)
+        if values is None:
+            return False
+        event_config, press_value, release_value = values
+        if not self.write_reg(0x0B, event_config):
+            return False
+        if not self.write_reg(0x0F, press_value):
+            return False
+        if not self.write_reg(0x11, release_value):
+            return False
+        if not self.write_reg(0x03, self.ADC_D2_CONFIG):
+            return False
+        return self.write_reg(0x06, 0x0001)
+
+    def _detect_playback_wait_ms(self) -> int:
+        duration_us = int(self.duration_var.get().strip(), 0)
+        if self._detect_phase == "release":
+            count = int(self.press_repeat_count_var.get().strip(), 0)
+            points = self._selected_slice_points(self.press_waveform_var)
+        else:
+            count = int(self.release_repeat_count_var.get().strip(), 0)
+            points = self._selected_slice_points(self.release_waveform_var)
+        if points is None or points < 1 or count < 1 or duration_us < 1:
+            raise ValueError("playback wait requires points, repeat count, and duration")
+        return max(1, (count * points * duration_us + 999) // 1000)
+
+    def _schedule_detect_rearm(self) -> None:
+        self._cancel_detect_status_poll()
+        self._finish_detect_rearm()
+
+    def _cancel_detect_status_poll(self) -> None:
+        job = getattr(self, "_detect_poll_job", None)
+        if job is None:
+            return
+        try:
+            self.after_cancel(job)
+        except Exception:
+            pass
+        self._detect_poll_job = None
+
+    def _finish_detect_rearm(self, generation: int | None = None) -> None:
+        if generation is not None and generation != getattr(self, "_detect_generation", 0):
+            return
+        self._detect_poll_job = None
+        if not getattr(self, "_direct_detection_active", False):
+            return
+        wait_release = self._detect_phase == "release"
+        if not self._apply_detect_phase(wait_release=wait_release):
+            self.write_reg(0x06, 0x0001, show_error=False)
+            return
+        self._detect_reconfigure_pending = False
+        self._detect_await_adc_busy = False
+        self._detect_gui_state = "ready"
+        self._sense_status_active = True
+        self._sense_timeout_mode = False
+
+    def _begin_wait_adc_busy(self) -> None:
+        self._detect_gui_state = "wait_adc_busy"
+        self._detect_await_adc_busy = True
+        self._detect_adc_busy_tries = 0
+        self._schedule_adc_busy_check()
+
+    def _schedule_adc_busy_check(self) -> None:
+        after = getattr(self, "after", None)
+        if not callable(after) or getattr(self, "tk", None) is None:
+            return
+        generation = getattr(self, "_detect_generation", 0)
+        self._detect_poll_job = after(
+            self.DETECT_ADC_BUSY_RETRY_MS,
+            self._verify_adc_busy,
+            generation,
+        )
+
+    def _verify_adc_busy(self, generation: int | None = None) -> None:
+        if generation is not None and generation != getattr(self, "_detect_generation", 0):
+            return
+        self._detect_poll_job = None
+        if not getattr(self, "_direct_detection_active", False):
+            return
+        if getattr(self, "_detect_gui_state", "") != "wait_adc_busy":
+            return
+        if not getattr(self, "_detect_await_adc_busy", False):
+            return
+        status = self.read_reg(0x02, show_error=False)
+        if status is not None and (status & 0x0001):
+            self._detect_await_adc_busy = False
+            self._detect_gui_state = "ready"
+            self._set_sense_ready()
+            return
+        self._detect_adc_busy_tries = getattr(self, "_detect_adc_busy_tries", 0) + 1
+        if self._detect_adc_busy_tries < 3:
+            self._schedule_adc_busy_check()
+            return
+        self._enter_detect_fault()
+
+    def _enter_detect_fault(self, message: str | None = None) -> None:
+        self._cancel_sense_jobs()
+        self._direct_detection_active = False
+        self._detect_await_adc_busy = False
+        self._detect_gui_state = "fault"
+        self._sense_status_active = False
+        self._set_sense_status_color(self.STATUS_TIMEOUT_COLOR)
+        messagebox.showerror(self.tr("error"), message or self.tr("detect_adc_not_ready"))
+        try:
+            ok = self.write_reg(0x06, 0x0002, show_error=False)
+        except Exception as exc:
+            self._log_detect_fault(f"ADC stop failed: {exc}")
+            return
+        if not ok:
+            self._log_detect_fault("ADC stop WREG 0x06=0x0002 failed")
+
+    def _log_detect_fault(self, message: str) -> None:
+        serial = getattr(getattr(self, "ctx", None), "serial", None)
+        emit = getattr(serial, "emit_log", None)
+        if callable(emit):
+            emit(f"DETECT FAULT {message}")
+
+    def _handle_direct_detect_status(self, status: int) -> bool:
+        is_stage0 = bool(status & self.DETECT_STATUS_RELEASE)
+        is_stage1 = bool(status & self.DETECT_STATUS_PRESS)
+
+        if self._detect_phase == "press" and is_stage1:
+            self._blink_sense_status(self.STATUS_PRESS_COLOR)
+            if self._adc_trigger_read_active:
+                self._read_and_update_button_adc(show_error=False)
+            self._detect_phase = "release"
+            self._detect_gui_state = "reconfiguring"
+            self._detect_reconfigure_pending = True
+            self._schedule_detect_rearm()
+            return True
+        if self._detect_phase == "release" and is_stage0:
+            self._blink_sense_status(self.STATUS_RELEASE_COLOR)
+            if self._adc_trigger_read_active:
+                self._read_and_update_button_adc(show_error=False)
+            self._detect_phase = "press"
+            self._detect_gui_state = "reconfiguring"
+            self._detect_reconfigure_pending = True
+            self._schedule_detect_rearm()
+            return True
+        return False
+
+    def _detect_session_is_current(self, generation: int | None = None, address: int | None = None) -> bool:
+        if generation is not None and generation != getattr(self, "_detect_generation", 0):
+            return False
+        current = getattr(getattr(getattr(self, "ctx", None), "state", None), "awp192x_device_addr", None)
+        if address is not None and current is not None and int(address) != int(current):
+            return False
+        return True
 
     def _handle_sense_status_log(self, line: str) -> None:
+        generation = getattr(self, "_detect_generation", 0)
+        address = getattr(getattr(getattr(self, "ctx", None), "state", None), "awp192x_device_addr", None)
         try:
-            self.after(0, self._process_sense_status_log, line)
+            self.after(0, self._process_sense_status_log, line, generation, address)
         except Exception:
             pass
 
-    def _process_sense_status_log(self, line: str) -> None:
+    def _process_sense_status_log(self, line: str, generation: int | None = None, address: int | None = None) -> None:
+        if not self._detect_session_is_current(generation, address):
+            return
         text = line.upper()
         if "RELEASE TIMEOUT R" in text:
+            if getattr(self, "_direct_detection_active", False):
+                return
             self._set_sense_timeout()
             return
         if not self._sense_status_active or self._sense_timeout_mode:
             return
 
         payload = self._extract_mcu_text_payload(line)
-        if payload == "P":
+        if payload.startswith("REARM "):
+            return
+        if getattr(self, "_direct_detection_active", False) and self._is_nint_event_log(text, payload):
+            self._on_direct_nint_event()
+            return
+        token = payload.split()[-1] if payload else ""
+        if token == "P":
             self._blink_sense_status(self.STATUS_PRESS_COLOR)
             if self._adc_trigger_read_active:
                 self._read_and_update_button_adc(show_error=False)
-        elif payload == "R":
+            return
+        if token == "R":
             self._blink_sense_status(self.STATUS_RELEASE_COLOR)
             if self._adc_trigger_read_active:
                 self._read_and_update_button_adc(show_error=False)
+
+    def _is_gpioev_d2_log(self, text: str) -> bool:
+        if "GPIOEV" not in text:
+            return False
+        return " D2 " in text or "GPIO0" in text or "SRC=INT0" in text
+
+    def _is_nint_event_log(self, text: str, payload: str) -> bool:
+        token = payload.split()[-1] if payload else ""
+        if token in {"P", "R", "NINT"}:
+            return True
+        if "NINT" in text or "MCU I " in text:
+            return True
+        return self._is_gpioev_d2_log(text)
+
+    def _on_direct_nint_event(self, text: str | None = None) -> None:
+        if not getattr(self, "_direct_detection_active", False):
+            return
+        if getattr(self, "_detect_gui_state", "") == "fault":
+            return
+        status = self.read_reg(0x02, show_error=False)
+        switched = False
+        if status is not None:
+            switched = bool(self._handle_direct_detect_status(status))
+        if not switched:
+            self.write_reg(0x06, 0x0001, show_error=False)
 
     def _extract_mcu_text_payload(self, line: str) -> str:
         match = re.search(r"MCU_TEXT\s+(.+)$", line, flags=re.IGNORECASE)
@@ -3823,16 +4047,35 @@ class FullModePage(ButtonModePage):
 
         window = tk.Toplevel(self)
         window.title(self.tr("waveform_generator"))
-        window.geometry("1120x720")
-        window.minsize(980, 640)
+        fit_toplevel_to_screen(
+            window,
+            preferred_width=1120,
+            preferred_height=720,
+            minimum_width=480,
+            minimum_height=320,
+        )
         window.configure(bg=self.colors["bg"])
         window.rowconfigure(0, weight=1)
         window.columnconfigure(0, weight=1)
         window.protocol("WM_DELETE_WINDOW", self._close_waveform_window)
 
         self._waveform_window = window
-        self.waveform_page = WaveformGeneratorPage(window, self.ctx, embedded=False, storage=self.storage)
-        self.waveform_page.grid(row=0, column=0, sticky="nsew", padx=18, pady=18)
+        scroll_area = VerticalScrollArea(
+            window,
+            self.ctx,
+            horizontal=True,
+            min_content_width=920,
+        )
+        scroll_area.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self._waveform_scroll_area = scroll_area
+        self.waveform_page = WaveformGeneratorPage(
+            scroll_area.content,
+            self.ctx,
+            embedded=False,
+            storage=self.storage,
+        )
+        self.waveform_page.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        scroll_area.content.columnconfigure(0, weight=1)
         self.waveform_page.metrics_revision_var.trace_add(
             "write",
             lambda *_: self._update_period_hint(write_register=False),
@@ -4259,10 +4502,25 @@ class FullModePage(ButtonModePage):
 
         window = tk.Toplevel(self)
         window.title(self.tr("adc_detect_value"))
-        window.geometry("420x220")
-        window.minsize(380, 200)
+        fit_toplevel_to_screen(
+            window,
+            preferred_width=420,
+            preferred_height=220,
+            minimum_width=320,
+            minimum_height=180,
+        )
         window.configure(bg=self.colors["bg"])
-        window.columnconfigure(1, weight=1)
+        scroll_area = VerticalScrollArea(
+            window,
+            self.ctx,
+            horizontal=True,
+            min_content_width=380,
+        )
+        scroll_area.grid(row=0, column=0, sticky="nsew")
+        window.rowconfigure(0, weight=1)
+        window.columnconfigure(0, weight=1)
+        body = scroll_area.content
+        body.columnconfigure(1, weight=1)
         window.protocol("WM_DELETE_WINDOW", self._close_adc_detect_window)
 
         self._adc_detect_window = window
@@ -4270,28 +4528,28 @@ class FullModePage(ButtonModePage):
         self._adc_detect_pol_var = tk.StringVar(value=self.adc_pol_var.get())
         self._adc_detect_result_var = tk.StringVar(value="")
 
-        gain_label = ttk.Label(window, text=self.tr("adc_gain"), style="Panel.TLabel")
+        gain_label = ttk.Label(body, text=self.tr("adc_gain"), style="Panel.TLabel")
         gain_label.grid(row=0, column=0, sticky="w", padx=(16, 8), pady=(16, 8))
         ttk.Combobox(
-            window,
+            body,
             textvariable=self._adc_detect_gain_var,
             values=["0-19V", "0-100V"],
             state="readonly",
         ).grid(row=0, column=1, sticky="ew", padx=(0, 16), pady=(16, 8))
 
-        pol_label = ttk.Label(window, text=self.tr("adc_pol"), style="Panel.TLabel")
+        pol_label = ttk.Label(body, text=self.tr("adc_pol"), style="Panel.TLabel")
         pol_label.grid(row=1, column=0, sticky="w", padx=(16, 8), pady=8)
         ttk.Combobox(
-            window,
+            body,
             textvariable=self._adc_detect_pol_var,
             values=["OUT+", "OUT-"],
             state="readonly",
         ).grid(row=1, column=1, sticky="ew", padx=(0, 16), pady=8)
 
-        read_btn = ttk.Button(window, text=self.tr("adc_read_value"), style="Primary.TButton", command=self.read_adc_detect_value)
+        read_btn = ttk.Button(body, text=self.tr("adc_read_value"), style="Primary.TButton", command=self.read_adc_detect_value)
         read_btn.grid(row=2, column=0, columnspan=2, sticky="ew", padx=16, pady=(12, 8))
 
-        result_label = ttk.Label(window, textvariable=self._adc_detect_result_var, style="Panel.TLabel")
+        result_label = ttk.Label(body, textvariable=self._adc_detect_result_var, style="Panel.TLabel")
         result_label.grid(row=3, column=0, columnspan=2, sticky="w", padx=16, pady=(8, 16))
 
         self.start_adc_detect_monitor(reset_records=True)

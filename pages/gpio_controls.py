@@ -7,13 +7,21 @@ from typing import Any, Callable, Iterable
 from core.base_tool import (
     GPIO_MODE_DETECT,
     GPIO_MODE_HIGH,
+    GPIO_MODE_HIZ,
     GPIO_MODE_LOW,
+    GPIO_MODE_PULLUP,
 )
 from pages.base_page import SimpleTooltip
 
 
 GPIO_PIN_MAP = ((0, "D2"), (1, "D3"), (2, "D4"), (3, "D5"))
-GPIO_MODES = (GPIO_MODE_HIGH, GPIO_MODE_LOW, GPIO_MODE_DETECT)
+GPIO_MODES = (
+    GPIO_MODE_HIGH,
+    GPIO_MODE_LOW,
+    GPIO_MODE_DETECT,
+    GPIO_MODE_HIZ,
+    GPIO_MODE_PULLUP,
+)
 
 
 def active_serial_identity(ctx: Any, page_name: str) -> tuple[Any, ...] | None:
@@ -64,6 +72,33 @@ def active_serial_identity(ctx: Any, page_name: str) -> tuple[Any, ...] | None:
     if bool(getattr(serial, "is_connected", False)):
         return (normalized_port,)
     return None
+
+
+class GpioControlGroup:
+    """Fan out shared-pin updates to every visible AWP1018 GPIO panel."""
+
+    def __init__(self) -> None:
+        self.panels: list[GpioControlPanel] = []
+
+    def add(self, panel: GpioControlPanel) -> GpioControlPanel:
+        self.panels.append(panel)
+        return panel
+
+    def invalidate_modes(self) -> None:
+        for panel in self.panels:
+            panel.invalidate_modes()
+
+    def refresh_language(self) -> None:
+        for panel in self.panels:
+            panel.refresh_language()
+
+    def apply_external_mode(self, pin: str, mode: str) -> None:
+        for panel in self.panels:
+            panel.apply_external_mode(pin, mode)
+
+    def invalidate_external_mode(self, pin: str) -> None:
+        for panel in self.panels:
+            panel.invalidate_external_mode(pin)
 
 
 class NullGpioControlPanel:
@@ -160,6 +195,8 @@ class GpioControlPanel(ttk.Frame):
             self.tr("gpio_mode_high"),
             self.tr("gpio_mode_low"),
             self.tr("gpio_mode_detect"),
+            self.tr("gpio_mode_hiz"),
+            self.tr("gpio_mode_pullup"),
         ]
 
     def _display_mode(self, mode: str) -> str:
@@ -167,6 +204,8 @@ class GpioControlPanel(ttk.Frame):
             GPIO_MODE_HIGH: "gpio_mode_high",
             GPIO_MODE_LOW: "gpio_mode_low",
             GPIO_MODE_DETECT: "gpio_mode_detect",
+            GPIO_MODE_HIZ: "gpio_mode_hiz",
+            GPIO_MODE_PULLUP: "gpio_mode_pullup",
         }.get(mode)
         return self.tr(key) if key else mode
 
@@ -183,6 +222,8 @@ class GpioControlPanel(ttk.Frame):
             GPIO_MODE_HIGH: "gpio_mode_high_tip",
             GPIO_MODE_LOW: "gpio_mode_low_tip",
             GPIO_MODE_DETECT: "gpio_mode_detect_tip",
+            GPIO_MODE_HIZ: "gpio_mode_hiz_tip",
+            GPIO_MODE_PULLUP: "gpio_mode_pullup_tip",
         }.get(mode, "gpio_controls_hint")
         return self.tr(key)
 

@@ -207,13 +207,6 @@ class AWP1921AWP1923Page(BasePage):
         self.addr_combo.grid(row=0, column=3, sticky="w", padx=(0, 18))
         self.addr_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_addr_changed())
 
-        self.mode_label = ttk.Label(mode_bar, style="Panel.TLabel")
-        self.mode_label.grid(row=0, column=4, sticky="w", padx=(0, 12))
-
-        self._add_mode_button(mode_bar, "button_mode", 5)
-        self._add_mode_button(mode_bar, "pump_mode", 6)
-        self._add_mode_button(mode_bar, "full_mode", 7)
-
         self.reg_panel = ttk.Frame(self, style="Panel.TFrame", padding=(12, 10))
         self.reg_panel.grid(row=2, column=0, sticky="ew", pady=(0, 12))
         self.reg_panel.columnconfigure(10, weight=1)
@@ -221,6 +214,9 @@ class AWP1921AWP1923Page(BasePage):
 
         self.mode_scroll, self.mode_container = self.make_vertical_scroll_area(self)
         self.mode_scroll.grid(row=3, column=0, sticky="nsew")
+        # Keep mode headers away from the inner canvas clip edge on compact
+        # windows while retaining horizontal scrolling for wide panels.
+        self.mode_container.configure(padding=(8, 0, 8, 0))
         self.mode_container.rowconfigure(0, weight=1)
         self.mode_container.columnconfigure(0, weight=1)
 
@@ -235,15 +231,6 @@ class AWP1921AWP1923Page(BasePage):
         self.refresh_language()
         self._on_addr_changed()
         self.show_mode("button_mode")
-
-    def _add_mode_button(self, parent: tk.Misc, key: str, col: int) -> None:
-        btn = ttk.Button(
-            parent,
-            style="Secondary.TButton",
-            command=lambda k=key: self.show_mode(k),
-        )
-        btn.grid(row=0, column=col, sticky="w", padx=(0, 8))
-        self.mode_buttons[key] = btn
 
     def _build_register_bar(self, parent: tk.Misc) -> None:
         self.reg_title_label = ttk.Label(parent, style="Panel.TLabel")
@@ -277,13 +264,16 @@ class AWP1921AWP1923Page(BasePage):
         )
         self.detail_mode_check.grid(row=0, column=9, sticky="w", padx=(14, 0))
 
+        state_actions = ttk.Frame(parent, style="Panel.TFrame")
+        state_actions.grid(row=1, column=0, columnspan=11, sticky="w", pady=(10, 0))
         for column, (key, value, style) in enumerate(self.STATE_COMMANDS):
+            state_actions.columnconfigure(column, weight=1, uniform="chip_state_actions")
             button = ttk.Button(
-                parent,
+                state_actions,
                 style=style,
                 command=lambda command_value=value: self.write_chip_state(command_value),
             )
-            button.grid(row=1, column=column, sticky="w", pady=(8, 0), padx=(0, 6 if column < 3 else 14))
+            button.grid(row=0, column=column, sticky="ew", padx=(0, 8))
             self.state_buttons[key] = button
 
         self.detail_frame = ttk.Frame(parent, style="Panel.TFrame")
@@ -753,8 +743,7 @@ class AWP1921AWP1923Page(BasePage):
         if mode not in self.mode_pages:
             return
         self.current_mode = mode
-        for key, btn in self.mode_buttons.items():
-            btn.configure(style="Selected.TButton" if key == mode else "Secondary.TButton")
+        self._sync_mode_button_styles()
         for page in self.mode_pages.values():
             page.grid_remove()
         page = self.mode_pages[mode]
@@ -765,7 +754,6 @@ class AWP1921AWP1923Page(BasePage):
     def refresh_language(self) -> None:
         super().refresh_language()
         self.addr_label.configure(text=self.tr("current_chip_addr"))
-        self.mode_label.configure(text=self.tr("mode_selection"))
         if hasattr(self, "reg_title_label"):
             self.reg_title_label.configure(text=self.tr("read_write_registers"))
             self.reg_addr_label.configure(text=self.tr("reg_addr"))
@@ -822,22 +810,32 @@ class AWP1744AWP1766Page(BasePage):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(3, weight=1)
+        self.enable_pinned_footer_layout()
 
         header = self.make_title(self, "awp1744_awp1766")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
 
-        mode_bar = ttk.Frame(self, style="Panel.TFrame", padding=(12, 10))
-        mode_bar.grid(row=1, column=0, sticky="ew", pady=(0, 12))
-        mode_bar.columnconfigure(10, weight=1)
+        self.mode_scroll, self.mode_container = self.make_vertical_scroll_area(self)
+        self.mode_scroll.grid(row=1, column=0, sticky="nsew")
+        self.mode_container.configure(padding=(8, 0, 8, 0))
 
-        self.addr_label = ttk.Label(mode_bar, style="Panel.TLabel")
-        self.make_serial_selector(mode_bar, page_name=self.page_name, row=0, column=0)
+        footer, actions, self.reg_panel, identity = self.make_merged_footer()
+        footer.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        import_btn = ttk.Button(actions, style="Secondary.TButton", command=self.import_user_preset)
+        import_btn.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.mode_buttons["awp1744_awp1766_import_user_preset"] = import_btn
+        export_btn = ttk.Button(actions, style="Secondary.TButton", command=self.export_user_preset)
+        export_btn.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        self.mode_buttons["awp1744_awp1766_export_user_preset"] = export_btn
+        actions.columnconfigure(0, weight=1, uniform="chip_state_actions")
+        actions.columnconfigure(1, weight=1, uniform="chip_state_actions")
+        self.reg_panel.columnconfigure(9, weight=1)
+        self._build_register_bar(self.reg_panel)
+        self.addr_label = ttk.Label(identity, style="Panel.TLabel")
+        self.make_serial_selector(identity, page_name=self.page_name, row=0, column=0)
         self.addr_label.grid(row=0, column=2, sticky="w", padx=(0, 8))
-
         self.addr_combo = ttk.Combobox(
-            mode_bar,
+            identity,
             textvariable=self.addr_var,
             values=[label for label, _addr in self.ADDR_OPTIONS],
             state="readonly",
@@ -845,28 +843,6 @@ class AWP1744AWP1766Page(BasePage):
         )
         self.addr_combo.grid(row=0, column=3, sticky="w", padx=(0, 18))
         self.addr_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_addr_changed())
-
-        self.mode_label = ttk.Label(mode_bar, style="Panel.TLabel")
-        self.mode_label.grid(row=0, column=4, sticky="w", padx=(0, 12))
-
-        self._add_mode_button(mode_bar, "awp1744_awp1766_pump_mode", 5)
-        self._add_mode_button(mode_bar, "awp1744_awp1766_fan_mode", 6)
-
-        import_btn = ttk.Button(mode_bar, style="Secondary.TButton", command=self.import_user_preset)
-        import_btn.grid(row=0, column=7, sticky="w", padx=(10, 8))
-        self.mode_buttons["awp1744_awp1766_import_user_preset"] = import_btn
-
-        export_btn = ttk.Button(mode_bar, style="Secondary.TButton", command=self.export_user_preset)
-        export_btn.grid(row=0, column=8, sticky="w", padx=(0, 8))
-        self.mode_buttons["awp1744_awp1766_export_user_preset"] = export_btn
-
-        self.reg_panel = ttk.Frame(self, style="Panel.TFrame", padding=(12, 10))
-        self.reg_panel.grid(row=2, column=0, sticky="ew", pady=(0, 12))
-        self.reg_panel.columnconfigure(9, weight=1)
-        self._build_register_bar(self.reg_panel)
-
-        self.mode_scroll, self.mode_container = self.make_vertical_scroll_area(self)
-        self.mode_scroll.grid(row=3, column=0, sticky="nsew")
         self.mode_container.rowconfigure(0, weight=1)
         self.mode_container.columnconfigure(0, weight=1)
 
@@ -884,15 +860,6 @@ class AWP1744AWP1766Page(BasePage):
         self.refresh_language()
         self._on_addr_changed()
         self.show_mode(self.current_mode)
-
-    def _add_mode_button(self, parent: tk.Misc, key: str, col: int) -> None:
-        btn = ttk.Button(
-            parent,
-            style="Secondary.TButton",
-            command=lambda k=key: self.show_mode(k),
-        )
-        btn.grid(row=0, column=col, sticky="w", padx=(0, 8))
-        self.mode_buttons[key] = btn
 
     def _build_register_bar(self, parent: tk.Misc) -> None:
         self.reg_title_label = ttk.Label(parent, style="Panel.TLabel")
@@ -1041,8 +1008,7 @@ class AWP1744AWP1766Page(BasePage):
         if old_page is not None and old_page is not self.mode_pages[mode] and hasattr(old_page, "stop_frequency_read"):
             old_page.stop_frequency_read()
         self.current_mode = mode
-        for key, btn in self.mode_buttons.items():
-            btn.configure(style="Selected.TButton" if key == mode else "Secondary.TButton")
+        self._sync_mode_button_styles()
         for page in self.mode_pages.values():
             page.grid_remove()
         page = self.mode_pages[mode]
@@ -1053,7 +1019,6 @@ class AWP1744AWP1766Page(BasePage):
     def refresh_language(self) -> None:
         super().refresh_language()
         self.addr_label.configure(text=self.tr("current_chip_addr"))
-        self.mode_label.configure(text=self.tr("mode_selection"))
         self.reg_title_label.configure(text=self.tr("read_write_registers"))
         self.reg_addr_label.configure(text=self.tr("reg_addr"))
         self.write_value_label.configure(text=self.tr("write_value"))
@@ -1247,7 +1212,8 @@ class AWP1744AWP1766PumpModePage(BasePage):
     def set_pump(self, enabled: bool) -> None:
         if not self._ensure_connected():
             return
-        resp = self.ctx.serial.write_gpio("A2", enabled)
+        mode = "HIGH" if enabled else "LOW"
+        resp = self.ctx.serial.configure_gpio("A2", mode)
         if not resp.ok:
             messagebox.showerror(self.tr("error"), resp.error)
             return
@@ -1326,7 +1292,8 @@ class AWP1744AWP1766PumpModePage(BasePage):
         self._freq_poll_job = self.after(1000, self._poll_frequency_once)
 
     def _frequency_request_worker(self) -> None:
-        resp = self.ctx.serial.send_command("FREQ 5 100", expect_response=True)
+        reader = getattr(self.ctx.serial, "read_frequency", None)
+        resp = reader() if callable(reader) else self.ctx.serial.send_command("FREQ?", expect_response=True)
         try:
             self.after(0, self._finish_frequency_request, resp.ok, resp.data, resp.error)
         except Exception:
@@ -1344,14 +1311,14 @@ class AWP1744AWP1766PumpModePage(BasePage):
         parsed = self._parse_frequency_text(line)
         if parsed is None:
             return
-        count_text, hz_text = parsed
+        period_text, hz_text = parsed
         if threading.current_thread() is not threading.main_thread():
             try:
-                self.after(0, self._set_frequency_reading, count_text, hz_text)
+                self.after(0, self._set_frequency_reading, period_text, hz_text)
             except Exception:
                 pass
             return
-        self._set_frequency_reading(count_text, hz_text)
+        self._set_frequency_reading(period_text, hz_text)
 
     def _set_frequency_from_text(self, text: str) -> bool:
         parsed = self._parse_frequency_text(text)
@@ -1361,14 +1328,16 @@ class AWP1744AWP1766PumpModePage(BasePage):
         return True
 
     def _parse_frequency_text(self, text: str) -> tuple[str, str] | None:
-        match = re.search(r"\^?FREQ\s+5\s+100\s+(\d+)\s+([0-9.]+)\s*~?", text, re.IGNORECASE)
+        match = re.search(r"\^?FREQ\s+D8\s+([1-9][0-9]*)\s*~?", text, re.IGNORECASE)
         if not match:
             return None
-        return match.group(1), match.group(2)
+        period_us = int(match.group(1))
+        hz_text = f"{(1_000_000.0 / period_us):.2f}"
+        return str(period_us), hz_text
 
-    def _set_frequency_reading(self, count_text: str, hz_text: str) -> None:
+    def _set_frequency_reading(self, period_text: str, hz_text: str) -> None:
         self.frequency_var.set(f"{hz_text} Hz")
-        self.freq_status_var.set(f"count {count_text}")
+        self.freq_status_var.set(f"{period_text} us")
 
     def refresh_language(self) -> None:
         super().refresh_language()

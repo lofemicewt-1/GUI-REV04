@@ -13,7 +13,7 @@ BRIDGE_PORT = 47631
 BRIDGE_PROTOCOL_VERSION = 1
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_TRANSACTION_STEPS = 256
-REGISTER_WIDTHS = (8, 16, 32)
+REGISTER_WIDTHS = (8, 16)
 
 
 class BridgeRequestError(ValueError):
@@ -228,9 +228,9 @@ class I2cBridgeService:
     def _register_fields(self, step: dict[str, Any]) -> tuple[int, int, int]:
         device_addr = self._int_field(step, "device", minimum=0, maximum=0x7F)
         register_addr = self._int_field(step, "register", minimum=0, maximum=0xFF)
-        bits = self._int_field(step, "bits", minimum=8, maximum=32)
+        bits = self._int_field(step, "bits", minimum=8, maximum=16)
         if bits not in REGISTER_WIDTHS:
-            raise BridgeRequestError("bits must be one of 8, 16, or 32")
+            raise BridgeRequestError("bits must be one of 8 or 16")
         return device_addr, register_addr, bits
 
     @staticmethod

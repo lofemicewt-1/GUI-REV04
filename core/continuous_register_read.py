@@ -73,9 +73,9 @@ def parse_continuous_read_settings(
     try:
         width = int(str(bits).split("-", 1)[0].strip())
     except (TypeError, ValueError) as exc:
-        raise ValueError("Data width must be 8, 16, or 32 bits") from exc
-    if width not in (8, 16, 32):
-        raise ValueError("Data width must be 8, 16, or 32 bits")
+        raise ValueError("Data width must be 8 or 16 bits") from exc
+    if width not in (8, 16):
+        raise ValueError("Data width must be 8 or 16 bits")
 
     expected_value: int | None = None
     normalized_expected = str(expected_text or "").strip()

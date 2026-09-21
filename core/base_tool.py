@@ -9,16 +9,42 @@ from typing import Callable, Generic, Protocol, TypeVar
 FRAME_START = "^"
 FRAME_END = "~"
 PROTOCOL_REVISION = "REV04"
-REGISTER_DATA_WIDTHS = (8, 16, 32)
-RREGW_MAX_VALUES = {8: 32, 16: 16, 32: 8}
-WREGW_MAX_VALUES = {8: 10, 16: 5, 32: 2}
+REGISTER_DATA_WIDTHS = (8, 16)
+RREGW_MAX_VALUES = {8: 32, 16: 16}
+WREGW_MAX_VALUES = {8: 10, 16: 5}
 ALLOWED_I2C_SPEEDS = (100000, 400000)
 GPIO_MODE_HIGH = "HIGH"
 GPIO_MODE_LOW = "LOW"
 GPIO_MODE_DETECT = "DETECT"
 GPIO_MODE_HIZ = "HIZ"
-GPIO_MODES = (GPIO_MODE_HIGH, GPIO_MODE_LOW, GPIO_MODE_DETECT, GPIO_MODE_HIZ)
-GPIO_MODE_PINS = ("D2", "D3", "D4", "D5")
+GPIO_MODE_PULLUP = "PULLUP"
+GPIO_MODES = (
+    GPIO_MODE_HIGH,
+    GPIO_MODE_LOW,
+    GPIO_MODE_DETECT,
+    GPIO_MODE_HIZ,
+    GPIO_MODE_PULLUP,
+)
+GPIO_DETECT_PINS = ("D2", "D3", "D4", "D5")
+GPIO_PUBLIC_PINS = (
+    "D2",
+    "D3",
+    "D4",
+    "D5",
+    "D6",
+    "D8",
+    "D9",
+    "D10",
+    "D11",
+    "D12",
+    "D13",
+    "A1",
+    "A2",
+    "A3",
+)
+GPIO_MODE_PINS = GPIO_PUBLIC_PINS
+GPIO_ADC_PINS = ("A1", "A2", "A3")
+GPIO_FREQ_PIN = "D8"
 
 DAC_MIN = 0x000
 DAC_MAX = 0xFFF
@@ -63,12 +89,25 @@ class GpioModeAck:
 
 
 @dataclass(frozen=True)
-class GpioPulseAck:
+class GpioReadAck:
     pin: str
-    count: int | None = None
-    high_ms: int | None = None
-    gap_ms: int | None = None
-    stopped: bool = False
+    level: int
+
+
+@dataclass(frozen=True)
+class AdcReadAck:
+    pin: str
+    value: int
+
+
+@dataclass(frozen=True)
+class FreqAck:
+    pin: str
+    period_us: int
+
+    @property
+    def frequency_hz(self) -> float:
+        return 1_000_000.0 / self.period_us if self.period_us else 0.0
 
 
 @dataclass(frozen=True)
@@ -146,7 +185,7 @@ def u16(value: int, *, name: str = "value") -> int:
 def _register_data_width(bits: int) -> int:
     width = int(bits)
     if width not in REGISTER_DATA_WIDTHS:
-        raise ValueError("register data width must be 8, 16, or 32 bits")
+        raise ValueError("register data width must be 8 or 16 bits")
     return width
 
 
@@ -240,10 +279,10 @@ def build_write_register_value_command(
 
 
 _RDATAW_PATTERN = re.compile(
-    r"RDATAW\s+([0-9A-Fa-f]{2})\s+([0-9A-Fa-f]{2})\s+(8|16|32)\s+([1-9][0-9]*)\s+([0-9A-Fa-f]+)"
+    r"RDATAW\s+([0-9A-Fa-f]{2})\s+([0-9A-Fa-f]{2})\s+(8|16)\s+([1-9][0-9]*)\s+([0-9A-Fa-f]+)"
 )
 _OK_WREGW_PATTERN = re.compile(
-    r"OK\s+WREGW\s+([0-9A-Fa-f]{2})\s+([0-9A-Fa-f]{2})\s+(8|16|32)\s+([1-9][0-9]*)"
+    r"OK\s+WREGW\s+([0-9A-Fa-f]{2})\s+([0-9A-Fa-f]{2})\s+(8|16)\s+([1-9][0-9]*)"
 )
 
 
@@ -357,7 +396,7 @@ def _pin_token(pin: str | int) -> str:
 
 def _public_gpio_pin(pin: str | int) -> str:
     token = _pin_token(pin)
-    if token in {"D0", "D1", "D2", "D7", "A0", "A4", "A5", "A6", "A7"}:
+    if token not in GPIO_PUBLIC_PINS:
         raise ValueError(f"{token} is reserved and unavailable to public GPIO")
     return token
 
@@ -366,22 +405,12 @@ def _flag_value(value: bool | int) -> int:
     return 1 if bool(value) else 0
 
 
-def build_ping_command() -> str:
-    return "PING"
+def ready_notification_body() -> str:
+    return f"READY {PROTOCOL_REVISION}"
 
 
-def parse_ping_response(text: str) -> bool:
-    """Return READY state only for the current protocol revision."""
-    normalized = _normalized_frame(text).upper()
-    if normalized == f"PONG {PROTOCOL_REVISION} READY":
-        return True
-    if normalized == f"PONG {PROTOCOL_REVISION} BOOTING":
-        return False
-    raise ValueError(f"protocol mismatch: expected PONG {PROTOCOL_REVISION}")
-
-
-def build_set_board_flag_command(value: bool | int) -> str:
-    return f"FLAG {_flag_value(value)}"
+def is_ready_notification(text: str) -> bool:
+    return _normalized_frame(text).upper() == ready_notification_body()
 
 
 def build_read_board_flag_command() -> str:
@@ -395,19 +424,30 @@ def build_interrupt_ack_command(sequence: int) -> str:
     return f"INTACK {value:08X}"
 
 
-_FLAG_STATUS_PATTERN = re.compile(r"FLAG\s+([01])\s+INTF=([01])\s+SEQ=([0-9A-Fa-f]{8})")
+_FLAG_STATUS_PATTERN = re.compile(r"FLAG\s+INTF=([01])\s+SEQ=([0-9A-Fa-f]{8})", re.IGNORECASE)
 _INTACK_OK_PATTERN = re.compile(r"OK\s+INTACK\s+([0-9A-Fa-f]{8})")
+_GPIO_MODE_PATTERN = re.compile(
+    r"GPIOCFG\s+(D(?:[2-9]|1[0-3])|A[1-3])\s+(HIGH|LOW|DETECT|HIZ|PULLUP)",
+    re.IGNORECASE,
+)
+_GPIO_READ_PATTERN = re.compile(
+    r"GPIOR\s+(D(?:[2-9]|1[0-3])|A[1-3]|[0-9]{1,2})\s+([01])",
+    re.IGNORECASE,
+)
+_ADCR_PATTERN = re.compile(r"ADCR\s+(A[1-3])\s+(\d{1,4})", re.IGNORECASE)
+_FREQ_PATTERN = re.compile(r"FREQ\s+D8\s+([1-9][0-9]*)", re.IGNORECASE)
 
 
 def parse_board_flag_response(text: str) -> BoardFlagStatus:
     match = _FLAG_STATUS_PATTERN.fullmatch(_normalized_frame(text))
     if match is None:
         raise ValueError("invalid FLAG response")
-    flag_text, intf_text, sequence_text = match.groups()
+    intf_text, sequence_text = match.groups()
     sequence = int(sequence_text, 16)
-    if bool(int(intf_text)) != bool(sequence):
+    intf = bool(int(intf_text))
+    if intf != bool(sequence):
         raise ValueError("FLAG INTF and SEQ are inconsistent")
-    return BoardFlagStatus(bool(int(flag_text)), bool(int(intf_text)), sequence)
+    return BoardFlagStatus(intf, intf, sequence)
 
 
 def is_idle_board_flag_response(response: SerialResponse) -> bool:
@@ -424,80 +464,75 @@ def is_serial_contention_error(error: str | None) -> bool:
     return str(error or "").strip() in {"Serial command is busy", "Serial transaction busy"}
 
 
-def build_write_gpio_command(pin: str | int, enabled: bool | int) -> str:
-    return f"GPIO {_public_gpio_pin(pin)} {_flag_value(enabled)}"
-
-
 def build_read_gpio_command(pin: str | int) -> str:
     return f"GPIOR {_public_gpio_pin(pin)}"
 
 
-def build_gpio_pullup_command(pin: str | int) -> str:
-    return f"GPIOU {_public_gpio_pin(pin)}"
-
-
 def _gpio_mode_pin(pin: str | int) -> str:
-    token = _pin_token(pin)
-    if token not in GPIO_MODE_PINS:
-        raise ValueError(f"{token} is not a supported GPIO mode pin")
-    return token
+    return _public_gpio_pin(pin)
 
 
-def _gpio_mode_token(mode: str) -> str:
+def _gpio_mode_token(mode: str, *, pin: str | None = None) -> str:
     token = str(mode).strip().upper()
     if token not in GPIO_MODES:
         raise ValueError(f"unsupported GPIO mode: {mode}")
+    if token == GPIO_MODE_DETECT and pin is not None and pin not in GPIO_DETECT_PINS:
+        raise ValueError(f"{pin} does not support DETECT")
     return token
 
 
 def build_gpio_mode_command(pin: str | int, mode: str) -> str:
-    return f"GPIOCFG {_gpio_mode_pin(pin)} {_gpio_mode_token(mode)}"
-
-
-_GPIO_MODE_PATTERN = re.compile(r"GPIOCFG\s+(D[2-5])\s+(HIGH|LOW|DETECT|HIZ)")
+    pin_token = _gpio_mode_pin(pin)
+    return f"GPIOCFG {pin_token} {_gpio_mode_token(mode, pin=pin_token)}"
 
 
 def parse_gpio_mode_response(text: str) -> GpioModeAck:
     match = _GPIO_MODE_PATTERN.fullmatch(_normalized_frame(text).upper())
     if match is None:
         raise ValueError("invalid GPIOCFG response")
-    return GpioModeAck(pin=match.group(1), mode=match.group(2))
+    pin = match.group(1).upper()
+    mode = match.group(2).upper()
+    if pin not in GPIO_PUBLIC_PINS:
+        raise ValueError("invalid GPIOCFG response")
+    if mode == GPIO_MODE_DETECT and pin not in GPIO_DETECT_PINS:
+        raise ValueError("invalid GPIOCFG response")
+    return GpioModeAck(pin=pin, mode=mode)
 
 
-def _gpio_pulse_bounds(count: int, high_ms: int, gap_ms: int) -> tuple[int, int, int]:
-    count_value = int(count)
-    high_value = int(high_ms)
-    gap_value = int(gap_ms)
-    if not 1 <= count_value <= 255:
-        raise ValueError("pulse count must be in range 1..255")
-    if not 1 <= high_value <= 60000:
-        raise ValueError("pulse high time must be in range 1..60000 ms")
-    if not 0 <= gap_value <= 60000:
-        raise ValueError("pulse gap time must be in range 0..60000 ms")
-    return count_value, high_value, gap_value
+def parse_gpio_read_response(text: str) -> GpioReadAck:
+    match = _GPIO_READ_PATTERN.fullmatch(_normalized_frame(text))
+    if match is None:
+        raise ValueError("invalid GPIOR response")
+    pin = _public_gpio_pin(match.group(1))
+    return GpioReadAck(pin=pin, level=int(match.group(2)))
 
 
-def build_gpio_pulse_command(
-    pin: str | int,
-    count: int,
-    high_ms: int,
-    gap_ms: int,
-) -> str:
-    count_value, high_value, gap_value = _gpio_pulse_bounds(count, high_ms, gap_ms)
-    return f"GPIOCFG {_gpio_mode_pin(pin)} HIGH {count_value} {high_value} {gap_value}"
+def build_adc_read_command(pin: str) -> str:
+    token = str(pin).strip().upper()
+    if token not in GPIO_ADC_PINS:
+        raise ValueError("ADC pin must be A1, A2, or A3")
+    return f"ADCR {token}"
 
 
-def build_gpio_pulse_stop_command(pin: str | int) -> str:
-    return f"GPIOCFG {_gpio_mode_pin(pin)} HIZ"
+def parse_adc_read_response(text: str) -> AdcReadAck:
+    match = _ADCR_PATTERN.fullmatch(_normalized_frame(text))
+    if match is None:
+        raise ValueError("invalid ADCR response")
+    value = int(match.group(2))
+    if not 0 <= value <= 1023:
+        raise ValueError("invalid ADCR response")
+    return AdcReadAck(pin=match.group(1).upper(), value=value)
 
 
-def parse_gpio_pulse_response(text: str) -> GpioPulseAck:
-    ack = parse_gpio_mode_response(text)
-    if ack.mode == GPIO_MODE_HIGH:
-        return GpioPulseAck(pin=ack.pin, stopped=False)
-    if ack.mode in {GPIO_MODE_HIZ, GPIO_MODE_DETECT, GPIO_MODE_LOW}:
-        return GpioPulseAck(pin=ack.pin, stopped=True)
-    raise ValueError("invalid GPIO pulse response")
+def build_freq_command() -> str:
+    return "FREQ?"
+
+
+def parse_freq_response(text: str) -> FreqAck:
+    match = _FREQ_PATTERN.fullmatch(_normalized_frame(text))
+    if match is None:
+        raise ValueError("invalid FREQ response")
+    return FreqAck(pin=GPIO_FREQ_PIN, period_us=int(match.group(1)))
 
 
 def build_set_i2c_speed_command(speed_hz: int) -> str:
@@ -725,23 +760,6 @@ def _firmware_error_response(response: SerialResponse) -> SerialResponse:
     return response
 
 
-def ping_board(transport: CommandTransport) -> SerialResponse:
-    response = transport(build_ping_command(), expect_response=True)
-    if not response.ok:
-        return response
-    try:
-        parse_ping_response(response.data)
-    except ValueError as exc:
-        return SerialResponse(False, data=response.data, error=str(exc))
-    return response
-
-
-def set_board_flag(transport: CommandTransport, value: bool | int) -> SerialResponse:
-    return _firmware_error_response(
-        transport(build_set_board_flag_command(value), expect_response=True)
-    )
-
-
 def read_board_flag(transport: CommandTransport) -> SerialResponse:
     response = _firmware_error_response(
         transport(build_read_board_flag_command(), expect_response=True)
@@ -767,29 +785,27 @@ def acknowledge_interrupt(transport: CommandTransport, sequence: int) -> SerialR
     return response
 
 
-def write_gpio(transport: CommandTransport, pin: str | int, enabled: bool | int) -> SerialResponse:
-    return _firmware_error_response(
-        transport(build_write_gpio_command(pin, enabled), expect_response=True)
-    )
-
-
 def read_gpio(transport: CommandTransport, pin: str | int) -> SerialResponse:
-    return _firmware_error_response(
-        transport(build_read_gpio_command(pin), expect_response=True)
+    expected_pin = _public_gpio_pin(pin)
+    response = _firmware_error_response(
+        transport(build_read_gpio_command(expected_pin), expect_response=True)
     )
-
-
-def set_gpio_pullup(transport: CommandTransport, pin: str | int) -> SerialResponse:
-    return _firmware_error_response(
-        transport(build_gpio_pullup_command(pin), expect_response=True)
-    )
+    if not response.ok:
+        return response
+    try:
+        ack = parse_gpio_read_response(response.data)
+    except ValueError as exc:
+        return _unexpected_response(response, str(exc))
+    if ack.pin != expected_pin:
+        return _unexpected_response(response, "GPIOR pin mismatch")
+    return response
 
 
 def configure_gpio_mode(
     transport: CommandTransport, pin: str | int, mode: str
 ) -> SerialResponse:
     expected_pin = _gpio_mode_pin(pin)
-    expected_mode = _gpio_mode_token(mode)
+    expected_mode = _gpio_mode_token(mode, pin=expected_pin)
     response = _firmware_error_response(
         transport(
             build_gpio_mode_command(expected_pin, expected_mode),
@@ -807,31 +823,32 @@ def configure_gpio_mode(
     return response
 
 
-def pulse_gpio(
-    transport: CommandTransport,
-    pin: str | int,
-    count: int | None = None,
-    high_ms: int | None = None,
-    gap_ms: int | None = None,
-    *,
-    stop: bool = False,
-) -> SerialResponse:
-    expected_pin = _gpio_mode_pin(pin)
-    if stop:
-        command = build_gpio_pulse_stop_command(expected_pin)
-    else:
-        if count is None or high_ms is None or gap_ms is None:
-            raise ValueError("pulse count, high_ms, and gap_ms are required")
-        command = build_gpio_pulse_command(expected_pin, count, high_ms, gap_ms)
-    response = _firmware_error_response(transport(command, expect_response=True))
+def read_adc(transport: CommandTransport, pin: str) -> SerialResponse:
+    expected_pin = str(pin).strip().upper()
+    response = _firmware_error_response(
+        transport(build_adc_read_command(expected_pin), expect_response=True)
+    )
     if not response.ok:
         return response
     try:
-        ack = parse_gpio_pulse_response(response.data)
+        ack = parse_adc_read_response(response.data)
     except ValueError as exc:
         return _unexpected_response(response, str(exc))
-    if ack.pin != expected_pin or ack.stopped != stop:
-        return _unexpected_response(response, "GPIO pulse pin/mode mismatch")
+    if ack.pin != expected_pin:
+        return _unexpected_response(response, "ADCR pin mismatch")
+    return response
+
+
+def read_frequency(transport: CommandTransport) -> SerialResponse:
+    response = _firmware_error_response(
+        transport(build_freq_command(), expect_response=True)
+    )
+    if not response.ok:
+        return response
+    try:
+        parse_freq_response(response.data)
+    except ValueError as exc:
+        return _unexpected_response(response, str(exc))
     return response
 
 

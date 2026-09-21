@@ -14,7 +14,7 @@ class AppState:
 
     language: str = "zh"
     theme: str = "light"
-    font_size: int = 10
+    font_size: int = 12
     ui_scale: float = 1.0
 
     current_page: str = "home"

@@ -42,8 +42,8 @@ from core.base_tool import (
     SerialResponse,
     execute_register_script_operations,
 )
-from pages.base_page import BasePage, SimpleTooltip
-from pages.gpio_controls import GpioControlPanel, active_serial_identity
+from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
+from pages.gpio_controls import GpioControlGroup, GpioControlPanel, active_serial_identity
 
 
 class AWP1018Page(BasePage):
@@ -68,70 +68,30 @@ class AWP1018Page(BasePage):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(4, weight=1)
+        self.enable_pinned_footer_layout()
+        self.gpio_controls = GpioControlGroup()
 
         header = self.make_title(self, "awp1018")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
-
-        toolbar = ttk.Frame(self, style="Panel.TFrame", padding=(12, 10))
-        toolbar.grid(row=1, column=0, sticky="ew", pady=(0, 12))
-        toolbar.columnconfigure(9, weight=1)
-
-        addr_label = ttk.Label(toolbar, style="Panel.TLabel")
-        self.make_serial_selector(toolbar, page_name=self.page_name, row=0, column=0)
-        addr_label.grid(row=0, column=2, sticky="w", padx=(0, 8))
-        self._labels["current_chip_addr"] = addr_label
-
-        self.addr_combo = ttk.Combobox(
-            toolbar,
-            textvariable=self.addr_var,
-            values=[f"0x{addr:02X}" for addr in self.DEVICE_ADDRS],
-            state="readonly",
-            width=10,
-        )
-        self.addr_combo.grid(row=0, column=3, sticky="w", padx=(0, 12))
-        self.addr_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_addr_changed())
-
-        detect_btn = ttk.Button(toolbar, style="Primary.TButton", command=self.detect_chip)
-        detect_btn.grid(row=0, column=4, sticky="w", padx=(0, 16))
-        self._buttons["detect_chip"] = detect_btn
-
-        mode_label = ttk.Label(toolbar, style="Panel.TLabel")
-        mode_label.grid(row=0, column=5, sticky="w", padx=(0, 10))
-        self._labels["mode_selection"] = mode_label
-
-        self._add_mode_button(toolbar, "awp1018_normal_mode", 6)
-        self._add_mode_button(toolbar, "awp1018_diff_mode", 7)
-        self._add_mode_button(toolbar, "full_mode", 8)
-
-        ttk.Label(toolbar, textvariable=self.status_var, style="Muted.TLabel").grid(
-            row=0, column=9, sticky="e"
-        )
-
-        reg_panel = ttk.Frame(self, style="Panel.TFrame", padding=(12, 10))
-        reg_panel.grid(row=2, column=0, sticky="ew", pady=(0, 12))
-        reg_panel.columnconfigure(8, weight=1)
-        self._build_register_bar(reg_panel)
-
-        self.gpio_controls = GpioControlPanel(
-            self,
-            self.ctx,
-            tr=self.tr,
-            gpio_indexes=(0, 1, 2, 3),
-            on_mode_success=self._on_gpio_mode_success,
-            on_mode_failure=self._on_gpio_mode_failure,
-        )
-        self.gpio_controls.grid(row=3, column=0, sticky="ew", pady=(0, 12))
 
         self.mode_scroll, self.mode_container = self.make_vertical_scroll_area(
             self,
             horizontal=True,
             min_content_width=1320,
         )
-        self.mode_scroll.grid(row=4, column=0, sticky="nsew")
+        self.mode_scroll.grid(row=1, column=0, sticky="nsew")
+        # Keep the first glyph inside the canvas clip edge when a small
+        # window is scrolled fully left.
+        self.mode_container.configure(padding=(8, 0, 8, 0))
         self.mode_container.rowconfigure(0, weight=1)
         self.mode_container.columnconfigure(0, weight=1)
+
+        footer, actions, reg_panel, identity = self.make_merged_footer()
+        footer.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        self._build_state_actions(actions)
+        reg_panel.columnconfigure(8, weight=1)
+        self._build_register_bar(reg_panel)
+        self._build_identity_bar(identity)
 
         self.mode_pages["awp1018_normal_mode"] = AWP1018NormalModePage(
             self.mode_container,
@@ -139,6 +99,9 @@ class AWP1018Page(BasePage):
             import_page_settings=self.import_settings,
             export_page_settings=self.export_settings,
             sync_decoded_settings=self._sync_decoded_page_settings,
+            gpio_group=self.gpio_controls,
+            on_gpio_mode_success=self._on_gpio_mode_success,
+            on_gpio_mode_failure=self._on_gpio_mode_failure,
         )
         self.mode_pages["awp1018_diff_mode"] = AWP1018NormalModePage(
             self.mode_container,
@@ -147,8 +110,17 @@ class AWP1018Page(BasePage):
             import_page_settings=self.import_settings,
             export_page_settings=self.export_settings,
             sync_decoded_settings=self._sync_decoded_page_settings,
+            gpio_group=self.gpio_controls,
+            on_gpio_mode_success=self._on_gpio_mode_success,
+            on_gpio_mode_failure=self._on_gpio_mode_failure,
         )
-        self.mode_pages["full_mode"] = AWP1018FullModePage(self.mode_container, self.ctx)
+        self.mode_pages["full_mode"] = AWP1018FullModePage(
+            self.mode_container,
+            self.ctx,
+            gpio_group=self.gpio_controls,
+            on_gpio_mode_success=self._on_gpio_mode_success,
+            on_gpio_mode_failure=self._on_gpio_mode_failure,
+        )
 
         for page in self.mode_pages.values():
             page.grid(row=0, column=0, sticky="nsew")
@@ -158,14 +130,39 @@ class AWP1018Page(BasePage):
         self._on_addr_changed()
         self.show_mode(self.current_mode)
 
-    def _add_mode_button(self, parent: tk.Misc, key: str, col: int) -> None:
-        btn = ttk.Button(
-            parent,
-            style="Secondary.TButton",
-            command=lambda k=key: self.show_mode(k),
+    def _build_state_actions(self, parent: tk.Misc) -> None:
+        buttons = (
+            ("awp1018_reset", "Secondary.TButton", self.reset_chip),
+            ("awp1018_sleep", "Secondary.TButton", self.sleep_chip),
+            ("shutdown", "Danger.TButton", self.shutdown_chip),
+            ("wake", "Primary.TButton", self.wake_chip),
         )
-        btn.grid(row=0, column=col, sticky="w", padx=(0, 8))
-        self.mode_buttons[key] = btn
+        for column, (key, style, command) in enumerate(buttons):
+            parent.columnconfigure(column, weight=1, uniform="chip_state_actions")
+            button = ttk.Button(parent, style=style, command=command)
+            button.grid(row=0, column=column, sticky="ew", padx=(0, 8))
+            self._buttons[key] = button
+
+    def _build_identity_bar(self, parent: tk.Misc) -> None:
+        addr_label = ttk.Label(parent, style="Panel.TLabel")
+        self.make_serial_selector(parent, page_name=self.page_name, row=0, column=0)
+        addr_label.grid(row=0, column=2, sticky="w", padx=(0, 8))
+        self._labels["current_chip_addr"] = addr_label
+        self.addr_combo = ttk.Combobox(
+            parent,
+            textvariable=self.addr_var,
+            values=[f"0x{addr:02X}" for addr in self.DEVICE_ADDRS],
+            state="readonly",
+            width=10,
+        )
+        self.addr_combo.grid(row=0, column=3, sticky="w", padx=(0, 12))
+        self.addr_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_addr_changed())
+        detect_btn = ttk.Button(parent, style="Primary.TButton", command=self.detect_chip)
+        detect_btn.grid(row=0, column=4, sticky="w", padx=(0, 16))
+        self._buttons["detect_chip"] = detect_btn
+        ttk.Label(parent, textvariable=self.status_var, style="Muted.TLabel").grid(
+            row=0, column=5, sticky="e"
+        )
 
     def _build_register_bar(self, parent: tk.Misc) -> None:
         title_label = ttk.Label(parent, style="Panel.TLabel")
@@ -194,22 +191,6 @@ class AWP1018Page(BasePage):
         write_btn = ttk.Button(parent, style="Primary.TButton", command=self.write_register)
         write_btn.grid(row=0, column=8, sticky="w", padx=(0, 14))
         self._buttons["rw"] = write_btn
-
-        reset_btn = ttk.Button(parent, style="Secondary.TButton", command=self.reset_chip)
-        reset_btn.grid(row=1, column=0, sticky="w", pady=(8, 0), padx=(0, 6))
-        self._buttons["awp1018_reset"] = reset_btn
-
-        sleep_btn = ttk.Button(parent, style="Secondary.TButton", command=self.sleep_chip)
-        sleep_btn.grid(row=1, column=1, sticky="w", pady=(8, 0), padx=(0, 6))
-        self._buttons["awp1018_sleep"] = sleep_btn
-
-        shutdown_btn = ttk.Button(parent, style="Danger.TButton", command=self.shutdown_chip)
-        shutdown_btn.grid(row=1, column=2, sticky="w", pady=(8, 0), padx=(0, 6))
-        self._buttons["shutdown"] = shutdown_btn
-
-        wake_btn = ttk.Button(parent, style="Primary.TButton", command=self.wake_chip)
-        wake_btn.grid(row=1, column=3, sticky="w", pady=(8, 0), padx=(0, 14))
-        self._buttons["wake"] = wake_btn
 
     def _parse_int(self, text: str) -> int:
         return int(text.strip(), 0)
@@ -713,8 +694,7 @@ class AWP1018Page(BasePage):
         page.grid()
         if update_chip and mode != "awp1018_diff_mode" and hasattr(page, "on_show"):
             page.on_show()
-        for key, btn in self.mode_buttons.items():
-            btn.configure(style="Selected.TButton" if key == mode else "Secondary.TButton")
+        self._sync_mode_button_styles()
 
     def _set_diff_mode_registers(self, enabled: bool) -> None:
         if not self.ctx.serial.is_connected:
@@ -992,6 +972,9 @@ class AWP1018NormalModePage(BasePage):
             [int, dict[int, int], dict[int, tuple[int, int, int, int]]],
             None,
         ] | None = None,
+        gpio_group: GpioControlGroup | None = None,
+        on_gpio_mode_success: Callable[[str, str], None] | None = None,
+        on_gpio_mode_failure: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(parent, ctx)
         self.diff_mode = diff_mode
@@ -1000,6 +983,9 @@ class AWP1018NormalModePage(BasePage):
         self.sync_decoded_settings = sync_decoded_settings or (
             lambda _address, _registers, _descriptors: None
         )
+        self._gpio_group = gpio_group
+        self._on_gpio_mode_success = on_gpio_mode_success
+        self._on_gpio_mode_failure = on_gpio_mode_failure
 
         self.stage_vars: dict[str, dict[str, tk.Variable]] = {}
         self.active_stage = tk.StringVar(value="Stage0")
@@ -1100,7 +1086,7 @@ class AWP1018NormalModePage(BasePage):
             key = f"button_mode_preset_{index + 1}"
             button = ttk.Button(
                 preset_frame,
-                style="Secondary.TButton",
+                style="Bg.TButton",
                 command=lambda preset_index=index: self.apply_software_preset(preset_index),
             )
             button.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 6, 0))
@@ -1109,7 +1095,7 @@ class AWP1018NormalModePage(BasePage):
 
         import_button = ttk.Button(
             preset_frame,
-            style="Secondary.TButton",
+            style="Bg.TButton",
             command=self.import_page_settings,
         )
         import_button.grid(row=0, column=3, sticky="ew", padx=(6, 0))
@@ -1118,7 +1104,7 @@ class AWP1018NormalModePage(BasePage):
 
         export_button = ttk.Button(
             preset_frame,
-            style="Secondary.TButton",
+            style="Bg.TButton",
             command=self.export_page_settings,
         )
         export_button.grid(row=0, column=4, sticky="ew", padx=(6, 0))
@@ -1148,13 +1134,29 @@ class AWP1018NormalModePage(BasePage):
             ("read_slot", self.read_board_preset),
         )
         for column, (key, command) in enumerate(actions, start=1):
-            button = ttk.Button(preset_frame, style="Secondary.TButton", command=command)
+            button = ttk.Button(preset_frame, style="Bg.TButton", command=command)
             button.grid(row=1, column=column, sticky="ew", pady=(8, 0), padx=(6, 0))
             self._buttons[key] = button
             self._board_preset_buttons[key] = button
             self._bind_board_preset_tooltip(button, key)
 
         return header
+
+    def _attach_gpio_controls(self, parent: tk.Misc, row: int, *, columnspan: int = 4) -> int:
+        group = getattr(self, "_gpio_group", None)
+        if group is None:
+            return row
+        panel = GpioControlPanel(
+            parent,
+            self.ctx,
+            tr=self.tr,
+            gpio_indexes=(0, 1, 2, 3),
+            on_mode_success=self._on_gpio_mode_success,
+            on_mode_failure=self._on_gpio_mode_failure,
+        )
+        panel.grid(row=row, column=0, columnspan=columnspan, sticky="ew", pady=(12, 0))
+        group.add(panel)
+        return row + 1
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -1216,6 +1218,7 @@ class AWP1018NormalModePage(BasePage):
         if self.diff_mode:
             self._build_diff_channel_status(left, row)
             row += 1
+        row = self._attach_gpio_controls(left, row)
 
         self.tabs = ttk.Notebook(right)
         self.tabs.grid(row=0, column=0, sticky="nsew")
@@ -1722,7 +1725,10 @@ class AWP1018NormalModePage(BasePage):
                 highlightbackground=self.colors["border"],
             )
             box.grid(row=0, column=channel, sticky="ew", padx=(0 if channel == 0 else 6, 0))
-            box.grid_propagate(False)
+            # Keep the compact 54px baseline at normal scaling, but allow the
+            # two text rows to request more height when Tk logical scaling or
+            # a larger user font makes their glyph boxes taller.  The parent
+            # mode scroll area carries the resulting extra content height.
             box.columnconfigure(0, weight=1)
             box.rowconfigure(0, weight=1)
             box.rowconfigure(1, weight=1)
@@ -2343,7 +2349,7 @@ class AWP1018NormalModePage(BasePage):
             )
             row += 1
 
-            apply_btn = ttk.Button(controls, style="Primary.TButton", width=18, command=self.apply_rom_waveform_selection)
+            apply_btn = ttk.Button(controls, style="Primary.TButton", width=-16, command=self.apply_rom_waveform_selection)
             apply_btn.grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
             self._buttons["awp1018_write_rom_waveform"] = apply_btn
             row += 1
@@ -5202,8 +5208,8 @@ class AWP1018NormalModePage(BasePage):
 class AWP1018FullModePage(AWP1018NormalModePage):
     page_name = "full_mode"
 
-    def __init__(self, parent: tk.Misc, ctx: Any) -> None:
-        super().__init__(parent, ctx, diff_mode=False)
+    def __init__(self, parent: tk.Misc, ctx: Any, **kwargs: Any) -> None:
+        super().__init__(parent, ctx, diff_mode=False, **kwargs)
 
     def _build_ui(self) -> None:
         self.full_status_value_var = tk.StringVar(value="")
@@ -5229,12 +5235,12 @@ class AWP1018FullModePage(AWP1018NormalModePage):
 
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=2, minsize=350)
-        body.columnconfigure(1, weight=4, minsize=520)
+        body.columnconfigure(0, weight=0, minsize=760)
+        body.columnconfigure(1, weight=4, minsize=360)
         body.columnconfigure(2, weight=3, minsize=360)
         body.rowconfigure(0, weight=1)
 
-        left = self._make_full_scroll_column(body, 0, padx=(0, 12))
+        left = self._make_full_scroll_column(body, 0, padx=(0, 12), propagate_width=True)
         middle = self._make_full_scroll_column(body, 1, padx=(0, 12))
 
         right = ttk.Frame(body, style="Panel.TFrame", padding=0)
@@ -5261,13 +5267,20 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         self._show_stage("Stage0")
         self._draw_rom_waveform()
 
-    def _make_full_scroll_column(self, parent: tk.Misc, column: int, *, padx: tuple[int, int]) -> ttk.Frame:
+    def _make_full_scroll_column(
+        self,
+        parent: tk.Misc,
+        column: int,
+        *,
+        padx: tuple[int, int],
+        propagate_width: bool = False,
+    ) -> ttk.Frame:
         panel = ttk.Frame(parent, style="Panel.TFrame", padding=0)
         panel.grid(row=0, column=column, sticky="nsew", padx=padx)
         panel.rowconfigure(0, weight=1)
         panel.columnconfigure(0, weight=1)
 
-        scroll, content = self.make_vertical_scroll_area(panel)
+        scroll, content = self.make_vertical_scroll_area(panel, propagate_width=propagate_width)
         scroll.grid(row=0, column=0, sticky="nsew")
         content.configure(style="Panel.TFrame", padding=14)
         return content
@@ -5309,6 +5322,8 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         row += 1
 
         self._build_control_buttons(left, row)
+        row += 1
+        self._attach_gpio_controls(left, row)
 
     def _build_full_middle_column(self, middle: tk.Misc) -> None:
         middle.columnconfigure(0, weight=1)
@@ -5374,16 +5389,30 @@ class AWP1018FullModePage(AWP1018NormalModePage):
 
         window = tk.Toplevel(self)
         window.title(self.tr("awp1018_waveform_selector"))
-        window.geometry("1120x760")
-        window.minsize(980, 640)
+        fit_toplevel_to_screen(
+            window,
+            preferred_width=1120,
+            preferred_height=760,
+            minimum_width=480,
+            minimum_height=320,
+        )
         window.configure(bg=self.colors["bg"])
         window.rowconfigure(0, weight=1)
         window.columnconfigure(0, weight=1)
         window.protocol("WM_DELETE_WINDOW", self._close_rom_selector_window)
         self._rom_selector_window = window
 
-        panel = ttk.Frame(window, style="Panel.TFrame", padding=14)
-        panel.grid(row=0, column=0, sticky="nsew", padx=18, pady=18)
+        scroll_area = VerticalScrollArea(
+            window,
+            self.ctx,
+            horizontal=True,
+            min_content_width=980,
+        )
+        scroll_area.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self._rom_selector_scroll_area = scroll_area
+        panel = ttk.Frame(scroll_area.content, style="Panel.TFrame", padding=14)
+        panel.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        scroll_area.content.columnconfigure(0, weight=1)
 
         before_labels = set(self._labels)
         before_buttons = set(self._buttons)

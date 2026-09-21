@@ -7,6 +7,7 @@ from tkinter import messagebox, ttk
 from typing import Any, Callable
 
 from core.awp1221_sinc import (
+    awp1221_sinc_duration_us,
     awp1221_sinc_parse_params,
     awp1221_sinc_plan_key,
     awp1221_sinc_slice_windows,
@@ -59,7 +60,7 @@ AWP1221_SRAM_MODE_MASK = 0x0003
 AWP1221_SRAM_WRITE_READ_MODE = 0x0003
 AWP1221_SRAM_PLAY_MODE = 0x0002
 AWP1221_VPK_CODE_MASK = 0x001F
-AWP1221_VPK_LSB_VOLTS = 200.0 / 32
+AWP1221_VPK_LSB_VOLTS = 6.25
 AWP1221_FINE_AMPLITUDE_CODE_MASK = 0x0003
 AWP1221_FINE_AMPLITUDE_LSB_VOLTS = 200.0 / 128
 AWP1221_OFFSET_CODE_MASK = 0x007F
@@ -519,7 +520,7 @@ def awp1221_waveform_offset_voltage(offset_code: int) -> float:
 def awp1221_waveform_offset_label(offset_code: int) -> str:
     voltage = awp1221_waveform_offset_voltage(offset_code)
     voltage_text = "0" if voltage == 0 else f"{voltage:+.5f}".rstrip("0").rstrip(".")
-    return f"{offset_code:07b} - {voltage_text} V"
+    return f"0x{offset_code:02X} - {voltage_text} V"
 
 
 def awp1221_waveform_coarse_amplitude_voltage(code: int) -> float:
@@ -765,7 +766,7 @@ class AWP1221ModePage(BasePage):
     )
     PHASE_OPTIONS = awp1221_phase_options("SINE", 0b00)
     VPK_OPTIONS = tuple(
-        f"{code:05b} - {awp1221_waveform_coarse_amplitude_voltage(code):g} V"
+        f"0x{code:02X} - {awp1221_waveform_coarse_amplitude_voltage(code):.2f} V"
         for code in range(AWP1221_VPK_CODE_MASK + 1)
     )
     OFFSET_OPTIONS = tuple(
@@ -814,7 +815,7 @@ class AWP1221ModePage(BasePage):
                     "ovv_time": "500 us",
                     "jump_target": "Stage1",
                     "event_mode": "press",
-                    "threshold": "600",
+                    "threshold": "400",
                     "debounce": False,
                     "use_high_12_bits": True,
                     "wave": "slice18",
@@ -824,7 +825,7 @@ class AWP1221ModePage(BasePage):
                     "ovv_time": "500 us",
                     "jump_target": "Stage0",
                     "event_mode": "release",
-                    "threshold": "450",
+                    "threshold": "350",
                     "debounce": False,
                     "use_high_12_bits": True,
                     "wave": "slice18",
@@ -834,7 +835,7 @@ class AWP1221ModePage(BasePage):
             "settings": {
                 "debounce_time": "100",
                 "sample_update": "6 us",
-                "zero_time": "64 ms",
+                "zero_time": "32 ms",
                 "press_return_bit_time": "1600 us",
                 "release_return_bit_time": "1600 us",
                 "zps_enabled": True,
@@ -846,9 +847,9 @@ class AWP1221ModePage(BasePage):
                 "serial": AWP1221_SINC_SERIAL_OPTIONS[0],
                 "waveform": "SINC",
                 "depth": "512",
-                "max_voltage": "60",
+                "max_voltage": "100",
                 "min_voltage": "12",
-                "times_us": ("8", "12", "20"),
+                "times_us": ("8", "10", "50"),
             },
             "extra_register_writes": _BUTTON_SOFTWARE_PRESET_EXTRA_WRITES,
         },
@@ -862,6 +863,20 @@ class AWP1221ModePage(BasePage):
                 "depth": "512",
                 "max_voltage": "80",
                 "min_voltage": "12",
+                "times_us": ("8", "8", "15"),
+            },
+            "extra_register_writes": _BUTTON_SOFTWARE_PRESET_EXTRA_WRITES,
+        },
+        {
+            "stages": _BUTTON_SOFTWARE_PRESET_STAGES,
+            "settings": _BUTTON_SOFTWARE_PRESET_SETTINGS,
+            "waveform": {
+                "auto_serial": True,
+                "serial": AWP1221_SINC_SERIAL_OPTIONS[0],
+                "waveform": "SINC",
+                "depth": "512",
+                "max_voltage": "80",
+                "min_voltage": "20",
                 "times_us": ("8", "8", "15"),
             },
             "extra_register_writes": _BUTTON_SOFTWARE_PRESET_EXTRA_WRITES,
@@ -996,19 +1011,19 @@ class AWP1221ModePage(BasePage):
             "awp1221_export_reserved",
         )
         for column, key in enumerate(preset_keys):
-            button = ttk.Button(preset_frame, style="Secondary.TButton", state="disabled")
+            button = ttk.Button(preset_frame, style="Bg.TButton", state="disabled")
             button.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 6, 0))
             self._buttons[key] = button
 
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=1)
+        body.columnconfigure(0, weight=0)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
 
-        left_scroll, left = self.make_vertical_scroll_area(body)
+        left_scroll, left = self.make_vertical_scroll_area(body, propagate_width=True)
         left_scroll.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        left.configure(style="Panel.TFrame", padding=14)
+        left.configure(style="Panel.TFrame", padding=(14, 14, 14, 28))
         left.columnconfigure(0, weight=1)
         self._build_chip_en_section(left, row=0)
         self._labels["awp1221_adc"] = ttk.Label(left, style="SectionTitle.TLabel")
@@ -1038,8 +1053,8 @@ class AWP1221ModePage(BasePage):
             self._build_adc_stage(stage, stage_index)
 
         self._build_adc_settings(left, row=4)
-        self._build_gpio_settings(left, row=5)
-        self._build_control_buttons(left, row=6)
+        self._build_control_buttons(left, row=5)
+        self._build_gpio_settings(left, row=6)
 
         right = ttk.Frame(body, style="Panel.TFrame", padding=10)
         right.grid(row=0, column=1, sticky="nsew")
@@ -1074,19 +1089,19 @@ class AWP1221ModePage(BasePage):
 
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=1)
-        body.columnconfigure(1, weight=1)
+        body.columnconfigure(0, weight=1, uniform="awp1221_button_panels")
+        body.columnconfigure(1, weight=1, uniform="awp1221_button_panels")
         body.rowconfigure(0, weight=1)
 
         adc_scroll, adc_panel = self.make_vertical_scroll_area(body)
         adc_scroll.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        adc_panel.configure(style="Panel.TFrame", padding=14)
+        adc_panel.configure(style="Panel.TFrame", padding=(14, 14, 14, 28))
         adc_panel.columnconfigure(0, weight=1)
         self._build_chip_en_section(adc_panel, row=0)
         self._build_button_adc_panel(adc_panel, row=1)
         self._build_adc_settings(adc_panel, row=4)
-        self._build_gpio_settings(adc_panel, row=5)
-        self._build_control_buttons(adc_panel, row=6)
+        self._build_control_buttons(adc_panel, row=5)
+        self._build_gpio_settings(adc_panel, row=6)
 
         panel = ttk.Frame(body, style="Panel.TFrame", padding=14)
         panel.grid(row=0, column=1, sticky="nsew")
@@ -1116,6 +1131,7 @@ class AWP1221ModePage(BasePage):
         form_column.rowconfigure(0, weight=1)
         controls_scroll, controls = self.make_vertical_scroll_area(form_column)
         controls_scroll.grid(row=0, column=0, sticky="nsew")
+        controls_scroll.canvas.configure(width=280)
         controls.configure(style="Panel.TFrame")
         controls.columnconfigure(1, weight=1)
 
@@ -1247,9 +1263,9 @@ class AWP1221ModePage(BasePage):
         preview.grid(row=1, column=1, sticky="nsew")
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(2, weight=1)
-        metric_label = ttk.Label(preview, textvariable=self.rom_metric_var, style="Panel.TLabel")
+        metric_label = ttk.Label(preview, textvariable=self.rom_metric_var, style="Panel.TLabel", wraplength=280)
         metric_label.grid(row=0, column=0, sticky="w")
-        frequency_label = ttk.Label(preview, textvariable=self.rom_frequency_var, style="Muted.TLabel")
+        frequency_label = ttk.Label(preview, textvariable=self.rom_frequency_var, style="Muted.TLabel", wraplength=280)
         frequency_label.grid(row=1, column=0, sticky="w", pady=(4, 8))
         self._selector_widgets["awp1221_rom_preview_captions"] = [metric_label, frequency_label]
         colors = getattr(self.ctx, "colors", {})
@@ -1258,6 +1274,7 @@ class AWP1221ModePage(BasePage):
             bg=colors.get("canvas_bg", "#FFFFFF"),
             highlightthickness=1,
             highlightbackground=colors.get("border", "#CBD5E1"),
+            width=280,
             height=280,
         )
         self.rom_canvas.grid(row=2, column=0, sticky="nsew")
@@ -1311,9 +1328,9 @@ class AWP1221ModePage(BasePage):
 
     def _build_button_adc_stage(self, parent: ttk.Frame, stage_index: int) -> None:
         parent.columnconfigure(0, weight=0, minsize=110)
-        parent.columnconfigure(1, weight=1)
+        parent.columnconfigure(1, weight=1, minsize=120)
         parent.columnconfigure(2, weight=0, minsize=110)
-        parent.columnconfigure(3, weight=1)
+        parent.columnconfigure(3, weight=1, minsize=120)
 
         if stage_index == 0:
             variables = {
@@ -1373,7 +1390,7 @@ class AWP1221ModePage(BasePage):
             variable=variables["event_mode"],
             value="release",
         )
-        release_radio.grid(row=0, column=1, sticky="w", padx=(16, 0))
+        release_radio.grid(row=1, column=0, sticky="w", pady=(4, 0))
         self._register_text(release_radio, "awp1221_release_mode")
 
         self._form_label(parent, "awp1221_event_waveform", row=3, column=0)
@@ -1597,11 +1614,18 @@ class AWP1221ModePage(BasePage):
                 command = self._show_preset_pending
             button = ttk.Button(
                 preset_frame,
-                style="Secondary.TButton",
+                style="Bg.TButton",
                 command=command,
             )
             button.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 6, 0))
             self._buttons[key] = button
+            if key.startswith("button_mode_preset_"):
+                self._tooltips.append(
+                    SimpleTooltip(
+                        button,
+                        lambda preset_index=column: self._software_preset_tooltip_text(preset_index),
+                    )
+                )
 
         slot_cell = ttk.Frame(preset_frame, style="App.TFrame")
         slot_cell.grid(row=1, column=0, sticky="ew", pady=(8, 0))
@@ -1619,7 +1643,7 @@ class AWP1221ModePage(BasePage):
         for column, key in enumerate(("save_to_board", "set_active", "apply_slot", "read_slot"), start=1):
             button = ttk.Button(
                 preset_frame,
-                style="Secondary.TButton",
+                style="Bg.TButton",
                 command=self._show_preset_pending,
             )
             button.grid(row=1, column=column, sticky="ew", pady=(8, 0), padx=(6, 0))
@@ -1629,6 +1653,22 @@ class AWP1221ModePage(BasePage):
         messagebox.showerror(
             self.tr("error"),
             "CFG_UNSUPPORTED: AWP1221 Type-4 board presets are reserved for a later phase.",
+        )
+
+    def _software_preset_tooltip_text(self, preset_index: int) -> str:
+        if not 0 <= preset_index < len(self.BUTTON_SOFTWARE_PRESETS):
+            return ""
+        waveform = self.BUTTON_SOFTWARE_PRESETS[preset_index]["waveform"]
+        times = tuple(int(value) for value in waveform["times_us"])
+        depth = int(waveform["depth"])
+        period_us = awp1221_sinc_duration_us(depth, *times)
+        return self.tr(
+            "sinc_software_preset_tooltip",
+            max_voltage=waveform["max_voltage"],
+            min_voltage=waveform["min_voltage"],
+            period_ms=f"{period_us / 1000:.3f}",
+            repeat=1,
+            segment_times=f"{times[0]}/{times[1]}/{times[2]} us",
         )
 
     def apply_software_preset(self, preset_index: int) -> bool:
@@ -2350,7 +2390,10 @@ class AWP1221ModePage(BasePage):
 
     @staticmethod
     def _parse_binary_option(value: str) -> int:
-        return int(str(value).strip().split(" ", 1)[0], 2)
+        token = str(value).strip().split(" ", 1)[0]
+        if token.lower().startswith("0x"):
+            return int(token, 16)
+        return int(token, 2)
 
     def _read_register_value(self, register: int, device_addr: int | None = None) -> int:
         address = self.device_addr() if device_addr is None else device_addr
@@ -3174,15 +3217,15 @@ class AWP1221ModePage(BasePage):
         if host is None:
             return
         section = ttk.Frame(parent, style="Panel.TFrame")
-        section.grid(row=row, column=0, sticky="ew", pady=(16, 0))
+        section.grid(row=row, column=0, sticky="ew", pady=(12, 8))
         section.columnconfigure(1, weight=1)
         title = ttk.Label(section, style="SectionTitle.TLabel")
-        title.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+        title.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
         self._register_text(title, "awp1221_gpio_settings")
         for index, (name, pin) in enumerate(AWP1221_GPIO_PINS):
             self._build_gpio_channel(section, host, index, name, pin, row=1 + index)
         buttons = ttk.Frame(section, style="Panel.TFrame")
-        buttons.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        buttons.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(4, 0))
         buttons.columnconfigure(0, weight=1)
         buttons.columnconfigure(1, weight=1)
         read_btn = ttk.Button(
@@ -3211,11 +3254,18 @@ class AWP1221ModePage(BasePage):
         row: int,
     ) -> None:
         frame = ttk.Frame(parent, style="Panel.TFrame")
-        frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+        frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, 4))
         frame.columnconfigure(1, weight=1)
         heading = ttk.Label(frame, style="Panel.TLabel")
-        heading.grid(row=0, column=0, columnspan=4, sticky="w")
+        heading.grid(row=0, column=0, columnspan=2, sticky="w")
         heading.configure(text=f"{name} ({pin})")
+        mcu_label = ttk.Label(
+            frame,
+            textvariable=host.gpio_mcu_role_vars[index],
+            style="Muted.TLabel",
+        )
+        mcu_label.grid(row=0, column=2, columnspan=2, sticky="e")
+        host._refresh_gpio_mcu_label(index)
         self._form_label(frame, "awp1221_gpio_category", row=1, column=0)
         category = ttk.Combobox(
             frame,
@@ -3224,7 +3274,7 @@ class AWP1221ModePage(BasePage):
             state="readonly",
             width=22,
         )
-        category.grid(row=1, column=1, sticky="ew", pady=5)
+        category.grid(row=1, column=1, sticky="ew", pady=3)
         category.bind(
             "<<ComboboxSelected>>",
             lambda _event, channel=index: host._on_gpio_category_selected(channel),
@@ -3237,21 +3287,14 @@ class AWP1221ModePage(BasePage):
             state="readonly",
             width=28,
         )
-        function.grid(row=1, column=3, sticky="ew", pady=5)
+        function.grid(row=1, column=3, sticky="ew", pady=3)
         host.gpio_function_combos[index].append(function)
         self._form_label(frame, "awp1221_gpio_od", row=2, column=0)
         od = ttk.Checkbutton(frame, variable=host.gpio_od_vars[index])
-        od.grid(row=2, column=1, sticky="w", pady=5)
+        od.grid(row=2, column=1, sticky="w", pady=3)
         self._register_text(od, "awp1221_gpio_open_drain")
-        mcu_label = ttk.Label(
-            frame,
-            textvariable=host.gpio_mcu_role_vars[index],
-            style="Muted.TLabel",
-        )
-        mcu_label.grid(row=2, column=2, columnspan=2, sticky="w")
-        host._refresh_gpio_mcu_label(index)
         drive = ttk.Frame(frame, style="Panel.TFrame")
-        drive.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(4, 0))
+        drive.grid(row=2, column=2, columnspan=2, sticky="e", pady=3)
         high_btn = ttk.Button(
             drive,
             style="Secondary.TButton",
@@ -3264,44 +3307,15 @@ class AWP1221ModePage(BasePage):
             style="Secondary.TButton",
             command=lambda channel=index: host.gpio_drive(channel, False),
         )
-        low_btn.grid(row=0, column=1, sticky="w", padx=(0, 6))
+        low_btn.grid(row=0, column=1, sticky="w")
         self._register_text(low_btn, "awp1221_gpio_drive_low")
-        pulse_btn = ttk.Button(
-            drive,
-            style="Primary.TButton",
-            command=lambda channel=index: host.send_gpio_pulse(channel),
-        )
-        pulse_btn.grid(row=0, column=2, sticky="w", padx=(0, 6))
-        self._register_text(pulse_btn, "awp1221_gpio_pulse")
-        stop_btn = ttk.Button(
-            drive,
-            style="Secondary.TButton",
-            command=lambda channel=index: host.stop_gpio_pulse(channel),
-        )
-        stop_btn.grid(row=0, column=3, sticky="w")
-        self._register_text(stop_btn, "awp1221_gpio_pulse_stop")
-        host.gpio_action_widgets[index].extend((high_btn, low_btn, pulse_btn, stop_btn))
+        host.gpio_action_widgets[index].extend((high_btn, low_btn))
         host._sync_gpio_actions(index)
-        self._form_label(frame, "awp1221_gpio_high_ms", row=4, column=0)
-        ttk.Entry(frame, textvariable=host.gpio_high_ms_vars[index], width=10).grid(
-            row=4, column=1, sticky="w", pady=5
-        )
-        self._form_label(frame, "awp1221_gpio_count", row=4, column=2)
-        ttk.Entry(frame, textvariable=host.gpio_count_vars[index], width=10).grid(
-            row=4, column=3, sticky="w", pady=5
-        )
-        self._form_label(frame, "awp1221_gpio_gap_ms", row=5, column=0)
-        ttk.Entry(frame, textvariable=host.gpio_gap_ms_vars[index], width=10).grid(
-            row=5, column=1, sticky="w", pady=5
-        )
         ttk.Label(frame, textvariable=host.gpio_chip_status_vars[index], style="Muted.TLabel").grid(
-            row=6, column=0, columnspan=2, sticky="w"
+            row=3, column=0, columnspan=2, sticky="w"
         )
         ttk.Label(frame, textvariable=host.gpio_mcu_status_vars[index], style="Muted.TLabel").grid(
-            row=6, column=2, sticky="w"
-        )
-        ttk.Label(frame, textvariable=host.gpio_pulse_status_vars[index], style="Muted.TLabel").grid(
-            row=6, column=3, sticky="w"
+            row=3, column=2, columnspan=2, sticky="e"
         )
 
     def _build_adc_settings(self, parent: ttk.Frame, *, row: int) -> None:
@@ -3360,7 +3374,7 @@ class AWP1221ModePage(BasePage):
         ).grid(row=3, column=1, sticky="ew", pady=5)
 
         zps_frame = ttk.Frame(section, style="Panel.TFrame")
-        zps_frame.grid(row=3, column=2, columnspan=2, sticky="w", padx=(12, 0), pady=5)
+        zps_frame.grid(row=4, column=0, columnspan=4, sticky="w", pady=(8, 0))
         zps_check = ttk.Checkbutton(zps_frame, variable=self.zps_enabled_var)
         zps_check.grid(row=0, column=0, sticky="w")
         self._register_text(zps_check, "awp1221_zps_enable")
@@ -3375,10 +3389,10 @@ class AWP1221ModePage(BasePage):
         self._add_help_button(zps_frame, 0, 5, "awp1221_sleep_sensitivity_help")
 
         adc_value_label = ttk.Label(section, style="Panel.TLabel")
-        adc_value_label.grid(row=4, column=0, sticky="w", pady=(10, 5), padx=(0, 8))
+        adc_value_label.grid(row=5, column=0, sticky="w", pady=(10, 5), padx=(0, 8))
         self._register_text(adc_value_label, "button_adc_value")
         ttk.Entry(section, textvariable=self.adc_value_var, state="readonly").grid(
-            row=4,
+            row=5,
             column=1,
             columnspan=3,
             sticky="ew",
@@ -3386,7 +3400,7 @@ class AWP1221ModePage(BasePage):
         )
 
         adc_buttons = ttk.Frame(section, style="Panel.TFrame")
-        adc_buttons.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+        adc_buttons.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(2, 0))
         for column in range(3):
             adc_buttons.columnconfigure(column, weight=1)
 
@@ -4091,45 +4105,34 @@ class AWP1221Page(BasePage):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(3, weight=1)
+        self.enable_pinned_footer_layout()
 
         self.make_title(self, "awp1221").grid(row=0, column=0, sticky="ew", pady=(0, 12))
-        toolbar = ttk.Frame(self, style="Panel.TFrame", padding=(12, 10))
-        toolbar.grid(row=1, column=0, sticky="ew", pady=(0, 10))
-        toolbar.columnconfigure(9, weight=1)
-        self.make_serial_selector(toolbar, page_name=self.page_name, row=0, column=0)
-        self._labels["current_chip_addr"] = ttk.Label(toolbar, style="Panel.TLabel")
-        self._labels["current_chip_addr"].grid(row=0, column=2, padx=(0, 8))
-        self.addr_combo = ttk.Combobox(
-            toolbar,
-            textvariable=self.addr_var,
-            values=[f"0x{addr:02X}" for addr in self.DEVICE_ADDRS],
-            state="readonly",
-            width=8,
+
+        # The footer stays visible on short windows, so the mode area must
+        # own its scrolling.  Without this wrapper the full mode page (often
+        # >900px tall) extended below the viewport and had no reachable
+        # bottom controls at 640x480 or when the user enlarged the font.
+        self.mode_scroll, mode_container = self.make_vertical_scroll_area(
+            self,
+            horizontal=True,
         )
-        self.addr_combo.grid(row=0, column=3, padx=(0, 10))
-        self.addr_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_addr_changed())
-        detect_btn = ttk.Button(toolbar, style="Primary.TButton", command=self.detect_chip)
-        detect_btn.grid(row=0, column=4, padx=(0, 14))
-        self._buttons["detect_chip"] = detect_btn
-        self._labels["mode_selection"] = ttk.Label(toolbar, style="Panel.TLabel")
-        self._labels["mode_selection"].grid(row=0, column=5, padx=(0, 8))
-        self._add_mode_button(toolbar, "button_mode", 6)
-        self._add_mode_button(toolbar, "full_mode", 7)
-        ttk.Label(toolbar, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=9, sticky="e")
-
-        register_panel = ttk.Frame(self, style="Panel.TFrame", padding=(12, 10))
-        register_panel.grid(row=2, column=0, sticky="ew", pady=(0, 12))
-        register_panel.columnconfigure(8, weight=1)
-        self._build_register_bar(register_panel)
-
-        self.gpio_controls = NullGpioControlPanel()
-
-        mode_container = ttk.Frame(self, style="App.TFrame")
-        mode_container.grid(row=3, column=0, sticky="nsew")
+        self.mode_scroll.grid(row=1, column=0, sticky="nsew")
+        # Leave a small gutter so mode headers and panel edges are not flush
+        # with the inner canvas clip boundary at narrow widths.
+        mode_container.configure(padding=(8, 0, 8, 0))
         mode_container.columnconfigure(0, weight=1)
         mode_container.rowconfigure(0, weight=1)
+        self.mode_container = mode_container
+
+        footer, actions, register_panel, identity = self.make_merged_footer()
+        footer.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        self._build_state_actions(actions)
+        register_panel.columnconfigure(8, weight=1)
+        self._build_register_bar(register_panel)
+        self._build_identity_bar(identity)
+
+        self.gpio_controls = NullGpioControlPanel()
         for mode in ("button_mode", "full_mode"):
             page = AWP1221ModePage(
                 mode_container,
@@ -4148,6 +4151,41 @@ class AWP1221Page(BasePage):
         self._on_addr_changed()
         self.show_mode("button_mode")
         self.refresh_language()
+
+    def _build_state_actions(self, parent: ttk.Frame) -> None:
+        button_styles = {
+            "awp1221_reset": "Secondary.TButton",
+            "awp1221_sleep": "Secondary.TButton",
+            "awp1221_shutdown": "Danger.TButton",
+            "awp1221_default_state": "Primary.TButton",
+        }
+        for column, (key, value) in enumerate(AWP1221_STATE_COMMANDS.items()):
+            parent.columnconfigure(column, weight=1, uniform="chip_state_actions")
+            button = ttk.Button(
+                parent,
+                style=button_styles[key],
+                command=lambda command_value=value: self.write_chip_state(command_value),
+            )
+            button.grid(row=0, column=column, sticky="ew", padx=(0, 8))
+            self._buttons[key] = button
+
+    def _build_identity_bar(self, parent: ttk.Frame) -> None:
+        self.make_serial_selector(parent, page_name=self.page_name, row=0, column=0)
+        self._labels["current_chip_addr"] = ttk.Label(parent, style="Panel.TLabel")
+        self._labels["current_chip_addr"].grid(row=0, column=2, padx=(0, 8))
+        self.addr_combo = ttk.Combobox(
+            parent,
+            textvariable=self.addr_var,
+            values=[f"0x{addr:02X}" for addr in self.DEVICE_ADDRS],
+            state="readonly",
+            width=8,
+        )
+        self.addr_combo.grid(row=0, column=3, padx=(0, 10))
+        self.addr_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_addr_changed())
+        detect_btn = ttk.Button(parent, style="Primary.TButton", command=self.detect_chip)
+        detect_btn.grid(row=0, column=4, padx=(0, 14))
+        self._buttons["detect_chip"] = detect_btn
+        ttk.Label(parent, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=5, sticky="e")
 
     def _build_register_bar(self, parent: ttk.Frame) -> None:
         self._labels["read_write_registers"] = ttk.Label(parent, style="Panel.TLabel")
@@ -4174,21 +4212,6 @@ class AWP1221Page(BasePage):
         self._buttons["rr"] = read_btn
         self._buttons["rw"] = write_btn
 
-        button_styles = {
-            "awp1221_reset": "Secondary.TButton",
-            "awp1221_sleep": "Secondary.TButton",
-            "awp1221_shutdown": "Danger.TButton",
-            "awp1221_default_state": "Primary.TButton",
-        }
-        for column, (key, value) in enumerate(AWP1221_STATE_COMMANDS.items()):
-            button = ttk.Button(
-                parent,
-                style=button_styles[key],
-                command=lambda command_value=value: self.write_chip_state(command_value),
-            )
-            button.grid(row=1, column=column, sticky="w", pady=(8, 0), padx=(0, 6 if column < 3 else 14))
-            self._buttons[key] = button
-
     def _init_gpio_state(self) -> None:
         self.gpio_controller = Awp1221GpioController(self.ctx.serial, self._device_addr)
         self.gpio_category_vars = [
@@ -4197,15 +4220,11 @@ class AWP1221Page(BasePage):
         ]
         self.gpio_function_vars = [tk.StringVar(value=""), tk.StringVar(value="")]
         self.gpio_od_vars = [tk.BooleanVar(value=False), tk.BooleanVar(value=False)]
-        self.gpio_high_ms_vars = [tk.StringVar(value="10"), tk.StringVar(value="10")]
-        self.gpio_count_vars = [tk.StringVar(value="1"), tk.StringVar(value="1")]
-        self.gpio_gap_ms_vars = [tk.StringVar(value="10"), tk.StringVar(value="10")]
         self.gpio_chip_status_vars = [
             tk.StringVar(value=""),
             tk.StringVar(value=""),
         ]
         self.gpio_mcu_status_vars = [tk.StringVar(value=""), tk.StringVar(value="")]
-        self.gpio_pulse_status_vars = [tk.StringVar(value=""), tk.StringVar(value="")]
         self.gpio_mcu_role_vars = [tk.StringVar(value=""), tk.StringVar(value="")]
         self.gpio_function_combos: list[list[ttk.Combobox]] = [[], []]
         self.gpio_action_widgets: list[list[tk.Widget]] = [[], []]
@@ -4242,7 +4261,7 @@ class AWP1221Page(BasePage):
         enabled = False
         controller = getattr(self, "gpio_controller", None)
         if controller is not None:
-            enabled = controller.pulse_allowed(channel)
+            enabled = controller.drive_allowed(channel)
         state = "normal" if enabled else "disabled"
         widgets = getattr(self, "gpio_action_widgets", None)
         if not widgets:
@@ -4281,8 +4300,6 @@ class AWP1221Page(BasePage):
                 self.gpio_mcu_status_vars[index].set(self.tr("awp1221_gpio_mcu_confirmed", mode=mcu))
             else:
                 self.gpio_mcu_status_vars[index].set(self.tr("awp1221_gpio_mcu_unconfirmed"))
-            if not self.gpio_pulse_status_vars[index].get():
-                self.gpio_pulse_status_vars[index].set(self.tr("awp1221_gpio_pulse_idle"))
             self._sync_gpio_actions(index)
 
     def _invalidate_gpio_settings(self) -> None:
@@ -4327,39 +4344,6 @@ class AWP1221Page(BasePage):
         self._refresh_gpio_status()
         if error:
             messagebox.showerror(self.tr("error"), error)
-
-    def send_gpio_pulse(self, channel: int) -> None:
-        if not self._ensure_connected():
-            return
-        try:
-            count = int(str(self.gpio_count_vars[channel].get()).strip(), 0)
-            high_ms = int(str(self.gpio_high_ms_vars[channel].get()).strip(), 0)
-            gap_ms = int(str(self.gpio_gap_ms_vars[channel].get()).strip(), 0)
-        except ValueError:
-            messagebox.showerror(self.tr("error"), self.tr("awp1221_gpio_pulse_invalid"))
-            return
-        error = self.gpio_controller.start_pulse(channel, count, high_ms, gap_ms)
-        if error:
-            self.gpio_pulse_status_vars[channel].set(self.tr("awp1221_gpio_pulse_unknown"))
-            messagebox.showerror(self.tr("error"), error)
-            return
-        self.gpio_pulse_status_vars[channel].set(self.tr("awp1221_gpio_pulse_sent"))
-
-    def stop_gpio_pulse(self, channel: int) -> None:
-        if not self._ensure_connected():
-            return
-        error = self.gpio_controller.stop_pulse(channel)
-        if error:
-            self.gpio_pulse_status_vars[channel].set(self.tr("awp1221_gpio_pulse_unknown"))
-            messagebox.showerror(self.tr("error"), error)
-            return
-        self.gpio_pulse_status_vars[channel].set(self.tr("awp1221_gpio_pulse_idle"))
-        self._refresh_gpio_status()
-
-    def _add_mode_button(self, parent: tk.Misc, key: str, column: int) -> None:
-        button = ttk.Button(parent, style="Secondary.TButton", command=lambda mode=key: self.show_mode(mode))
-        button.grid(row=0, column=column, padx=(0, 8))
-        self.mode_buttons[key] = button
 
     @staticmethod
     def _parse_bounded(text: str, maximum: int, name: str) -> int:
@@ -4537,8 +4521,8 @@ class AWP1221Page(BasePage):
         frame = str(getattr(response, "data", "") or "").strip()
         if frame.startswith("^") and frame.endswith("~"):
             frame = frame[1:-1].strip()
-        fields = frame.split()
-        return fields == ["GPIO", "D4", "1" if enabled else "0"]
+        fields = [part.upper() for part in frame.split()]
+        return fields == ["GPIOCFG", "D4", "HIGH" if enabled else "LOW"]
 
     def _on_en_toggled(self) -> None:
         requested = bool(self.en_enabled_var.get())
@@ -4550,7 +4534,7 @@ class AWP1221Page(BasePage):
             return
 
         try:
-            response = self.ctx.serial.write_gpio("D4", requested)
+            response = self.ctx.serial.configure_gpio("D4", GPIO_MODE_HIGH if requested else GPIO_MODE_LOW)
         except Exception as exc:
             self._set_en_state(None)
             self._invalidate_sinc_for_en_disable()
@@ -4761,8 +4745,7 @@ class AWP1221Page(BasePage):
         sync_activity = getattr(next_page, "_sync_local_activity", None)
         if callable(sync_activity):
             sync_activity()
-        for key, button in self.mode_buttons.items():
-            button.configure(style="Selected.TButton" if key == mode else "Secondary.TButton")
+        self._sync_mode_button_styles()
 
     def on_hide(self) -> None:
         current_page = self.mode_pages.get(self.current_mode)

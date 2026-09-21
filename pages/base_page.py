@@ -11,6 +11,70 @@ from typing import Any
 from config.app_info import CHIP_WEBSITE_URLS
 from config.languages import t
 
+
+def fit_toplevel_to_screen(
+    window: tk.Toplevel,
+    *,
+    preferred_width: int,
+    preferred_height: int,
+    minimum_width: int = 360,
+    minimum_height: int = 240,
+) -> tuple[int, int]:
+    """Size and place a child window inside conservative screen bounds.
+
+    Fixed dialog minimums larger than the display leave controls outside the
+    screen before a user can reach them.  The caller is expected to place
+    content in a scroll area when it has a larger natural request size.  The
+    bounds reserve space for window chrome/taskbar margins and are also capped
+    by the owning application's client size; this helper does not query the
+    native Win32 work-area rectangle.
+    """
+
+    try:
+        window.update_idletasks()
+        screen_width = max(320, int(window.winfo_screenwidth()))
+        screen_height = max(240, int(window.winfo_screenheight()))
+    except tk.TclError:
+        screen_width, screen_height = 1280, 720
+
+    available_width = max(320, screen_width - 32)
+    available_height = max(240, screen_height - 96)
+    # Keep auxiliary windows inside the active application window as well.
+    # The owning page can be wider than the root because it lives in a
+    # horizontal canvas, so use the real top-level client bounds here.
+    try:
+        owner = window.master.winfo_toplevel()
+        owner_width = int(owner.winfo_width())
+        owner_height = int(owner.winfo_height())
+        if owner_width > 1:
+            available_width = min(available_width, max(320, owner_width - 32))
+        if owner_height > 1:
+            available_height = min(available_height, max(240, owner_height - 96))
+    except (tk.TclError, AttributeError, TypeError, ValueError):
+        pass
+    width = min(max(1, int(preferred_width)), available_width)
+    height = min(max(1, int(preferred_height)), available_height)
+    minimum_width = min(max(1, int(minimum_width)), width)
+    minimum_height = min(max(1, int(minimum_height)), height)
+    window.minsize(minimum_width, minimum_height)
+    window.geometry(f"{width}x{height}")
+
+    try:
+        window.update_idletasks()
+        parent = window.master.winfo_toplevel()
+        parent_x = int(parent.winfo_rootx())
+        parent_y = int(parent.winfo_rooty())
+        parent_width = int(parent.winfo_width())
+        parent_height = int(parent.winfo_height())
+        x = parent_x + max(0, (parent_width - width) // 2)
+        y = parent_y + max(0, (parent_height - height) // 2)
+        x = max(16, min(x, screen_width - width - 16))
+        y = max(32, min(y, screen_height - height - 48))
+        window.geometry(f"{width}x{height}+{x}+{y}")
+    except (tk.TclError, AttributeError, TypeError, ValueError):
+        pass
+    return width, height
+
 def build_serial_log_export_content(history: list[str], visible_text: str) -> str:
     """Return the complete serial log export text.
 
@@ -45,7 +109,6 @@ class SimpleTooltip:
         y = self.widget.winfo_rooty() + 4
         self.tip = tk.Toplevel(self.widget)
         self.tip.wm_overrideredirect(True)
-        self.tip.wm_geometry(f"+{x}+{y}")
         label = tk.Label(
             self.tip,
             text=text,
@@ -59,6 +122,19 @@ class SimpleTooltip:
             wraplength=320,
         )
         label.pack()
+        try:
+            self.tip.update_idletasks()
+            screen_width = self.tip.winfo_screenwidth()
+            screen_height = self.tip.winfo_screenheight()
+            tip_width = self.tip.winfo_reqwidth()
+            tip_height = self.tip.winfo_reqheight()
+            x = min(max(8, x), max(8, screen_width - tip_width - 8))
+            if y + tip_height + 8 > screen_height:
+                y = max(8, self.widget.winfo_rooty() - tip_height - 8)
+            y = min(max(8, y), max(8, screen_height - tip_height - 8))
+        except tk.TclError:
+            pass
+        self.tip.wm_geometry(f"+{x}+{y}")
 
     def _hide(self, _event: tk.Event | None = None) -> None:
         if self.tip is not None:
@@ -72,13 +148,15 @@ class VerticalScrollArea(ttk.Frame):
         parent: tk.Misc,
         ctx: Any,
         *,
-        horizontal: bool = False,
+        horizontal: bool = True,
         min_content_width: int = 0,
+        propagate_width: bool = False,
     ) -> None:
         super().__init__(parent, style="App.TFrame")
         self.ctx = ctx
         self.horizontal = horizontal
         self.min_content_width = max(0, min_content_width)
+        self.propagate_width = bool(propagate_width)
         self._scrollbar_visible = False
         self._horizontal_scrollbar_visible = False
 
@@ -105,12 +183,49 @@ class VerticalScrollArea(ttk.Frame):
         self.canvas.bind_all("<Shift-MouseWheel>", self._on_shift_mousewheel, add="+")
         self.refresh_theme()
 
+    def _pointer_widget(self, event: tk.Event) -> tk.Misc:
+        try:
+            widget = self.winfo_containing(int(event.x_root), int(event.y_root))
+            if widget is not None:
+                return widget
+        except (tk.TclError, AttributeError, TypeError, ValueError):
+            pass
+        return event.widget
+
+    def _content_scroll_size(self) -> tuple[int, int]:
+        bbox = self.canvas.bbox("all")
+        height = max(1, self.content.winfo_reqheight(), self.content.winfo_height())
+        if bbox is not None:
+            height = max(height, int(bbox[3]))
+        if self.horizontal:
+            width = max(1, self.content.winfo_reqwidth(), self.content.winfo_width())
+            if bbox is not None:
+                width = max(width, int(bbox[2]))
+        else:
+            width = max(1, self.canvas.winfo_width(), self.content.winfo_width())
+        return width, height + 16
+
     def _sync_scroll_region(self, _event: tk.Event | None = None) -> None:
         try:
-            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-            needs_scrollbar = self.content.winfo_reqheight() > self.canvas.winfo_height()
+            width, height = self._content_scroll_size()
+            if self.horizontal:
+                # A child can grow after the canvas has already received its
+                # first Configure event.  Keep the embedded window at least
+                # as wide as its natural request so wide labels and controls
+                # remain reachable through the horizontal scrollbar.
+                current_width = 0
+                try:
+                    current_width = int(float(self.canvas.itemcget(self.window_id, "width")))
+                except (tk.TclError, TypeError, ValueError):
+                    pass
+                requested_width = max(width, self.min_content_width, self.canvas.winfo_width())
+                if current_width != requested_width:
+                    self.canvas.itemconfigure(self.window_id, width=requested_width)
+                    width = requested_width
+            self.canvas.configure(scrollregion=(0, 0, width, height))
+            needs_scrollbar = height > max(1, self.canvas.winfo_height())
             needs_horizontal_scrollbar = (
-                self.horizontal and self.content.winfo_reqwidth() > self.canvas.winfo_width()
+                self.horizontal and width > max(1, self.canvas.winfo_width())
             )
             if needs_scrollbar and not self._scrollbar_visible:
                 self.scrollbar.grid(row=0, column=1, sticky="ns")
@@ -124,8 +239,19 @@ class VerticalScrollArea(ttk.Frame):
             elif not needs_horizontal_scrollbar and self._horizontal_scrollbar_visible:
                 self.horizontal_scrollbar.grid_remove()
                 self._horizontal_scrollbar_visible = False
+            self._propagate_canvas_width()
         except tk.TclError:
             pass
+
+    def _requested_content_width(self) -> int:
+        return max(1, self.min_content_width, self.content.winfo_reqwidth())
+
+    def _propagate_canvas_width(self) -> None:
+        if self.horizontal or not self.propagate_width:
+            return
+        req = self._requested_content_width()
+        if self.canvas.winfo_reqwidth() != req:
+            self.canvas.configure(width=req)
 
     def _sync_content_width(self, event: tk.Event) -> None:
         try:
@@ -139,18 +265,18 @@ class VerticalScrollArea(ttk.Frame):
             pass
 
     def _on_mousewheel(self, event: tk.Event) -> None:
-        if not self.winfo_ismapped() or self._nearest_scroll_area(event.widget) is not self:
-            return
         try:
+            if not self.winfo_ismapped() or self._nearest_scroll_area(self._pointer_widget(event)) is not self:
+                return
             delta = -1 if event.delta > 0 else 1
             self.canvas.yview_scroll(delta, "units")
         except tk.TclError:
             pass
 
     def _on_shift_mousewheel(self, event: tk.Event) -> None:
-        if not self.horizontal or not self.winfo_ismapped() or self._nearest_scroll_area(event.widget) is not self:
-            return
         try:
+            if not self.horizontal or not self.winfo_ismapped() or self._nearest_scroll_area(self._pointer_widget(event)) is not self:
+                return
             delta = -1 if event.delta > 0 else 1
             self.canvas.xview_scroll(delta, "units")
         except tk.TclError:
@@ -184,6 +310,7 @@ class BasePage(ttk.Frame):
     """
 
     page_name: str = "base"
+    pin_window_footer = False
 
     def __init__(self, parent: tk.Misc, ctx: Any) -> None:
         super().__init__(parent, style="App.TFrame")
@@ -191,6 +318,7 @@ class BasePage(ttk.Frame):
         self._text_widgets: list[tuple[Any, str]] = []
         self._logo_widgets: list[ttk.Label] = []
         self._logo_images: list[tk.PhotoImage] = []
+        self._chrome_headers: list[ttk.Frame] = []
         self._serial_log_text: tk.Text | None = None
         self._serial_log_listener: Any = None
         self._serial_log_clear_listener: Any = None
@@ -226,11 +354,25 @@ class BasePage(ttk.Frame):
                 pass
         self._refresh_serial_selectors()
 
+    def _sync_mode_button_styles(self) -> None:
+        current = getattr(self, "current_mode", None)
+        mode_pages = getattr(self, "mode_pages", {})
+        for key, btn in getattr(self, "mode_buttons", {}).items():
+            if key not in mode_pages:
+                continue
+            try:
+                btn.configure(
+                    style="SidebarModeSelected.TButton" if key == current else "SidebarMode.TButton"
+                )
+            except tk.TclError:
+                pass
+
     def refresh_theme(self) -> None:
         """
         \u5b50\u7c7b\u91cc\u6709 Canvas / Text \u8fd9\u79cd\u975e ttk \u63a7\u4ef6\u65f6\uff0c\u8986\u76d6\u8fd9\u4e2a\u65b9\u6cd5\u66f4\u65b0\u989c\u8272\u3002
         """
         self._refresh_header_logos()
+        self._sync_header_chrome()
         self._refresh_serial_log_theme()
         for area in self._vertical_scroll_areas:
             area.refresh_theme()
@@ -303,18 +445,39 @@ class BasePage(ttk.Frame):
         if callable(binder):
             binder(control["page_name"], port)
 
+    def enable_pinned_footer_layout(self) -> None:
+        self.pin_window_footer = True
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+    def make_merged_footer(self) -> tuple[ttk.Frame, ttk.Frame, ttk.Frame, ttk.Frame]:
+        footer = ttk.Frame(self, style="Panel.TFrame", padding=(12, 10))
+        footer.columnconfigure(0, weight=1)
+        actions = ttk.Frame(footer, style="Panel.TFrame")
+        actions.grid(row=0, column=0, sticky="ew")
+        bottom = ttk.Frame(footer, style="Panel.TFrame")
+        bottom.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        bottom.columnconfigure(0, weight=1)
+        registers = ttk.Frame(bottom, style="Panel.TFrame")
+        registers.grid(row=0, column=0, sticky="w")
+        identity = ttk.Frame(bottom, style="Panel.TFrame")
+        identity.grid(row=0, column=1, sticky="e")
+        return footer, actions, registers, identity
+
     def make_vertical_scroll_area(
         self,
         parent: tk.Misc,
         *,
-        horizontal: bool = False,
+        horizontal: bool = True,
         min_content_width: int = 0,
+        propagate_width: bool = False,
     ) -> tuple[VerticalScrollArea, ttk.Frame]:
         area = VerticalScrollArea(
             parent,
             self.ctx,
             horizontal=horizontal,
             min_content_width=min_content_width,
+            propagate_width=propagate_width,
         )
         self._vertical_scroll_areas.append(area)
         return area, area.content
@@ -353,8 +516,27 @@ class BasePage(ttk.Frame):
         if show_logo:
             logo = self._make_header_logo(header)
             logo.grid(row=0, column=1, rowspan=2, sticky="e", padx=(16, 0))
+            self._chrome_headers.append(header)
+            self._sync_header_chrome_widget(header)
 
         return header
+
+    def _sync_header_chrome(self) -> None:
+        for header in self._chrome_headers:
+            try:
+                self._sync_header_chrome_widget(header)
+            except tk.TclError:
+                pass
+
+    def _sync_header_chrome_widget(self, header: ttk.Frame) -> None:
+        target = int(getattr(self.winfo_toplevel(), "_piezo_top_chrome_height", 0)) or 42
+        bg = self.ctx.colors["bg"]
+        sizer = getattr(header, "_chrome_sizer", None)
+        if sizer is None:
+            sizer = tk.Frame(header, width=1, highlightthickness=0, bd=0, bg=bg)
+            sizer.grid(row=0, column=2, rowspan=3)
+            header._chrome_sizer = sizer
+        sizer.configure(height=target, bg=bg)
 
     def _configure_title_link(self, title: ttk.Label, title_key: str) -> None:
         url = CHIP_WEBSITE_URLS.get(title_key, "").strip()
@@ -391,16 +573,35 @@ class BasePage(ttk.Frame):
 
     def _configure_header_logo(self, label: ttk.Label) -> None:
         path = self._logo_path_for_theme()
-        if path is not None:
-            image = tk.PhotoImage(file=str(path))
-            if image.height() > 64:
-                factor = max(1, image.height() // 64)
-                image = image.subsample(factor, factor)
-            self._logo_images.append(image)
-            label.configure(image=image, text="")
+        if path is None:
+            label.configure(image="", text="PIEZO\nGUI", justify="center")
+            setattr(label, "_logo_key", None)
             return
+        max_h = int(getattr(self.winfo_toplevel(), "_piezo_top_chrome_height", 0)) or 42
+        key = (str(path), max_h)
+        if getattr(label, "_logo_key", None) == key:
+            return
+        image = self._header_logo_image(path, max_h)
+        label.configure(image=image, text="")
+        setattr(label, "_logo_key", key)
+        if image not in self._logo_images:
+            self._logo_images.append(image)
 
-        label.configure(text="PIEZO\nGUI", justify="center")
+    def _header_logo_image(self, path: Path, max_h: int) -> tk.PhotoImage:
+        root = self.winfo_toplevel()
+        cache = getattr(root, "_piezo_logo_cache", None)
+        if cache is None:
+            cache = {}
+            setattr(root, "_piezo_logo_cache", cache)
+        key = (str(path), max_h)
+        image = cache.get(key)
+        if image is None:
+            image = tk.PhotoImage(file=str(path), master=root)
+            if image.height() > max_h:
+                factor = max(1, (image.height() + max_h - 1) // max_h)
+                image = image.subsample(factor, factor)
+            cache[key] = image
+        return image
 
     def make_serial_log(
         self,

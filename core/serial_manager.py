@@ -53,14 +53,13 @@ class SerialPortInfo:
 
 class SerialManager:
     MAX_LOG_HISTORY = 100_000
-    CONNECT_RESET_DELAY = 2.0
-    CONNECT_PING_ATTEMPTS = 3
+    CONNECT_READY_TIMEOUT = 30.0
+    CONNECT_READY_PROBE_S = 0.3
     """
     Arduino serial protocol adapter.
 
-    The public protocol is intentionally small: PING, RREGW/WREGW, CFG,
-    FLAG/INTACK, GPIO/GPIOR/GPIOU, and I2CSPD.  All register traffic carries
-    the I2C address and uses the exact bulk RDATAW/OK acknowledgement shapes.
+    The public protocol is PING-less: wait for ^READY REV04~, or probe CAP?
+    once a board that is already ready.  Register traffic is RREGW/WREGW.
     """
 
     def __init__(self, timeout: float = 0.8) -> None:
@@ -472,32 +471,14 @@ class SerialManager:
                 )
 
                 self.board_ready = False
-                time.sleep(self.CONNECT_RESET_DELAY)
-                try:
-                    self._serial.reset_input_buffer()
-                    self._serial.reset_output_buffer()
-                except Exception:
-                    pass
+                self.board_identity = ""
                 self.port = port
                 self.baudrate = baudrate
                 self.last_error = ""
                 self._transport_error = ""
 
-                ping_resp = self.ping_board()
-                for _ in range(1, self.CONNECT_PING_ATTEMPTS):
-                    if ping_resp.ok:
-                        break
-                    startup_frame = ping_resp.data.strip().upper()
-                    if not (
-                        ping_resp.error.startswith("No response for command:")
-                        or startup_frame in {"BOOTING", "READY"}
-                    ):
-                        break
-                    if startup_frame:
-                        self._update_board_ready_from_frame(startup_frame)
-                    ping_resp = self.ping_board()
-                if not ping_resp.ok:
-                    error = ping_resp.error or ping_resp.data or "Board PING failed"
+                ready = self._complete_connect_handshake()
+                if not ready.ok:
                     try:
                         self._serial.close()
                     except Exception:
@@ -505,13 +486,11 @@ class SerialManager:
                     self._serial = None
                     self.port = None
                     self.board_identity = ""
-                    return SerialResponse(False, error=error)
+                    self.board_ready = False
+                    return ready
 
-                self.board_identity = ping_resp.data.strip() or "PONG"
-                self._update_board_ready_from_frame(self.board_identity)
                 self.connection_generation += 1
                 self._start_monitor()
-
                 return SerialResponse(True, data=self.board_identity)
             except Exception as exc:
                 self._serial = None
@@ -583,38 +562,115 @@ class SerialManager:
         return True
 
     def _update_board_ready_from_frame(self, frame: str) -> None:
-        normalized = frame.strip().upper()
-        if normalized == f"READY {base_tool.PROTOCOL_REVISION}":
-            self.board_identity = f"PONG {base_tool.PROTOCOL_REVISION} READY"
+        if base_tool.is_ready_notification(frame):
+            self.board_identity = base_tool.ready_notification_body()
             self.board_ready = True
-            return
-        if normalized == "READY":
-            if self.board_identity.strip().upper() in {
-                f"PONG {base_tool.PROTOCOL_REVISION} BOOTING",
-                f"PONG {base_tool.PROTOCOL_REVISION} READY",
-            }:
-                self.board_identity = f"PONG {base_tool.PROTOCOL_REVISION} READY"
-                self.board_ready = True
-            return
-        try:
-            self.board_ready = base_tool.parse_ping_response(normalized)
-            self.board_identity = normalized
-        except ValueError:
-            # A mismatched PONG must never upgrade the connection state.
-            if normalized == "BOOTING":
-                self.board_ready = False
 
     def _is_ready_notification(self, frame: str) -> bool:
-        normalized = frame.strip().upper()
-        if normalized == f"READY {base_tool.PROTOCOL_REVISION}":
-            return True
-        return (
-            normalized == "READY"
-            and self.board_identity.strip().upper()
-            in {
-                f"PONG {base_tool.PROTOCOL_REVISION} BOOTING",
-                f"PONG {base_tool.PROTOCOL_REVISION} READY",
-            }
+        return base_tool.is_ready_notification(frame)
+
+    def _wait_for_ready_notification(self, timeout: float) -> bool:
+        handle = self._serial
+        if handle is None or not getattr(handle, "is_open", False):
+            return False
+        deadline = time.time() + max(0.0, timeout)
+        saved_timeout = getattr(handle, "timeout", self.timeout)
+        try:
+            while time.time() < deadline:
+                if self.board_ready:
+                    return True
+                remaining = deadline - time.time()
+                handle.timeout = min(0.2, max(0.01, remaining))
+                try:
+                    data = handle.read(1)
+                except Exception as exc:
+                    if is_fatal_serial_exception(exc):
+                        raise
+                    continue
+                if not data:
+                    continue
+                for frame in self._feed_rx_bytes(data):
+                    self._process_complete_frame(frame, synchronous=False)
+                    if self.board_ready:
+                        return True
+        finally:
+            try:
+                handle.timeout = saved_timeout
+            except Exception:
+                pass
+        return self.board_ready
+
+    def _probe_cap_during_connect(self) -> SerialResponse:
+        handle = self._serial
+        if handle is None or not getattr(handle, "is_open", False):
+            return SerialResponse(False, error="Serial is not connected")
+        command = base_tool.build_frame(chip_status_cache.build_capability_body())
+        self.emit_log(f"TX {command}")
+        saved_timeout = getattr(handle, "timeout", self.timeout)
+        try:
+            handle.write(command.encode("ascii", errors="ignore"))
+            handle.flush()
+            deadline = time.time() + self.timeout
+            handle.timeout = min(0.2, self.timeout)
+            while time.time() < deadline:
+                try:
+                    data = handle.read(1)
+                except Exception as exc:
+                    if is_fatal_serial_exception(exc):
+                        raise
+                    return SerialResponse(False, error=str(exc))
+                if not data:
+                    continue
+                for frame in self._feed_rx_bytes(data):
+                    if self._is_ready_notification(frame):
+                        self._update_board_ready_from_frame(frame)
+                        self.emit_log(f"MCU ^{frame}~")
+                        continue
+                    if self._is_evstat_frame(frame):
+                        self._queue_event_frame(frame)
+                        continue
+                    if self._is_gpio_event_frame(frame):
+                        self.emit_log(f"MCU ^{frame}~")
+                        continue
+                    self.emit_log(f"MCU ^{frame}~")
+                    return SerialResponse(True, data=frame)
+        except Exception as exc:
+            return SerialResponse(False, error=str(exc))
+        finally:
+            try:
+                handle.timeout = saved_timeout
+            except Exception:
+                pass
+        return SerialResponse(False, error="No response for command: ^CAP?~")
+
+    def _complete_connect_handshake(self) -> SerialResponse:
+        if self._wait_for_ready_notification(self.CONNECT_READY_PROBE_S):
+            return SerialResponse(True, data=self.board_identity)
+        cap_response = self._probe_cap_during_connect()
+        if self.board_ready:
+            return SerialResponse(True, data=self.board_identity)
+        if cap_response.ok:
+            try:
+                capabilities = chip_status_cache.parse_cap_frame(
+                    chip_status_cache.frame_body(cap_response.data)
+                )
+            except (TypeError, ValueError) as exc:
+                cap_response = SerialResponse(
+                    False,
+                    data=cap_response.data,
+                    error=str(exc),
+                )
+            else:
+                if capabilities.revision == "FLAG3" and capabilities.push_event:
+                    self.board_ready = True
+                    self.board_identity = "CAP FLAG3"
+                    return SerialResponse(True, data=self.board_identity)
+        remaining = self.CONNECT_READY_TIMEOUT - self.CONNECT_READY_PROBE_S
+        if remaining > 0 and self._wait_for_ready_notification(remaining):
+            return SerialResponse(True, data=self.board_identity)
+        return SerialResponse(
+            False,
+            error=cap_response.error or "No READY REV04 from board",
         )
 
     def _start_monitor(self) -> None:
@@ -755,7 +811,7 @@ class SerialManager:
         Read one Arduino ^...~ frame.
 
         Examples:
-            ^PONG REV04 READY~
+            ^READY REV04~
             ^RDATAW 44 1E 16 1 5081~
             ^OK WREGW 44 14 16 1~
         """
@@ -860,12 +916,6 @@ class SerialManager:
     # ---------------------------------------------------------------------
     # Arduino protocol commands
     # ---------------------------------------------------------------------
-    def ping_board(self) -> SerialResponse:
-        return base_tool.ping_board(self.send_command)
-
-    def set_board_flag(self, value: bool | int) -> SerialResponse:
-        return base_tool.set_board_flag(self.send_command, value)
-
     def read_board_flag(self, *, suppress_idle: bool = False) -> SerialResponse:
         if not suppress_idle:
             return base_tool.read_board_flag(self.send_command)
@@ -985,35 +1035,17 @@ class SerialManager:
     def acknowledge_interrupt(self, sequence: int) -> SerialResponse:
         return base_tool.acknowledge_interrupt(self.send_command, sequence)
 
-    def write_gpio(self, pin: str | int, enabled: bool | int) -> SerialResponse:
-        return base_tool.write_gpio(self.send_command, pin, enabled)
-
     def read_gpio(self, pin: str | int) -> SerialResponse:
         return base_tool.read_gpio(self.send_command, pin)
-
-    def set_gpio_pullup(self, pin: str | int) -> SerialResponse:
-        return base_tool.set_gpio_pullup(self.send_command, pin)
 
     def configure_gpio(self, pin: str | int, mode: str) -> SerialResponse:
         return base_tool.configure_gpio_mode(self.send_command, pin, mode)
 
-    def pulse_gpio(
-        self,
-        pin: str | int,
-        count: int | None = None,
-        high_ms: int | None = None,
-        gap_ms: int | None = None,
-        *,
-        stop: bool = False,
-    ) -> SerialResponse:
-        return base_tool.pulse_gpio(
-            self.send_command,
-            pin,
-            count,
-            high_ms,
-            gap_ms,
-            stop=stop,
-        )
+    def read_adc(self, pin: str) -> SerialResponse:
+        return base_tool.read_adc(self.send_command, pin)
+
+    def read_frequency(self) -> SerialResponse:
+        return base_tool.read_frequency(self.send_command)
 
     def set_i2c_speed(self, speed_hz: int) -> SerialResponse:
         return base_tool.set_i2c_speed(self.send_command, speed_hz)
@@ -1063,7 +1095,7 @@ class SerialManager:
         *,
         bits: int,
     ) -> SerialResponse:
-        """Write one raw 8/16/32-bit value through the unified WREGW protocol."""
+        """Write one raw 8/16-bit value through the unified WREGW protocol."""
         return base_tool.write_register_value(
             self.send_command,
             device_addr,
@@ -1074,7 +1106,7 @@ class SerialManager:
         ).response
 
     def read_register_value(self, device_addr: int, reg_addr: int, *, bits: int) -> SerialResponse:
-        """Read one raw 8/16/32-bit value through the unified RREGW protocol."""
+        """Read one raw 8/16-bit value through the unified RREGW protocol."""
         return base_tool.read_register_value(
             self.send_command,
             device_addr,
@@ -1657,8 +1689,6 @@ class SerialRouter:
     def __getattr__(self, name: str) -> Any:
         if self._current_manager() is None and name in {
             "send_command",
-            "ping_board",
-            "set_board_flag",
             "read_board_flag",
             "read_board_flag_for_poll",
             "acknowledge_interrupt",
@@ -1668,11 +1698,10 @@ class SerialRouter:
             "clear_status_target",
             "set_status_monitor",
             "read_status_snapshot",
-            "write_gpio",
             "read_gpio",
-            "set_gpio_pullup",
             "configure_gpio",
-            "pulse_gpio",
+            "read_adc",
+            "read_frequency",
             "set_i2c_speed",
             "read_i2c_speed",
             "write_register_values",

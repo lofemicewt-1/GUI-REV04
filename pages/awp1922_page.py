@@ -47,39 +47,36 @@ class AWP1922Page(BasePage):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(3, weight=1)
+        self.enable_pinned_footer_layout()
 
         header = self.make_title(self, "awp1922")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
 
-        chip_bar = ttk.Frame(self, style="Panel.TFrame", padding=(12, 10))
-        chip_bar.grid(row=1, column=0, sticky="ew", pady=(0, 12))
-        chip_bar.columnconfigure(5, weight=1)
+        footer, actions, reg_panel, identity = self.make_merged_footer()
+        footer.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        actions.grid_remove()
 
-        addr_label = ttk.Label(chip_bar, style="Panel.TLabel")
-        self.make_serial_selector(chip_bar, page_name=self.page_name, row=0, column=0)
+        addr_label = ttk.Label(identity, style="Panel.TLabel")
+        self.make_serial_selector(identity, page_name=self.page_name, row=0, column=0)
         addr_label.grid(row=0, column=2, sticky="w", padx=(0, 8))
         self._labels["awp1922_addr"] = addr_label
 
         ttk.Combobox(
-            chip_bar,
+            identity,
             textvariable=self.addr_var,
             values=[f"0x{x:02X}" for x in range(0x58, 0x60)],
             state="readonly",
             width=10,
         ).grid(row=0, column=3, sticky="w", padx=(0, 12))
 
-        detect_btn = ttk.Button(chip_bar, style="Primary.TButton", command=self.detect_chip)
+        detect_btn = ttk.Button(identity, style="Primary.TButton", command=self.detect_chip)
         detect_btn.grid(row=0, column=4, sticky="w", padx=(0, 16))
         self._buttons["detect_chip"] = detect_btn
 
-        ttk.Label(chip_bar, textvariable=self.status_var, style="Muted.TLabel").grid(
+        ttk.Label(identity, textvariable=self.status_var, style="Muted.TLabel").grid(
             row=0, column=5, sticky="e"
         )
 
-        reg_panel = ttk.Frame(self, style="Panel.TFrame", padding=(12, 10))
-        reg_panel.grid(row=2, column=0, sticky="ew", pady=(0, 12))
         reg_panel.columnconfigure(9, weight=1)
 
         reg_title = ttk.Label(reg_panel, style="Panel.TLabel")
@@ -116,7 +113,7 @@ class AWP1922Page(BasePage):
         self._buttons["rw"] = rw_btn
 
         scroll_area, body = self.make_vertical_scroll_area(self)
-        scroll_area.grid(row=3, column=0, sticky="nsew")
+        scroll_area.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)

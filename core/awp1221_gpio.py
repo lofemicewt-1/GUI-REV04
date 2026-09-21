@@ -89,8 +89,12 @@ def gpio_mcu_role(code: int) -> str:
     return "hiz"
 
 
-def gpio_pulse_allowed(code: int) -> bool:
+def gpio_drive_allowed(code: int) -> bool:
     return gpio_mcu_role(code) == "drive"
+
+
+def gpio_pulse_allowed(code: int) -> bool:
+    return gpio_drive_allowed(code)
 
 
 def gpio_mcu_mode_for_function(code: int) -> str:
@@ -138,29 +142,6 @@ def pack_gpio_channel(old: int, channel: int, bits: GpioChannelBits) -> int:
     raise ValueError("GPIO channel must be 0 or 1")
 
 
-def validate_gpio_pulse(count: int, high_ms: int, gap_ms: int) -> tuple[int, int, int]:
-    count_value = int(count)
-    high_value = int(high_ms)
-    gap_value = int(gap_ms)
-    if not 1 <= count_value <= 255:
-        raise ValueError("pulse count must be in range 1..255")
-    if not 1 <= high_value <= 60000:
-        raise ValueError("pulse high time must be in range 1..60000 ms")
-    if not 0 <= gap_value <= 60000:
-        raise ValueError("pulse gap time must be in range 0..60000 ms")
-    return count_value, high_value, gap_value
-
-
-def gpio_pulse_steps(count: int, high_ms: int, gap_ms: int) -> tuple[tuple[int, int], ...]:
-    count_value, high_value, gap_value = validate_gpio_pulse(count, high_ms, gap_ms)
-    steps: list[tuple[int, int]] = []
-    for index in range(count_value):
-        if index:
-            steps.append((0, gap_value))
-        steps.append((1, high_value))
-    return tuple(steps)
-
-
 class Awp1221GpioController:
     def __init__(
         self,
@@ -190,11 +171,14 @@ class Awp1221GpioController:
             GpioChannelBits(_require_function(gpio1.function), bool(gpio1.open_drain)),
         )
 
-    def pulse_allowed(self, channel: int) -> bool:
+    def drive_allowed(self, channel: int) -> bool:
         bits = self.confirmed_channels[channel] if self.chip_confirmed else None
-        if bits is None or not gpio_pulse_allowed(bits.function):
+        if bits is None or not gpio_drive_allowed(bits.function):
             return False
         return self.confirmed_mcu[channel] is not None
+
+    def pulse_allowed(self, channel: int) -> bool:
+        return self.drive_allowed(channel)
 
     def apply(self) -> str | None:
         if self.pending is None:
@@ -249,43 +233,8 @@ class Awp1221GpioController:
         self.chip_confirmed = True
         return None
 
-    def start_pulse(self, channel: int, count: int, high_ms: int, gap_ms: int) -> str | None:
-        if not self.pulse_allowed(channel):
-            return "pulse requires a confirmed chip INPUT function"
-        try:
-            validate_gpio_pulse(count, high_ms, gap_ms)
-        except ValueError as exc:
-            return str(exc)
-        pin = AWP1221_GPIO_PINS[channel][1]
-        response = self.serial.pulse_gpio(pin, count, high_ms, gap_ms)
-        if not bool(getattr(response, "ok", False)):
-            return self._error_text(response, "GPIOPULSE failed")
-        confirmed = list(self.confirmed_mcu)
-        confirmed[channel] = GPIO_MODE_HIGH
-        self.confirmed_mcu = (confirmed[0], confirmed[1])
-        return None
-
-    def stop_pulse(self, channel: int) -> str | None:
-        pin = AWP1221_GPIO_PINS[channel][1]
-        mode = GPIO_MODE_HIZ
-        bits = self.confirmed_channels[channel] if self.chip_confirmed else None
-        if bits is not None:
-            role = gpio_mcu_role(bits.function)
-            current = self.confirmed_mcu[channel]
-            if role == "drive" and current in {GPIO_MODE_HIGH, GPIO_MODE_LOW}:
-                mode = GPIO_MODE_LOW
-            else:
-                mode = gpio_mcu_mode_for_function(bits.function)
-        response = self.serial.configure_gpio(pin, mode)
-        if not bool(getattr(response, "ok", False)):
-            return self._error_text(response, f"GPIOCFG {pin} {mode} failed")
-        confirmed = list(self.confirmed_mcu)
-        confirmed[channel] = mode
-        self.confirmed_mcu = (confirmed[0], confirmed[1])
-        return None
-
     def drive(self, channel: int, high: bool) -> str | None:
-        if not self.pulse_allowed(channel):
+        if not self.drive_allowed(channel):
             return "MCU drive requires a confirmed chip INPUT function"
         pin = AWP1221_GPIO_PINS[channel][1]
         mode = "HIGH" if high else "LOW"

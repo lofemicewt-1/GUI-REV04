@@ -14,7 +14,19 @@ from typing import Any
 from app.navigation import Navigation
 from app.state import AppState
 from config.languages import t
-from core.base_tool import SerialResponse, is_serial_contention_error, parse_board_flag_response
+from core.base_tool import (
+    GPIO_ADC_PINS,
+    GPIO_DETECT_PINS,
+    GPIO_MODE_DETECT,
+    GPIO_MODES,
+    GPIO_PUBLIC_PINS,
+    SerialResponse,
+    is_serial_contention_error,
+    parse_adc_read_response,
+    parse_board_flag_response,
+    parse_freq_response,
+    parse_gpio_read_response,
+)
 from core import chip_status_cache
 from core.chip_discovery import ChipDiscovery, ChipProbe, discover_first
 from core.continuous_register_read import (
@@ -26,7 +38,7 @@ from core.continuous_register_read import (
 )
 from core.local_i2c_bridge import LocalI2cBridge
 from core.serial_manager import SerialManager, SerialRouter
-from pages.base_page import BasePage
+from pages.base_page import BasePage, VerticalScrollArea, fit_toplevel_to_screen
 from pages.awp1018_page import AWP1018Page
 from pages.awp1221_page import AWP1221Page
 from pages.awp1922_page import AWP1922Page
@@ -93,7 +105,7 @@ class HomePage(BasePage):
     page_name = "home"
     BAUDRATES = (9600, 57600, 115200, 230400, 460800, 921600)
     I2C_SPEEDS = (100000, 400000)
-    REGISTER_WIDTHS = (8, 16, 32)
+    REGISTER_WIDTHS = (8, 16)
     FLAG_POLL_INTERVAL_MS = 250
     FLAG_RESULT_CHECK_INTERVAL_MS = 25
     STATUS_POLL_INTERVAL_MS = 300
@@ -151,6 +163,7 @@ class HomePage(BasePage):
         self._push_event_pending_by_port: dict[str, list[tuple[Any, chip_status_cache.Snapshot]]] = {}
         self._push_event_pending_since_by_port: dict[str, float] = {}
         self._push_cap_attempted_by_port: set[str] = set()
+        self._status_last_acked_irq_by_port: dict[str, int] = {}
         self._continuous_read_dialog: ContinuousRegisterReadDialog | None = None
         self._continuous_read_operation: _ContinuousReadOperation | None = None
         self._continuous_read_after_id: str | None = None
@@ -171,14 +184,17 @@ class HomePage(BasePage):
         self.rowconfigure(1, weight=1)
 
         top = ttk.Frame(self, style="App.TFrame")
-        top.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         top.columnconfigure(0, weight=1)
+        self._header_band = top
 
         header = self.make_title(top, "home", "@home_subtitle")
         header.grid(row=0, column=0, sticky="ew")
+        self._page_header = header
 
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
         panel.grid(row=1, column=0, sticky="nsew")
+        self.main_panel = panel
         panel.columnconfigure(0, weight=1)
 
         main_title = ttk.Label(panel, style="SectionTitle.TLabel")
@@ -251,25 +267,25 @@ class HomePage(BasePage):
         rr_panel.columnconfigure(7, weight=1)
 
         self.device_addr_label = ttk.Label(rr_panel, style="Panel.TLabel")
-        self.device_addr_label.grid(row=0, column=0, padx=(0, 6))
+        self.device_addr_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
 
         self.device_addr_var = tk.StringVar(value="0x44")
-        ttk.Entry(rr_panel, textvariable=self.device_addr_var, width=8).grid(row=0, column=1, padx=(0, 10))
+        ttk.Entry(rr_panel, textvariable=self.device_addr_var, width=8).grid(row=0, column=1, sticky="w", padx=(0, 16))
 
         self.reg_addr_label = ttk.Label(rr_panel, style="Panel.TLabel")
-        self.reg_addr_label.grid(row=0, column=2, padx=(0, 6))
+        self.reg_addr_label.grid(row=0, column=2, sticky="w", padx=(0, 8))
 
         self.reg_addr_var = tk.StringVar(value="0x00")
-        ttk.Entry(rr_panel, textvariable=self.reg_addr_var, width=8).grid(row=0, column=3, padx=(0, 10))
+        ttk.Entry(rr_panel, textvariable=self.reg_addr_var, width=8).grid(row=0, column=3, sticky="w", padx=(0, 16))
 
         self.write_value_label = ttk.Label(rr_panel, style="Panel.TLabel")
-        self.write_value_label.grid(row=0, column=4, padx=(0, 6))
+        self.write_value_label.grid(row=0, column=4, sticky="w", padx=(0, 8))
 
         self.write_value_var = tk.StringVar(value="0x0000")
-        ttk.Entry(rr_panel, textvariable=self.write_value_var, width=10).grid(row=0, column=5, padx=(0, 10))
+        ttk.Entry(rr_panel, textvariable=self.write_value_var, width=10).grid(row=0, column=5, sticky="w", padx=(0, 16))
 
         self.register_width_label = ttk.Label(rr_panel, style="Panel.TLabel")
-        self.register_width_label.grid(row=0, column=6, padx=(0, 6))
+        self.register_width_label.grid(row=0, column=6, sticky="w", padx=(0, 8))
 
         self.register_width_var = tk.StringVar(value="16-bit")
         self.register_width_combo = ttk.Combobox(
@@ -282,23 +298,101 @@ class HomePage(BasePage):
         self.register_width_combo.grid(row=0, column=7, sticky="w")
 
         self.read_value_label = ttk.Label(rr_panel, style="Panel.TLabel")
-        self.read_value_label.grid(row=1, column=0, padx=(0, 6), pady=(10, 0))
+        self.read_value_label.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
 
         self.read_value_var = tk.StringVar(value="")
-        ttk.Entry(rr_panel, textvariable=self.read_value_var, width=14).grid(row=1, column=1, padx=(0, 10), pady=(10, 0))
+        ttk.Entry(rr_panel, textvariable=self.read_value_var, width=14).grid(row=1, column=1, sticky="w", padx=(0, 16), pady=(10, 0))
 
-        self.rr_btn = ttk.Button(rr_panel, style="Secondary.TButton", command=self.read_register)
-        self.rr_btn.grid(row=1, column=2, padx=(0, 6), pady=(10, 0))
+        read_actions = ttk.Frame(rr_panel, style="Panel.TFrame")
+        read_actions.grid(row=1, column=2, columnspan=6, sticky="w", pady=(10, 0))
+        self.rr_btn = ttk.Button(read_actions, style="Secondary.TButton", command=self.read_register)
+        self.rr_btn.grid(row=0, column=0, padx=(0, 8))
 
-        self.rw_btn = ttk.Button(rr_panel, style="Primary.TButton", command=self.write_register)
-        self.rw_btn.grid(row=1, column=3, padx=(0, 6), pady=(10, 0))
+        self.rw_btn = ttk.Button(read_actions, style="Primary.TButton", command=self.write_register)
+        self.rw_btn.grid(row=0, column=1, padx=(0, 8))
 
         self.continuous_read_btn = ttk.Button(
-            rr_panel,
+            read_actions,
             style="Secondary.TButton",
             command=self.open_continuous_read_dialog,
         )
-        self.continuous_read_btn.grid(row=1, column=4, padx=(6, 0), pady=(10, 0))
+        self.continuous_read_btn.grid(row=0, column=2)
+
+        board_panel = ttk.Frame(panel, style="Panel.TFrame")
+        self.board_tools_panel = board_panel
+        self.board_tools_title = ttk.Label(board_panel, style="SectionTitle.TLabel")
+        self.board_tools_title.grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 6))
+        self.gpio_pin_label = ttk.Label(board_panel, style="Panel.TLabel")
+        self.gpio_pin_label.grid(row=1, column=0, sticky="w", padx=(0, 8))
+        self.gpio_pin_var = tk.StringVar(value="D2")
+        self.gpio_pin_combo = ttk.Combobox(
+            board_panel,
+            textvariable=self.gpio_pin_var,
+            values=list(GPIO_PUBLIC_PINS),
+            state="readonly",
+            width=6,
+        )
+        self.gpio_pin_combo.grid(row=1, column=1, sticky="w", padx=(0, 16))
+        self.gpio_pin_combo.bind("<<ComboboxSelected>>", self._on_board_gpio_pin_selected)
+        self.gpio_mode_label = ttk.Label(board_panel, style="Panel.TLabel")
+        self.gpio_mode_label.grid(row=1, column=2, sticky="w", padx=(0, 8))
+        self.gpio_mode_var = tk.StringVar(value="HIGH")
+        self.gpio_mode_combo = ttk.Combobox(
+            board_panel,
+            textvariable=self.gpio_mode_var,
+            values=list(GPIO_MODES),
+            state="readonly",
+            width=10,
+        )
+        self.gpio_mode_combo.grid(row=1, column=3, sticky="w", padx=(0, 8))
+        self.gpio_cfg_btn = ttk.Button(
+            board_panel,
+            style="Secondary.TButton",
+            command=self.apply_board_gpio_mode,
+        )
+        self.gpio_cfg_btn.grid(row=1, column=4, sticky="w", padx=(0, 8))
+        self.gpio_read_btn = ttk.Button(
+            board_panel,
+            style="Secondary.TButton",
+            command=self.read_board_gpio,
+        )
+        self.gpio_read_btn.grid(row=1, column=5, sticky="w", padx=(0, 8))
+        self.gpio_value_var = tk.StringVar(value="")
+        ttk.Entry(board_panel, textvariable=self.gpio_value_var, width=12, state="readonly").grid(
+            row=1, column=6, sticky="w"
+        )
+
+        self.adc_pin_label = ttk.Label(board_panel, style="Panel.TLabel")
+        self.adc_pin_label.grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
+        self.adc_pin_var = tk.StringVar(value="A1")
+        self.adc_pin_combo = ttk.Combobox(
+            board_panel,
+            textvariable=self.adc_pin_var,
+            values=list(GPIO_ADC_PINS),
+            state="readonly",
+            width=6,
+        )
+        self.adc_pin_combo.grid(row=2, column=1, sticky="w", padx=(0, 16), pady=(10, 0))
+        self.adc_read_btn = ttk.Button(
+            board_panel,
+            style="Secondary.TButton",
+            command=self.read_board_adc,
+        )
+        self.adc_read_btn.grid(row=2, column=2, sticky="w", padx=(0, 8), pady=(10, 0))
+        self.adc_value_var = tk.StringVar(value="")
+        ttk.Entry(board_panel, textvariable=self.adc_value_var, width=12, state="readonly").grid(
+            row=2, column=3, sticky="w", pady=(10, 0)
+        )
+        self.freq_btn = ttk.Button(
+            board_panel,
+            style="Secondary.TButton",
+            command=self.read_board_frequency,
+        )
+        self.freq_btn.grid(row=2, column=4, sticky="w", padx=(0, 8), pady=(10, 0))
+        self.freq_value_var = tk.StringVar(value="")
+        ttk.Entry(board_panel, textvariable=self.freq_value_var, width=16, state="readonly").grid(
+            row=2, column=5, columnspan=2, sticky="w", pady=(10, 0)
+        )
 
         self._build_status_panel(panel)
         self.refresh_ports()
@@ -308,7 +402,7 @@ class HomePage(BasePage):
         """Build the compact explicit status-cache target table on Home."""
 
         panel = ttk.Frame(parent, style="Panel.TFrame")
-        panel.grid(row=5, column=0, sticky="ew", pady=(18, 0))
+        self.status_cache_panel = panel
         panel.columnconfigure(5, weight=1)
 
         self.status_cache_title = ttk.Label(panel, style="SectionTitle.TLabel")
@@ -1772,7 +1866,7 @@ class HomePage(BasePage):
             ready = bool(getattr(self.ctx.serial, "board_ready", True))
 
         if not ready:
-            self.ctx.state.extra["connection_detail"] = f"{port}: BOOTING"
+            self.ctx.state.extra["connection_detail"] = f"{port}: waiting READY REV04"
             self.after(50, self._finish_connection_when_ready, port)
             return
 
@@ -1915,13 +2009,45 @@ class HomePage(BasePage):
                 else:
                     self._record_status_event_drop(port, snapshot, "stale or unbound identity")
                 continue
-            self._apply_status_snapshot(port, snapshot)
+            if self._apply_status_snapshot(port, snapshot):
+                self._acknowledge_evstat(port, snapshot.irq_seq)
         if retained:
             self._push_event_pending_by_port[port] = retained
         else:
             self._push_event_pending_by_port.pop(port, None)
             self._push_event_pending_since_by_port = getattr(self, "_push_event_pending_since_by_port", {})
             self._push_event_pending_since_by_port.pop(port, None)
+
+    def _acknowledge_evstat(self, port: str, sequence: int) -> None:
+        if not sequence:
+            return
+        last = getattr(self, "_status_last_acked_irq_by_port", {}).get(port)
+        if last == sequence:
+            return
+        self._status_last_acked_irq_by_port[port] = sequence
+        threading.Thread(
+            target=self._acknowledge_evstat_worker,
+            args=(port, sequence),
+            daemon=True,
+        ).start()
+
+    def _acknowledge_evstat_worker(self, port: str, sequence: int) -> None:
+        try:
+            serial = self._serial_for_port(port)
+            if serial is None:
+                return
+            response = serial.acknowledge_interrupt(sequence)
+            if response is not None and not response.ok:
+                logger = getattr(serial, "emit_log", None)
+                if callable(logger):
+                    logger(
+                        f"ERROR INTACK {sequence:08X}: {response.error or response.data}"
+                    )
+        except Exception as exc:
+            serial = self._serial_for_port(port)
+            logger = getattr(serial, "emit_log", None) if serial is not None else None
+            if callable(logger):
+                logger(f"ERROR INTACK {sequence:08X}: {exc}")
 
     def _push_event_is_current(self, port: str, snapshot: chip_status_cache.Snapshot) -> bool:
         capabilities = getattr(self, "_status_capabilities_by_port", {}).get(port)
@@ -2332,6 +2458,82 @@ class HomePage(BasePage):
         self._flag_poll_inflight = False
         self._schedule_flag_poll(port, generation)
 
+    def _board_gpio_modes_for_pin(self, pin: str) -> tuple[str, ...]:
+        if pin in GPIO_DETECT_PINS:
+            return GPIO_MODES
+        return tuple(mode for mode in GPIO_MODES if mode != GPIO_MODE_DETECT)
+
+    def _on_board_gpio_pin_selected(self, _event: object | None = None) -> None:
+        pin = str(self.gpio_pin_var.get()).strip().upper()
+        modes = self._board_gpio_modes_for_pin(pin)
+        self.gpio_mode_combo.configure(values=list(modes))
+        if self.gpio_mode_var.get() not in modes:
+            self.gpio_mode_var.set(modes[0] if modes else "HIGH")
+
+    def apply_board_gpio_mode(self) -> None:
+        if not self.ctx.serial.is_connected:
+            messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
+            return
+        pin = str(self.gpio_pin_var.get()).strip().upper()
+        mode = str(self.gpio_mode_var.get()).strip().upper()
+        resp = self.ctx.serial.configure_gpio(pin, mode)
+        if resp.ok:
+            self.gpio_value_var.set(f"{pin} {mode}")
+            self.ctx.state.extra["connection_detail"] = f"{self.ctx.state.selected_port}: {resp.data}"
+        else:
+            messagebox.showerror(self.tr("error"), resp.error)
+        self.refresh_language()
+
+    def read_board_gpio(self) -> None:
+        if not self.ctx.serial.is_connected:
+            messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
+            return
+        pin = str(self.gpio_pin_var.get()).strip().upper()
+        resp = self.ctx.serial.read_gpio(pin)
+        if not resp.ok:
+            messagebox.showerror(self.tr("error"), resp.error)
+            return
+        try:
+            ack = parse_gpio_read_response(resp.data)
+        except ValueError as exc:
+            messagebox.showerror(self.tr("error"), str(exc))
+            return
+        self.gpio_value_var.set(str(ack.level))
+        self.refresh_language()
+
+    def read_board_adc(self) -> None:
+        if not self.ctx.serial.is_connected:
+            messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
+            return
+        pin = str(self.adc_pin_var.get()).strip().upper()
+        resp = self.ctx.serial.read_adc(pin)
+        if not resp.ok:
+            messagebox.showerror(self.tr("error"), resp.error)
+            return
+        try:
+            ack = parse_adc_read_response(resp.data)
+        except ValueError as exc:
+            messagebox.showerror(self.tr("error"), str(exc))
+            return
+        self.adc_value_var.set(str(ack.value))
+        self.refresh_language()
+
+    def read_board_frequency(self) -> None:
+        if not self.ctx.serial.is_connected:
+            messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
+            return
+        resp = self.ctx.serial.read_frequency()
+        if not resp.ok:
+            messagebox.showerror(self.tr("error"), resp.error)
+            return
+        try:
+            ack = parse_freq_response(resp.data)
+        except ValueError as exc:
+            messagebox.showerror(self.tr("error"), str(exc))
+            return
+        self.freq_value_var.set(f"{ack.frequency_hz:.2f} Hz")
+        self.refresh_language()
+
     def apply_i2c_speed(self) -> None:
         if not self.ctx.serial.is_connected:
             messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
@@ -2715,6 +2917,16 @@ class HomePage(BasePage):
         continuous_read_btn = getattr(self, "continuous_read_btn", None)
         if continuous_read_btn is not None:
             continuous_read_btn.configure(text=t(lang, "continuous_read_open"))
+        if getattr(self, "board_tools_title", None) is not None:
+            self.board_tools_title.configure(text=t(lang, "board_tools_title"))
+            self.gpio_pin_label.configure(text=t(lang, "board_gpio_pin"))
+            self.gpio_mode_label.configure(text=t(lang, "board_gpio_mode"))
+            self.gpio_cfg_btn.configure(text=t(lang, "board_gpio_apply"))
+            self.gpio_read_btn.configure(text=t(lang, "board_gpio_read"))
+            self.adc_pin_label.configure(text=t(lang, "board_adc_pin"))
+            self.adc_read_btn.configure(text=t(lang, "board_adc_read"))
+            self.freq_btn.configure(text=t(lang, "board_freq_read"))
+            self._on_board_gpio_pin_selected()
 
         self.refresh_ports()
         self._refresh_status_rows()
@@ -2764,8 +2976,13 @@ class ContinuousRegisterReadDialog(tk.Toplevel):
         self.status_var = tk.StringVar(self, value="")
 
         self.transient(home.winfo_toplevel())
-        self.minsize(680, 580)
-        self.geometry("780x700")
+        fit_toplevel_to_screen(
+            self,
+            preferred_width=780,
+            preferred_height=700,
+            minimum_width=460,
+            minimum_height=320,
+        )
         self.protocol("WM_DELETE_WINDOW", self.close)
         self._build_ui()
         self.refresh_language()
@@ -2777,8 +2994,17 @@ class ContinuousRegisterReadDialog(tk.Toplevel):
         return label
 
     def _build_ui(self) -> None:
-        body = ttk.Frame(self, style="Panel.TFrame", padding=14)
+        scroll_area = VerticalScrollArea(
+            self,
+            self.home.ctx,
+            horizontal=True,
+            min_content_width=680,
+        )
+        scroll_area.grid(row=0, column=0, sticky="nsew")
+        self._scroll_area = scroll_area
+        body = ttk.Frame(scroll_area.content, style="Panel.TFrame", padding=14)
         body.grid(row=0, column=0, sticky="nsew")
+        scroll_area.content.columnconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
         body.columnconfigure(1, weight=1)
@@ -3356,8 +3582,16 @@ class PiezoApplication:
         self.root.bind_class("TCombobox", "<MouseWheel>", lambda _event: None)
         self.root.title("Piezo Control GUI")
         self._apply_window_icon()
-        self.root.geometry("1700x980")
-        self.root.minsize(1450, 820)
+        # Start inside conservative screen bounds.  A large fixed
+        # minimum made the application impossible to shrink on 1366px and
+        # smaller displays, even though the page and navigation canvases can
+        # expose their full content with scrollbars.
+        screen_width = max(320, int(self.root.winfo_screenwidth()))
+        screen_height = max(240, int(self.root.winfo_screenheight()))
+        initial_width = min(1700, max(480, screen_width - 80))
+        initial_height = min(980, max(360, screen_height - 120))
+        self.root.geometry(f"{initial_width}x{initial_height}")
+        self.root.minsize(480, 320)
         self._base_width = 1700
         self._base_height = 980
         self._resize_after: str | None = None
@@ -3462,8 +3696,9 @@ class PiezoApplication:
         ratio = min(width / self._base_width, height / self._base_height)
         return max(0.85, min(1.25, ratio))
 
-    def _apply_visual_settings(self, *, refresh_widget_fonts: bool = True) -> None:
-        scale = self._window_scale()
+    def _apply_visual_settings(self, *, refresh_widget_fonts: bool = True, scale: float | None = None) -> None:
+        if scale is None:
+            scale = self._window_scale()
         self.state.ui_scale = scale
         self._last_visual_scale = scale
         self._last_applied_font_size = self.state.font_size
@@ -3481,17 +3716,19 @@ class PiezoApplication:
             return
         self._last_root_size = size
         if self._resize_after is not None:
-            self.root.after_cancel(self._resize_after)
-        self._resize_after = self.root.after(220, self._refresh_after_resize)
+            try:
+                self.root.after_cancel(self._resize_after)
+            except tk.TclError:
+                pass
+        self._resize_after = self.root.after(16, self._refresh_after_resize)
 
     def _refresh_after_resize(self) -> None:
         self._resize_after = None
-        scale = self._window_scale()
-        if abs(scale - self._last_visual_scale) < 0.08:
-            if hasattr(self, "navigation"):
-                self.navigation.refresh_layout()
-            return
-        self._apply_visual_settings(refresh_widget_fonts=False)
+        nav = getattr(self, "navigation", None)
+        if nav is not None:
+            nav._sync_content_window()
+            if getattr(self.state, "current_page", "") == "home":
+                nav._align_home_panel()
 
     def _refresh_widget_fonts(self) -> None:
         body_size = int(getattr(self.root, "_piezo_body_font_size", self.state.font_size))
@@ -3523,6 +3760,9 @@ class PiezoApplication:
                     font = ("Microsoft YaHei UI", title_size, "bold", *(() if not underline else ("underline",)))
                 elif style_name == "SectionTitle.TLabel":
                     font = ("Microsoft YaHei UI", body_size, "bold", *(() if not underline else ("underline",)))
+                elif style_name == "SidebarTitle.TLabel":
+                    sidebar_title_size = int(getattr(self.root, "_piezo_sidebar_title_font_size", title_size))
+                    font = ("Microsoft YaHei UI", sidebar_title_size, "bold", *(() if not underline else ("underline",)))
                 elif style_name == "SidebarVersion.TLabel":
                     font = ("Microsoft YaHei UI", small_size)
                 else:
@@ -3557,6 +3797,12 @@ class PiezoApplication:
         self.root.mainloop()
 
     def close(self) -> None:
+        if self._resize_after is not None:
+            try:
+                self.root.after_cancel(self._resize_after)
+            except tk.TclError:
+                pass
+            self._resize_after = None
         home_page = getattr(getattr(self, "navigation", None), "pages", {}).get("home")
         cancel_continuous_read = getattr(home_page, "cancel_continuous_read", None)
         if callable(cancel_continuous_read):
