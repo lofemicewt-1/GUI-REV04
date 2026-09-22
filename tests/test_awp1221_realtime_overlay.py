@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import tkinter as tk
 import unittest
+from collections import deque
 
 from pages.awp1221_realtime_sram import (
     ADCVoltageWindow,
@@ -92,6 +93,7 @@ class Awp1221RealtimeWindowTests(unittest.TestCase):
         self.window.update_idletasks()
         self.window.set_threshold_counts(6400, 1600)
         self.window.add_vibration_band(1.0)
+        self.window.vibration_bands = deque([(time.monotonic() - 0.5, 1.0)], maxlen=64)
         self.window.redraw()
         fills = [self.window.canvas.itemcget(item, "fill") for item in self.window.canvas.find_all()]
         self.assertIn("#2563EB", fills)

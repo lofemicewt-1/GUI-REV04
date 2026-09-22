@@ -79,7 +79,7 @@ def awp1221_visible_band(
     right = now
     band_left = max(float(start), left)
     band_right = min(float(start) + float(duration_s), right)
-    if band_right < band_left:
+    if band_right <= band_left:
         return None
     return band_left, band_right
 
