@@ -37,6 +37,8 @@ from pages.awp1221_realtime_sram import (
     AWP1221RealtimeMixin,
     AWP1221SramEditor,
     AWP1221_ADC_LIVE_REGISTER,
+    awp1221_threshold_adc_counts,
+    awp1221_vibration_band_seconds,
     decode_awp1221_adc_value,
 )
 from pages.gpio_controls import (
@@ -983,7 +985,9 @@ class AWP1221ModePage(AWP1221RealtimeMixin, BasePage):
         self.rom_metric_var = tk.StringVar(value="")
         self.rom_frequency_var = tk.StringVar(value="")
         self.board_slot_var = tk.StringVar(value="0")
+        self._visible_stage_index = 0
         self._build_ui()
+        self._bind_realtime_overlay_traces()
         self._auto_serial_trace = self.auto_serial_var.trace_add(
             "write",
             lambda *_: self._sync_auto_serial_page_state(),
@@ -2917,6 +2921,8 @@ class AWP1221ModePage(AWP1221RealtimeMixin, BasePage):
         self._stage_frames[stage_index].grid()
         for index, button in self._stage_buttons.items():
             button.configure(style="Selected.TButton" if index == stage_index else "Secondary.TButton")
+        self._visible_stage_index = stage_index
+        self._push_realtime_thresholds()
 
     def _register_text(self, widget: tk.Widget, key: str) -> None:
         self._translated_widgets.append((widget, key))
@@ -3457,6 +3463,134 @@ class AWP1221ModePage(AWP1221RealtimeMixin, BasePage):
         self._adc_trigger_read_active = not self._adc_trigger_read_active
         self._refresh_adc_read_buttons()
 
+    def toggle_adc_realtime(self) -> None:
+        super().toggle_adc_realtime()
+        if self._adc_realtime_active:
+            self._push_realtime_thresholds()
+
+    def _parse_realtime_code(self, text: object) -> int | None:
+        try:
+            return int(str(text).strip(), 0)
+        except (TypeError, ValueError):
+            return None
+
+    def _realtime_threshold_counts(self) -> tuple[int | None, int | None]:
+        if self.mode_key == "button_mode":
+            upper = lower = None
+            for variables in getattr(self, "_button_stage_vars", ()):
+                code = self._parse_realtime_code(variables["threshold"].get())
+                if code is None:
+                    continue
+                counts = awp1221_threshold_adc_counts(
+                    code,
+                    bool(variables["use_high_12_bits"].get()),
+                )
+                mode = str(variables["event_mode"].get())
+                if mode == "press" and upper is None:
+                    upper = counts
+                elif mode == "release" and lower is None:
+                    lower = counts
+            return upper, lower
+        stages = getattr(self, "_stage_vars", ())
+        if not stages:
+            return None, None
+        index = min(max(getattr(self, "_visible_stage_index", 0), 0), len(stages) - 1)
+        variables = stages[index]
+        precision = bool(variables["use_high_12_bits"].get())
+        press = self._parse_realtime_code(variables["press_threshold"]["threshold"].get())
+        release = self._parse_realtime_code(variables["release_threshold"]["threshold"].get())
+        return (
+            awp1221_threshold_adc_counts(press, precision) if press is not None else None,
+            awp1221_threshold_adc_counts(release, precision) if release is not None else None,
+        )
+
+    def _realtime_press_repeat(self) -> int:
+        if self.mode_key == "button_mode":
+            for variables in getattr(self, "_button_stage_vars", ()):
+                if str(variables["event_mode"].get()) != "press":
+                    continue
+                value = self._parse_realtime_code(variables["repeat"].get())
+                return value if value is not None else 0
+            return 0
+        stages = getattr(self, "_stage_vars", ())
+        if not stages:
+            return 0
+        index = min(max(getattr(self, "_visible_stage_index", 0), 0), len(stages) - 1)
+        value = self._parse_realtime_code(stages[index]["wave"]["press_repeat"].get())
+        return value if value is not None else 0
+
+    def _realtime_waveform_period_s(self) -> float:
+        if self._sinc_selected():
+            try:
+                return float(self._build_current_sinc_plan().duration_us) / 1_000_000.0
+            except Exception:
+                return 0.0
+        try:
+            depth = int(self.rom_depth_var.get().strip(), 0)
+            point_time = int(self.rom_point_time_var.get().strip(), 0)
+            half_cycle_code = self._parse_binary_option(self.rom_half_cycle_var.get())
+            if depth <= 0 or point_time <= 0:
+                return 0.0
+            effective = awp1221_waveform_effective_depth_points(
+                self.rom_waveform_var.get(),
+                depth,
+                half_cycle_code,
+            )
+            return effective * point_time / 1_000_000.0
+        except Exception:
+            return 0.0
+
+    def _realtime_vibration_duration_s(self) -> float:
+        try:
+            debounce_ms = float(str(self.debounce_time_var.get()).strip())
+        except (TypeError, ValueError):
+            debounce_ms = 0.0
+        return awp1221_vibration_band_seconds(
+            self._realtime_waveform_period_s(),
+            self._realtime_press_repeat(),
+            debounce_ms,
+        )
+
+    def _push_realtime_thresholds(self) -> None:
+        window = getattr(self, "_adc_voltage_window", None)
+        if window is None or not window.winfo_exists():
+            return
+        upper, lower = self._realtime_threshold_counts()
+        window.set_threshold_counts(upper, lower)
+
+    def _bind_realtime_overlay_traces(self) -> None:
+        variables: list[tk.Variable] = [self.debounce_time_var]
+        for stage in getattr(self, "_button_stage_vars", ()):
+            variables.extend(
+                (
+                    stage["threshold"],
+                    stage["event_mode"],
+                    stage["use_high_12_bits"],
+                    stage["repeat"],
+                )
+            )
+        for stage in getattr(self, "_stage_vars", ()):
+            variables.extend(
+                (
+                    stage["press_threshold"]["threshold"],
+                    stage["release_threshold"]["threshold"],
+                    stage["use_high_12_bits"],
+                    stage["wave"]["press_repeat"],
+                )
+            )
+        for variable in (
+            self.rom_waveform_var,
+            self.rom_depth_var,
+            self.rom_point_time_var,
+            self.rom_half_cycle_var,
+            *self._sinc_time_variables(),
+            getattr(self, "sinc_depth_var", None),
+        ):
+            if variable is not None:
+                variables.append(variable)
+        for variable in variables:
+            variable.trace_add("write", lambda *_: self._push_realtime_thresholds())
+
     def _request_adc_value_read(
         self,
         *,
@@ -3562,14 +3696,18 @@ class AWP1221ModePage(AWP1221RealtimeMixin, BasePage):
             if shared_state is not None
             else getattr(self, "_adc_detection_device_addr", None)
         )
-        if not self._adc_trigger_read_active or not detection_active:
-            return
         upper = line.upper()
         marker = "MCU_TEXT"
         marker_index = upper.find(marker)
         if marker_index < 0:
             return
         payload = upper[marker_index + len(marker):].strip()
+        if payload == "P" and self._adc_realtime_active:
+            window = self._adc_voltage_window
+            if window is not None and window.winfo_exists():
+                window.add_vibration_band(self._realtime_vibration_duration_s())
+        if not self._adc_trigger_read_active or not detection_active:
+            return
         if payload in {"P", "R"}:
             self._request_adc_value_read(
                 show_error=False,

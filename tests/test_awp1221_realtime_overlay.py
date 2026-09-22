@@ -4,7 +4,9 @@ import time
 import tkinter as tk
 import unittest
 from collections import deque
+from types import SimpleNamespace
 
+from pages.awp1221_page import AWP1221ModePage
 from pages.awp1221_realtime_sram import (
     ADCVoltageWindow,
     VIBRATION_BAND_COLOR,
@@ -99,6 +101,90 @@ class Awp1221RealtimeWindowTests(unittest.TestCase):
         self.assertIn("#2563EB", fills)
         self.assertIn("#9333EA", fills)
         self.assertIn(VIBRATION_BAND_COLOR, fills)
+
+
+def _var(value: object) -> SimpleNamespace:
+    return SimpleNamespace(get=lambda: value)
+
+
+class Awp1221RealtimePageLogicTests(unittest.TestCase):
+    def test_button_mode_uses_first_press_and_release_stages(self) -> None:
+        page = object.__new__(AWP1221ModePage)
+        page.mode_key = "button_mode"
+        page._button_stage_vars = [
+            {
+                "event_mode": _var("press"),
+                "threshold": _var("400"),
+                "use_high_12_bits": _var(True),
+                "repeat": _var("2"),
+            },
+            {
+                "event_mode": _var("release"),
+                "threshold": _var("100"),
+                "use_high_12_bits": _var(True),
+                "repeat": _var("0"),
+            },
+        ]
+        self.assertEqual(page._realtime_threshold_counts(), (6400, 1600))
+        self.assertEqual(page._realtime_press_repeat(), 2)
+
+    def test_full_mode_uses_visible_stage_press_release(self) -> None:
+        page = object.__new__(AWP1221ModePage)
+        page.mode_key = "full_mode"
+        page._visible_stage_index = 1
+        page._stage_vars = [
+            {},
+            {
+                "press_threshold": {"threshold": _var("300")},
+                "release_threshold": {"threshold": _var("80")},
+                "use_high_12_bits": _var(False),
+                "wave": {"press_repeat": _var("3")},
+            },
+        ]
+        self.assertEqual(page._realtime_threshold_counts(), (300, 80))
+        self.assertEqual(page._realtime_press_repeat(), 3)
+
+    def test_invalid_threshold_omits_that_line(self) -> None:
+        page = object.__new__(AWP1221ModePage)
+        page.mode_key = "button_mode"
+        page._button_stage_vars = [
+            {
+                "event_mode": _var("press"),
+                "threshold": _var("abc"),
+                "use_high_12_bits": _var(False),
+                "repeat": _var("0"),
+            },
+            {
+                "event_mode": _var("release"),
+                "threshold": _var("100"),
+                "use_high_12_bits": _var(False),
+                "repeat": _var("0"),
+            },
+        ]
+        self.assertEqual(page._realtime_threshold_counts(), (None, 100))
+
+    def test_vibration_duration_combines_period_repeat_debounce(self) -> None:
+        page = object.__new__(AWP1221ModePage)
+        page._realtime_waveform_period_s = lambda: 0.01
+        page._realtime_press_repeat = lambda: 2
+        page.debounce_time_var = _var("100")
+        self.assertAlmostEqual(page._realtime_vibration_duration_s(), 0.12)
+
+    def test_process_p_starts_band_without_trigger_read(self) -> None:
+        bands: list[float] = []
+        page = object.__new__(AWP1221ModePage)
+        page._adc_realtime_active = True
+        page._adc_trigger_read_active = False
+        page._adc_detection_active = True
+        page._shared_state_for = lambda: None
+        page._adc_voltage_window = SimpleNamespace(
+            winfo_exists=lambda: True,
+            add_vibration_band=lambda duration: bands.append(duration),
+        )
+        page._realtime_vibration_duration_s = lambda: 0.12
+        page._request_adc_value_read = lambda **kwargs: None
+        AWP1221ModePage._process_adc_trigger_log(page, "MCU_TEXT P")
+        self.assertEqual(bands, [0.12])
 
 
 if __name__ == "__main__":
