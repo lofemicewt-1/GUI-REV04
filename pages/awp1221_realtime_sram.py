@@ -33,6 +33,57 @@ def decode_awp1221_adc_value(raw: int) -> int:
     return word if word < 0x8000 else word - 0x10000
 
 
+THRESHOLD_UPPER_COLOR = "#2563EB"
+THRESHOLD_LOWER_COLOR = "#9333EA"
+VIBRATION_BAND_COLOR = "#86EFAC"
+
+
+def awp1221_threshold_adc_counts(code: int, use_high_12_bits: bool) -> int:
+    value = int(code) & 0xFFF
+    return value << 4 if use_high_12_bits else value
+
+
+def awp1221_adc_counts_to_mv(
+    counts: float,
+    sample_us: float,
+    load_ua: float,
+    capacitance_uf: float,
+) -> float:
+    return float(counts) * float(sample_us) * float(load_ua) / float(capacitance_uf) / 1000.0
+
+
+def awp1221_plot_ceiling(*magnitudes: float) -> float:
+    peak = max((abs(float(value)) for value in magnitudes), default=0.0)
+    return max(1.0, peak * 1.15)
+
+
+def awp1221_vibration_band_seconds(
+    waveform_period_s: float,
+    event_repeat: int,
+    debounce_ms: float,
+) -> float:
+    period = max(0.0, float(waveform_period_s))
+    debounce = max(0.0, float(debounce_ms)) / 1000.0
+    return max(int(event_repeat), 1) * period + debounce
+
+
+def awp1221_visible_band(
+    start: float,
+    duration_s: float,
+    now: float,
+    span: float,
+) -> tuple[float, float] | None:
+    if span <= 0 or duration_s <= 0:
+        return None
+    left = now - span
+    right = now
+    band_left = max(float(start), left)
+    band_right = min(float(start) + float(duration_s), right)
+    if band_right <= band_left:
+        return None
+    return band_left, band_right
+
+
 def _schedule_ui(widget: tk.Misc, callback: Callable[..., None], *args: Any) -> None:
     try:
         widget.after(0, callback, *args)
@@ -259,5 +310,13 @@ __all__ = [
     "AWP1221SramEditor",
     "AWP1221_ADC_LIVE_REGISTER",
     "AWP1221_REALTIME_POLL_OPTIONS",
+    "THRESHOLD_LOWER_COLOR",
+    "THRESHOLD_UPPER_COLOR",
+    "VIBRATION_BAND_COLOR",
+    "awp1221_adc_counts_to_mv",
+    "awp1221_plot_ceiling",
+    "awp1221_threshold_adc_counts",
+    "awp1221_vibration_band_seconds",
+    "awp1221_visible_band",
     "decode_awp1221_adc_value",
 ]
