@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Any, Callable
 
+from core.awp1221_command_gate import ensure_awp1221_cmd_gate
 from core.awp1221_sinc import (
     awp1221_sinc_duration_us,
     awp1221_sinc_parse_params,
@@ -32,6 +33,12 @@ from core.base_tool import (
     run_async_write,
 )
 from pages.base_page import BasePage, SimpleTooltip
+from pages.awp1221_realtime_sram import (
+    AWP1221RealtimeMixin,
+    AWP1221SramEditor,
+    AWP1221_ADC_LIVE_REGISTER,
+    decode_awp1221_adc_value,
+)
 from pages.gpio_controls import (
     NullGpioControlPanel,
     active_serial_identity,
@@ -708,7 +715,7 @@ def _serial_batch(serial: Any) -> Any:
     return snapshot_transaction() if callable(snapshot_transaction) else nullcontext()
 
 
-class AWP1221ModePage(BasePage):
+class AWP1221ModePage(AWP1221RealtimeMixin, BasePage):
     """One independent AWP1221 mode view using the shared register contract."""
 
     LAYOUT_COLUMNS = 2
@@ -924,8 +931,7 @@ class AWP1221ModePage(BasePage):
         self.zps_detect_var = tk.BooleanVar(value=True)
         self.sleep_sensitivity_var = tk.BooleanVar(value=False)
         self.adc_value_var = tk.StringVar(value="")
-        self._adc_realtime_active = False
-        self._adc_realtime_job: str | None = None
+        self._init_adc_realtime()
         self._adc_trigger_read_active = False
         self._adc_detection_active = False
         self._adc_detection_device_addr: int | None = None
@@ -1070,9 +1076,15 @@ class AWP1221ModePage(BasePage):
         rom_tab = ttk.Frame(self.tools_notebook, style="Panel.TFrame", padding=14)
         self.tools_notebook.add(waveform_tab, text=self.tr("awp1221_waveform_tab"))
         self.tools_notebook.add(rom_tab, text=self.tr("awp1221_rom_tab"))
-        waveform_btn = ttk.Button(waveform_tab, style="Secondary.TButton", state="disabled")
-        waveform_btn.grid(row=0, column=0, sticky="w")
-        self._buttons["awp1221_waveform_reserved"] = waveform_btn
+        if AWP1221SramEditor is not None:
+            waveform_tab.columnconfigure(0, weight=1)
+            waveform_tab.rowconfigure(0, weight=1)
+            self.sram_editor = AWP1221SramEditor(waveform_tab, self.ctx, self)
+            self.sram_editor.grid(row=0, column=0, sticky="nsew")
+        else:
+            waveform_btn = ttk.Button(waveform_tab, style="Secondary.TButton", state="disabled")
+            waveform_btn.grid(row=0, column=0, sticky="w")
+            self._buttons["awp1221_waveform_reserved"] = waveform_btn
         self._build_waveform_selector(rom_tab)
 
         log_frame = self.make_serial_log(right, height=7, subscribe=True)
@@ -2421,6 +2433,13 @@ class AWP1221ModePage(BasePage):
         if not response.ok:
             raise ValueError(response.error)
 
+    def _ensure_reg_1f_bit3(self, device_addr: int | None = None) -> int:
+        address = self.device_addr() if device_addr is None else device_addr
+        return ensure_awp1221_cmd_gate(
+            lambda register: self._read_register_value(register, address),
+            lambda register, value: self._write_register_value(register, value, address),
+        )
+
     def _set_sram_mode(
         self,
         mode: int,
@@ -2443,6 +2462,7 @@ class AWP1221ModePage(BasePage):
         offset_code: int,
         vpk_code: int,
     ) -> None:
+        self._ensure_reg_1f_bit3(device_addr)
         with _serial_batch(self.ctx.serial):
             self._write_waveform_selection_batch(
                 device_addr,
@@ -2525,6 +2545,7 @@ class AWP1221ModePage(BasePage):
             )
 
     def _write_sinc_plan(self, device_addr: int, plan: Any) -> None:
+        self._ensure_reg_1f_bit3(device_addr)
         with _serial_batch(self.ctx.serial):
             self._write_sinc_plan_batch(device_addr, plan)
 
@@ -3432,16 +3453,6 @@ class AWP1221ModePage(BasePage):
         if self._ensure_connected():
             self._request_adc_value_read(show_error=True)
 
-    def toggle_adc_realtime(self) -> None:
-        if self._adc_realtime_active:
-            self._stop_adc_realtime()
-            return
-        if not self._ensure_connected():
-            return
-        self._adc_realtime_active = True
-        self._refresh_adc_read_buttons()
-        self._poll_adc_realtime()
-
     def toggle_adc_trigger_read(self) -> None:
         self._adc_trigger_read_active = not self._adc_trigger_read_active
         self._refresh_adc_read_buttons()
@@ -3452,6 +3463,7 @@ class AWP1221ModePage(BasePage):
         show_error: bool,
         device_addr: int | None = None,
         on_complete: Callable[[], None] | None = None,
+        register: int = AWP1221_ADC_VALUE_REGISTER,
     ) -> bool:
         if self._adc_read_in_flight:
             return False
@@ -3466,13 +3478,14 @@ class AWP1221ModePage(BasePage):
         self._adc_read_in_flight = True
         _run_ui_background_task(
             self,
-            lambda: self._read_register_value(AWP1221_ADC_VALUE_REGISTER, address),
+            lambda: self._read_register_value(register, address),
             on_done=lambda value: self._finish_adc_value_read(
                 value=value,
                 error=None,
                 show_error=show_error,
                 generation=generation,
                 on_complete=on_complete,
+                register=register,
             ),
             on_error=lambda error: self._finish_adc_value_read(
                 value=None,
@@ -3480,6 +3493,7 @@ class AWP1221ModePage(BasePage):
                 show_error=show_error,
                 generation=generation,
                 on_complete=on_complete,
+                register=register,
             ),
         )
         return True
@@ -3492,6 +3506,7 @@ class AWP1221ModePage(BasePage):
         show_error: bool,
         generation: int,
         on_complete: Callable[[], None] | None,
+        register: int = AWP1221_ADC_VALUE_REGISTER,
     ) -> None:
         self._adc_read_in_flight = False
         if generation != getattr(self, "_adc_lifecycle_generation", 0):
@@ -3499,38 +3514,19 @@ class AWP1221ModePage(BasePage):
         if error is not None:
             if show_error:
                 messagebox.showerror(self.tr("error"), str(error))
+            elif register == AWP1221_ADC_LIVE_REGISTER:
+                self._show_adc_voltage_error(error)
         elif value is not None:
             raw_value = value & 0xFFFF
-            self.adc_value_var.set(f"0x{raw_value:04X} / {raw_value}")
+            self.adc_value_var.set(
+                f"0x{raw_value:04X} / {decode_awp1221_adc_value(raw_value)}"
+            )
+            if register == AWP1221_ADC_LIVE_REGISTER and self._adc_realtime_active:
+                window = self._adc_voltage_window
+                if window is not None and window.winfo_exists():
+                    window.add_sample(raw_value)
         if on_complete is not None:
             on_complete()
-
-    def _poll_adc_realtime(self) -> None:
-        self._adc_realtime_job = None
-        if not self._adc_realtime_active:
-            return
-        if not self.ctx.serial.is_connected:
-            self._stop_adc_realtime()
-            return
-        if not self._request_adc_value_read(
-            show_error=False,
-            on_complete=self._schedule_next_adc_poll,
-        ):
-            self._schedule_next_adc_poll()
-
-    def _schedule_next_adc_poll(self) -> None:
-        if self._adc_realtime_active:
-            self._adc_realtime_job = self.after(300, self._poll_adc_realtime)
-
-    def _stop_adc_realtime(self) -> None:
-        self._adc_realtime_active = False
-        if self._adc_realtime_job is not None:
-            try:
-                self.after_cancel(self._adc_realtime_job)
-            except Exception:
-                pass
-        self._adc_realtime_job = None
-        self._refresh_adc_read_buttons()
 
     def _refresh_adc_read_buttons(self) -> None:
         realtime_button = self._buttons.get("adc_read_realtime")
@@ -3790,6 +3786,7 @@ class AWP1221ModePage(BasePage):
         settings_config: dict[str, Any],
     ) -> None:
         with _serial_batch(self.ctx.serial):
+            self._ensure_reg_1f_bit3(device_addr)
             if self.mode_key == "button_mode":
                 for stage_index, config in enumerate(stage_configs):
                     self._write_button_adc_stage(stage_index, config, device_addr)
@@ -3863,6 +3860,7 @@ class AWP1221ModePage(BasePage):
         if not self._ensure_connected():
             return False
         try:
+            self._ensure_reg_1f_bit3()
             self._write_control_command(command_key)
         except Exception as exc:
             messagebox.showerror(self.tr("error"), str(exc))
@@ -4066,6 +4064,9 @@ class AWP1221ModePage(BasePage):
             return
         self._labels["awp1221_basic_parameters"].configure(text=self.tr("awp1221_basic_parameters"))
         self._labels["awp1221_adc"].configure(text=self.tr("awp1221_adc"))
+        sram_editor = getattr(self, "sram_editor", None)
+        if sram_editor is not None:
+            sram_editor.refresh_language()
         self.tools_notebook.tab(0, text=self.tr("awp1221_waveform_tab"))
         self.tools_notebook.tab(1, text=self.tr("awp1221_rom_tab"))
         for widget, key in self._translated_widgets:
@@ -4714,10 +4715,37 @@ class AWP1221Page(BasePage):
         if not resp.ok:
             messagebox.showerror(self.tr("error"), resp.error)
 
+    def _read_chip_register(self, address: int, register: int) -> int:
+        resp = self.ctx.serial.read_register_value(address, register, bits=16)
+        if not resp.ok:
+            raise ValueError(resp.error)
+        value = self.ctx.serial.extract_rdataw_value(
+            resp.data,
+            device_addr=address,
+            reg_addr=register,
+            bits=16,
+        )
+        if value is None:
+            raise ValueError(resp.data or f"invalid register 0x{register:02X} response")
+        return value
+
+    def _write_chip_register(self, address: int, register: int, value: int) -> None:
+        resp = self.ctx.serial.write_register_value(address, register, value, bits=16)
+        if not resp.ok:
+            raise ValueError(resp.error)
+
     def write_chip_state(self, value: int) -> None:
         if not self._ensure_connected():
             return
         address = self._device_addr()
+        try:
+            ensure_awp1221_cmd_gate(
+                lambda register: self._read_chip_register(address, register),
+                lambda register, data: self._write_chip_register(address, register, data),
+            )
+        except Exception as exc:
+            messagebox.showerror(self.tr("error"), str(exc))
+            return
         owner = getattr(self, "_shared_state_owner", None)
         if owner is not None:
             owner.invalidate_device(
