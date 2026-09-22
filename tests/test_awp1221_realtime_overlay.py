@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import time
+import tkinter as tk
 import unittest
 
 from pages.awp1221_realtime_sram import (
+    ADCVoltageWindow,
+    VIBRATION_BAND_COLOR,
     awp1221_adc_counts_to_mv,
     awp1221_plot_ceiling,
     awp1221_threshold_adc_counts,
@@ -44,6 +48,55 @@ class Awp1221RealtimeHelperTests(unittest.TestCase):
 
     def test_visible_band_none_when_outside_span(self) -> None:
         self.assertIsNone(awp1221_visible_band(0.0, 1.0, 10.0, 5.0))
+
+
+class Awp1221RealtimeWindowTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.window = ADCVoltageWindow(self.root, lambda: None)
+        self.window.sample_time.set("4 us")
+        self.window.load.set("40 uA")
+        self.window.capacitance.set("2")
+        self.window.time_scale.set("10")
+
+    def tearDown(self) -> None:
+        try:
+            self.window.destroy()
+        except tk.TclError:
+            pass
+        self.root.destroy()
+
+    def test_set_threshold_counts_stores_values(self) -> None:
+        self.window.set_threshold_counts(6400, 1600)
+        self.assertEqual(self.window.upper_counts, 6400)
+        self.assertEqual(self.window.lower_counts, 1600)
+
+    def test_add_vibration_band_ignores_non_positive_duration(self) -> None:
+        self.window.add_vibration_band(0)
+        self.window.add_vibration_band(-1)
+        self.assertEqual(len(self.window.vibration_bands), 0)
+
+    def test_add_vibration_band_records_start_and_duration(self) -> None:
+        before = time.monotonic()
+        self.window.add_vibration_band(0.12)
+        after = time.monotonic()
+        self.assertEqual(len(self.window.vibration_bands), 1)
+        start, duration = self.window.vibration_bands[0]
+        self.assertTrue(before <= start <= after)
+        self.assertAlmostEqual(duration, 0.12)
+
+    def test_redraw_creates_threshold_and_band_items(self) -> None:
+        self.window.update_idletasks()
+        self.window.canvas.config(width=400, height=300)
+        self.window.update_idletasks()
+        self.window.set_threshold_counts(6400, 1600)
+        self.window.add_vibration_band(1.0)
+        self.window.redraw()
+        fills = [self.window.canvas.itemcget(item, "fill") for item in self.window.canvas.find_all()]
+        self.assertIn("#2563EB", fills)
+        self.assertIn("#9333EA", fills)
+        self.assertIn(VIBRATION_BAND_COLOR, fills)
 
 
 if __name__ == "__main__":

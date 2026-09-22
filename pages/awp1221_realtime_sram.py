@@ -79,7 +79,7 @@ def awp1221_visible_band(
     right = now
     band_left = max(float(start), left)
     band_right = min(float(start) + float(duration_s), right)
-    if band_right <= band_left:
+    if band_right < band_left:
         return None
     return band_left, band_right
 
@@ -123,6 +123,9 @@ class ADCVoltageWindow(tk.Toplevel):
         self.voltage = tk.StringVar(value="— mV")
         self.status = tk.StringVar(value="正在读取...")
         self.points: deque[tuple[float, float]] = deque(maxlen=2000)
+        self.upper_counts: int | None = None
+        self.lower_counts: int | None = None
+        self.vibration_bands: deque[tuple[float, float]] = deque(maxlen=64)
 
         controls = ttk.Frame(self, padding=12)
         controls.pack(fill="x")
@@ -165,6 +168,29 @@ class ADCVoltageWindow(tk.Toplevel):
             return AWP1221_REALTIME_POLL_MS
         return value if value > 0 else AWP1221_REALTIME_POLL_MS
 
+    def set_threshold_counts(self, upper: int | None, lower: int | None) -> None:
+        self.upper_counts = upper
+        self.lower_counts = lower
+        self.redraw()
+
+    def add_vibration_band(self, duration_s: float) -> None:
+        width = float(duration_s)
+        if width <= 0:
+            return
+        self.vibration_bands.append((time.monotonic(), width))
+        self.redraw()
+
+    def _conversion_params(self) -> tuple[float, float, float] | None:
+        try:
+            capacitance = float(self.capacitance.get())
+            sample_us = float(self.sample_time.get().split()[0])
+            load_ua = float(self.load.get().split()[0])
+            if capacitance <= 0:
+                raise ValueError
+        except ValueError:
+            return None
+        return sample_us, load_ua, capacitance
+
     def add_sample(self, raw: int) -> None:
         signed = decode_awp1221_adc_value(raw)
         self.points.append((time.monotonic(), signed))
@@ -178,22 +204,52 @@ class ADCVoltageWindow(tk.Toplevel):
         if width < 100 or height < 100:
             return
         left, right, top, bottom = 65, width - 20, 20, height - 45
+        params = self._conversion_params()
         try:
-            capacitance = float(self.capacitance.get())
             span = float(self.time_scale.get())
-            if capacitance <= 0 or span <= 0:
+            if span <= 0 or params is None:
                 raise ValueError
-            duration = float(self.sample_time.get().split()[0])
-            current = float(self.load.get().split()[0])
+            duration, current, capacitance = params
         except ValueError:
             self.voltage.set("请输入有效的 C 和时间范围")
             return
-        values = [(stamp, signed * duration * current / capacitance / 1000.0) for stamp, signed in self.points]
+        values = [
+            (stamp, awp1221_adc_counts_to_mv(signed, duration, current, capacitance))
+            for stamp, signed in self.points
+        ]
         self.voltage.set(f"{values[-1][1]:.3f} mV" if values else "— mV")
         now = time.monotonic()
         visible = [(stamp, value) for stamp, value in values if stamp >= now - span]
-        magnitude = max((abs(value) for _, value in visible), default=0.0)
-        ceiling = max(1.0, magnitude * 1.15)
+        upper_mv = (
+            awp1221_adc_counts_to_mv(self.upper_counts, duration, current, capacitance)
+            if self.upper_counts is not None
+            else None
+        )
+        lower_mv = (
+            awp1221_adc_counts_to_mv(self.lower_counts, duration, current, capacitance)
+            if self.lower_counts is not None
+            else None
+        )
+        ceiling = awp1221_plot_ceiling(
+            *(value for _, value in visible),
+            *(item for item in (upper_mv, lower_mv) if item is not None),
+        )
+        def y_at(value: float) -> float:
+            return (top + bottom) / 2 - value / ceiling * (bottom - top) / 2
+        def x_at(stamp: float) -> float:
+            return left + (stamp - now + span) / span * (right - left)
+        for start, band_duration in self.vibration_bands:
+            visible_band = awp1221_visible_band(start, band_duration, now, span)
+            if visible_band is None:
+                continue
+            canvas.create_rectangle(
+                x_at(visible_band[0]),
+                top,
+                x_at(visible_band[1]),
+                bottom,
+                fill=VIBRATION_BAND_COLOR,
+                outline="",
+            )
         for index in range(6):
             y = bottom - (bottom - top) * index / 5
             canvas.create_line(left, y, right, y, fill="#e4e8ed")
@@ -203,10 +259,18 @@ class ADCVoltageWindow(tk.Toplevel):
             canvas.create_text(x, bottom + 15, text=f"{-span + span * index / 5:.0f}", fill="#596575")
         canvas.create_text(12, top, text="mV", anchor="w")
         canvas.create_text(right, bottom + 32, text="Time (s)", anchor="e")
+        for mv, color, label in (
+            (upper_mv, THRESHOLD_UPPER_COLOR, "上阈值"),
+            (lower_mv, THRESHOLD_LOWER_COLOR, "下阈值"),
+        ):
+            if mv is None:
+                continue
+            y = y_at(mv)
+            canvas.create_line(left, y, right, y, fill=color, dash=(6, 4), width=2)
+            canvas.create_text(right - 4, y - 8, text=f"{label} {mv:.3f} mV", anchor="e", fill=color)
         coords: list[float] = []
         for stamp, value in visible:
-            coords.extend((left + (stamp - now + span) / span * (right - left),
-                           (top + bottom) / 2 - value / ceiling * (bottom - top) / 2))
+            coords.extend((x_at(stamp), y_at(value)))
         if len(coords) >= 4:
             canvas.create_line(*coords, fill="#2f80ed", width=2)
 
