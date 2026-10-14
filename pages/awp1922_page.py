@@ -7,6 +7,7 @@ from typing import Any
 
 from pages.base_page import BasePage
 from core.base_tool import parse_firmware_error
+from core.ui_dispatch import post_to_ui
 
 
 def awp1922_amplitude_code(label: str) -> int | None:
@@ -442,7 +443,7 @@ class AWP1922Page(BasePage):
             if resp.ok:
                 self._rewrite_after_reenable(dev, value, reenabled)
             try:
-                self.after(0, finish, resp.ok, resp.data, resp.error)
+                post_to_ui(self, finish, resp.ok, resp.data, resp.error)
             except tk.TclError:
                 pass
 

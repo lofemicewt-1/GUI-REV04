@@ -26,6 +26,7 @@ from core.base_tool import (
     parse_freq_response,
     parse_gpio_read_response,
 )
+from core.ui_dispatch import UiDispatcher, post_to_ui
 from core import chip_status_cache
 from core.chip_discovery import ChipDiscovery, ChipProbe, discover_first
 from core.continuous_register_read import (
@@ -1496,7 +1497,7 @@ class HomePage(BasePage):
             self._handle_serial_connection_lost(port, error)
             return
         try:
-            self.after(0, self._handle_serial_connection_lost, port, error)
+            post_to_ui(self, self._handle_serial_connection_lost, port, error)
         except Exception:
             pass
 
@@ -3073,6 +3074,9 @@ def _resolve_theme(theme: str) -> str:
 class PiezoApplication:
     def __init__(self) -> None:
         self.root = tk.Tk()
+        # Worker threads hand results to Tk only through this FIFO dispatcher.
+        self.ui_dispatcher = UiDispatcher(self.root).start()
+        self.root.bind("<Destroy>", self._on_root_destroy, add="+")
         # Let scroll containers handle the wheel without changing a hovered combobox value.
         self.root.bind_class("TCombobox", "<MouseWheel>", lambda _event: None)
         self.root.title("Piezo Control GUI")
@@ -3319,7 +3323,14 @@ class PiezoApplication:
     def run(self) -> None:
         self.root.mainloop()
 
+    def _on_root_destroy(self, event: tk.Event) -> None:
+        if getattr(event, "widget", None) is self.root:
+            self.ui_dispatcher.close()
+
     def close(self) -> None:
+        # Stop accepting worker callbacks first; nothing may touch Tk after
+        # the window is gone ("main thread is not in main loop").
+        self.ui_dispatcher.close()
         if self._resize_after is not None:
             try:
                 self.root.after_cancel(self._resize_after)

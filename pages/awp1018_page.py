@@ -44,6 +44,7 @@ from core.base_tool import (
 )
 from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
 from pages.gpio_controls import GpioControlGroup, GpioControlPanel, active_serial_identity
+from core.ui_dispatch import post_to_ui
 
 
 class AWP1018Page(BasePage):
@@ -360,8 +361,8 @@ class AWP1018Page(BasePage):
                 error_kind = "read_failed"
                 error_detail = str(exc)
             try:
-                self.after(
-                    0,
+                post_to_ui(
+                    self,
                     self._finish_awp1018_txt_export,
                     page,
                     page_state,
@@ -444,7 +445,7 @@ class AWP1018Page(BasePage):
             except Exception as exc:
                 error = str(exc)
             try:
-                self.after(0, self._finish_awp1018_txt_import, preset, error)
+                post_to_ui(self, self._finish_awp1018_txt_import, preset, error)
             except tk.TclError:
                 pass
 
@@ -4109,7 +4110,7 @@ class AWP1018NormalModePage(BasePage):
         def worker() -> None:
             resp = self.ctx.serial.write_register_value(dev, reg, value, bits=16)
             try:
-                self.after(0, finish, resp.ok, resp.error)
+                post_to_ui(self, finish, resp.ok, resp.error)
             except tk.TclError:
                 pass
 
@@ -4751,7 +4752,7 @@ class AWP1018NormalModePage(BasePage):
 
     def _handle_serial_status_log(self, line: str) -> None:
         try:
-            self.after(0, self._process_serial_status_log, line)
+            post_to_ui(self, self._process_serial_status_log, line)
         except Exception:
             pass
 

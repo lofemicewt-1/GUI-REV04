@@ -50,6 +50,7 @@ from pages.gpio_controls import (
     NullGpioControlPanel,
     active_serial_identity,
 )
+from core.ui_dispatch import post_to_ui
 
 _GPIO_CATEGORY_BY_LABEL = {label: key for key, label in GPIO_CATEGORY_LABELS.items()}
 _GPIO_FUNCTION_BY_LABEL = {label: code for code, label in GPIO_FUNCTION_LABELS.items()}
@@ -723,10 +724,7 @@ def merge_awp1221_waveform_word3(
 
 
 def _schedule_ui(widget: tk.Misc, callback: Callable[..., None], *args: Any) -> None:
-    try:
-        widget.after(0, callback, *args)
-    except tk.TclError:
-        pass
+    post_to_ui(widget, callback, *args)
 
 
 def _run_ui_background_task(
@@ -4043,7 +4041,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
     def _handle_adc_trigger_log(self, line: str) -> None:
         try:
-            self.after(0, self._process_adc_trigger_log, line)
+            post_to_ui(self, self._process_adc_trigger_log, line)
         except Exception:
             pass
 

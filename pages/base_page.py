@@ -11,6 +11,7 @@ from typing import Any
 from config.app_info import CHIP_WEBSITE_URLS
 from config.languages import t
 from styles.fonts import sidebar_brand_font_spec
+from core.ui_dispatch import post_to_ui
 
 
 def fit_toplevel_to_screen(
@@ -931,23 +932,53 @@ class BasePage(ttk.Frame):
             Path(path).write_text(content, encoding="utf-8")
         except Exception as exc:
             messagebox.showerror(self.tr("error"), str(exc))
+    SERIAL_LOG_MAX_LINES = 10_000
+
+    def _serial_log_pending_state(self) -> tuple[threading.Lock, list[list[str]]]:
+        state = self.__dict__.get("_serial_log_pending")
+        if state is None:
+            state = self.__dict__.setdefault("_serial_log_pending", (threading.Lock(), [[], False, 0]))
+        return state[0], state[1]
+
     def append_serial_log(self, line: str) -> None:
+        lock, box = self._serial_log_pending_state()
         if threading.current_thread() is not threading.main_thread():
+            # Coalesce: one UI callback inserts every line that arrived before
+            # it runs, so a log flood costs one Text insert per tick per page.
+            with lock:
+                box[0].append(line)
+                if len(box[0]) > self.SERIAL_LOG_MAX_LINES:
+                    del box[0][: len(box[0]) - self.SERIAL_LOG_MAX_LINES]
+                if box[1]:
+                    return
+                box[1] = True
+                generation = box[2]
             try:
-                self.after(0, self.append_serial_log, line)
+                post_to_ui(self, self._flush_serial_log_pending, None, generation)
             except Exception:
                 pass
             return
+        self._flush_serial_log_pending([line])
 
+    def _flush_serial_log_pending(self, extra: list[str] | None = None, generation: int | None = None) -> None:
+        lock, box = self._serial_log_pending_state()
+        with lock:
+            if generation is not None and generation != box[2]:
+                return  # superseded by a clear; the newer batch has its own flush
+            lines, box[0], box[1] = box[0], [], False
+        if extra:
+            lines.extend(extra)
+        if not lines:
+            return
         text = self._serial_log_text
         if text is None:
             return
         try:
             text.configure(state="normal")
-            text.insert("end", line + "\n")
-            lines = int(text.index("end-1c").split(".")[0])
-            if lines > 10_000:
-                text.delete("1.0", f"{lines - 10_000}.0")
+            text.insert("end", "\n".join(lines) + "\n")
+            count = int(text.index("end-1c").split(".")[0])
+            if count > self.SERIAL_LOG_MAX_LINES:
+                text.delete("1.0", f"{count - self.SERIAL_LOG_MAX_LINES}.0")
             text.see("end")
             text.configure(state="disabled")
         except Exception:
@@ -958,13 +989,21 @@ class BasePage(ttk.Frame):
         self.clear_serial_log_view()
 
     def clear_serial_log_view(self) -> None:
+        lock, box = self._serial_log_pending_state()
+        with lock:
+            # Lines queued before the clear are discarded; lines arriving after
+            # it start a new batch that is posted after the clear callback.
+            box[0], box[1] = [], False
+            box[2] += 1
         if threading.current_thread() is not threading.main_thread():
             try:
-                self.after(0, self.clear_serial_log_view)
+                post_to_ui(self, self._clear_serial_log_widget)
             except Exception:
                 pass
             return
+        self._clear_serial_log_widget()
 
+    def _clear_serial_log_widget(self) -> None:
         text = self._serial_log_text
         if text is None:
             return

@@ -21,6 +21,7 @@ from core.awp1221_gpio import (
 from core.base_tool import GPIO_MODE_DETECT, parse_gpio_read_response, run_async_write
 
 from pages.awp1221_sram_editor import AWP1221SramEditor
+from core.ui_dispatch import post_to_ui
 
 
 AWP1221_ADC_SETTINGS_REGISTER = 0x05
@@ -150,10 +151,7 @@ def awp1221_visible_band(
 
 
 def _schedule_ui(widget: tk.Misc, callback: Callable[..., None], *args: Any) -> None:
-    try:
-        widget.after(0, callback, *args)
-    except tk.TclError:
-        pass
+    post_to_ui(widget, callback, *args)
 
 
 def _run_ui_background_task(
@@ -467,18 +465,10 @@ class AWP1221RealtimeMixin:
         )
         setter = getattr(self, "adc_sample_update_var", None)
         if setter is not None:
-            after = getattr(self, "after", None)
-            if callable(after):
-                after(0, setter.set, sample)
-            else:
-                setter.set(sample)
+            post_to_ui(self, setter.set, sample)
         load_setter = getattr(self, "adc_ldo_var", None)
         if load_setter is not None:
-            after = getattr(self, "after", None)
-            if callable(after):
-                after(0, load_setter.set, load)
-            else:
-                load_setter.set(load)
+            post_to_ui(self, load_setter.set, load)
 
     def _apply_adc_voltage_settings(self) -> None:
         window = self._adc_voltage_window

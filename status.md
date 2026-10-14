@@ -52,7 +52,7 @@
 ## 四、待处理事项
 
 1. ~~STAT? 路径移除~~：**已完成**（见第一节 #12）。
-2. **后台线程改队列：已决定暂缓，不改代码。** 现状：29 处线程、约 16 处在线程内 `after(0)` 回主线程，串口日志监听也经 `after(0)`；未发现线程内直接操作控件。风险：关窗时可能出现 "main thread is not in main loop"（只捕获了 TclError）、高频日志时事件堆积。方案：主线程 15–30 ms 定时取队列 + 统一 `post_to_ui()`；预计 1–1.5 天（含关窗/高频日志压力测试）。
+2. **后台线程改队列：已在本地分支 `thread-queue` 实现（未合入 audit-fixes，未推送）。** 新增 `core/ui_dispatch.py`：`UiDispatcher`（FIFO `SimpleQueue`，主线程每 16 ms 取队列；每轮全部取完，上限 2000 条/12 ms，剩余 1 ms 后继续）+ `post_to_ui(widget, fn, *args)`（工作线程只入队、不调 Tk；关窗后丢弃；无应用时回退 `after(0)`）。26 处 `after(0)`（含 2 个 `_schedule_ui` 帮助函数、realtime SRAM 两处变量回写、串口断开回调）全部改走 `post_to_ui`；`append_serial_log` 改为按页面批量合并（一次插入多行，清空用代号丢弃旧批次）。回调异常走 `report_callback_exception`，控件已销毁的 TclError 静默。压测：关窗 30 轮 0 报错；日志洪泛吞吐 ~700→13 000 行/s（旧实现工作线程被 UI 反压阻塞），心跳 p99 ≤ 46 ms，切页中位数 ~13 ms 无退化。
 3. **测试**：`tests/validate_type4_avr.js` 依赖 `outputs/type4_20260930/`（测试入口 .ino、hex、符号、用例、avr8js），仓库中缺失，暂无法运行。4 个测试仅能在 Windows 上通过（windll、Windows 路径、截图）。
 4. 文档 `02-SETTLED.md` 需与固件现状同步（见第三节）。
 

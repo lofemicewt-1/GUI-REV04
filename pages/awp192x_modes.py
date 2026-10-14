@@ -30,6 +30,7 @@ from core.chip_discovery import AWP192X_PROBE
 from core.waveform_storage import WaveformStorage
 from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
 from pages.waveform_generator import WAVEFORM_DEFAULT_POINTS_PER_WRITE, WaveformGeneratorPage
+from core.ui_dispatch import post_to_ui
 
 
 def build_awp192x_amp_options() -> list[tuple[str, float, int]]:
@@ -1147,7 +1148,7 @@ class ButtonModePage(BasePage):
         def worker() -> None:
             error = self._execute_register_script_operations(operations)
             try:
-                self.after(0, self._finish_register_script_import, error, operations)
+                post_to_ui(self, self._finish_register_script_import, error, operations)
             except tk.TclError:
                 pass
 
@@ -1529,7 +1530,7 @@ class ButtonModePage(BasePage):
         def worker() -> None:
             resp = self.ctx.serial.write_register_value(dev, reg, value, bits=16)
             try:
-                self.after(0, finish, resp.ok, resp.error)
+                post_to_ui(self, finish, resp.ok, resp.error)
             except tk.TclError:
                 pass
 
@@ -1721,7 +1722,7 @@ class ButtonModePage(BasePage):
                     end_addr,
                 )
             try:
-                self.after(0, self._finish_preset_write, write_data, error)
+                post_to_ui(self, self._finish_preset_write, write_data, error)
             except tk.TclError:
                 pass
 
@@ -2109,7 +2110,7 @@ class ButtonModePage(BasePage):
                 callback_args = (registers, ram_values, analyzed, error)
                 if not show_success:
                     callback_args += (False,)
-                self.after(0, self._finish_current_settings_read, *callback_args)
+                post_to_ui(self, self._finish_current_settings_read, *callback_args)
             except tk.TclError:
                 pass
 
@@ -3007,7 +3008,7 @@ class ButtonModePage(BasePage):
         generation = getattr(self, "_detect_generation", 0)
         address = getattr(getattr(getattr(self, "ctx", None), "state", None), "awp192x_device_addr", None)
         try:
-            self.after(0, self._process_sense_status_log, line, generation, address)
+            post_to_ui(self, self._process_sense_status_log, line, generation, address)
         except Exception:
             pass
 
@@ -5077,7 +5078,7 @@ class PumpModePage(BasePage):
         def worker() -> None:
             resp = self.ctx.serial.write_register_value(dev, reg, value, bits=16)
             try:
-                self.after(0, finish, resp.ok, resp.error)
+                post_to_ui(self, finish, resp.ok, resp.error)
             except tk.TclError:
                 pass
 

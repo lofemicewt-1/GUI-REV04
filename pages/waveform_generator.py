@@ -25,6 +25,7 @@ from core.awp192x_button_runtime import (
     generate_awp192x_waveform_points,
 )
 from pages.base_page import BasePage
+from core.ui_dispatch import post_to_ui
 
 
 ARDUINO_I2C_TRANSACTION_BYTES = 31
@@ -1210,7 +1211,7 @@ class WaveformGeneratorPage(BasePage):
                     error = resp.error
                     break
             try:
-                self.after(0, finish, error)
+                post_to_ui(self, finish, error)
             except tk.TclError:
                 pass
 
@@ -1327,7 +1328,7 @@ class WaveformGeneratorPage(BasePage):
             analyzed = None
 
         try:
-            self.after(0, self._handle_waveform_write_ready, write_data, dev, analyzed)
+            post_to_ui(self, self._handle_waveform_write_ready, write_data, dev, analyzed)
         except tk.TclError:
             pass
 
@@ -1388,7 +1389,7 @@ class WaveformGeneratorPage(BasePage):
         values, _voltages, slice_index, start_addr, end_addr, _waveform_type, _recipe = write_data
         error = self._write_waveform_to_device(dev, values, slice_index, start_addr, end_addr)
         try:
-            self.after(0, self._finish_waveform_write, write_data, dev, error)
+            post_to_ui(self, self._finish_waveform_write, write_data, dev, error)
         except tk.TclError:
             pass
 
@@ -1597,8 +1598,8 @@ class WaveformGeneratorPage(BasePage):
             len(snapshot.values),
         )
         try:
-            self.after(
-                0,
+            post_to_ui(
+                self,
                 self._finish_waveform_verification,
                 snapshot,
                 actual_values,
@@ -2025,8 +2026,8 @@ class WaveformGeneratorPage(BasePage):
         )
         analyzed = self._analyze_existing_waveform_ranges(chip_values) if not error else []
         try:
-            self.after(
-                0,
+            post_to_ui(
+                self,
                 self._finish_show_chip_waveform,
                 dev,
                 chip_values,

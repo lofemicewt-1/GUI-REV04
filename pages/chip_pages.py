@@ -13,6 +13,7 @@ from pages import awp192x_registers
 from pages.awp1221_page import AWP1221Page
 from pages.awp192x_modes import ButtonModePage, FullModePage, PumpModePage
 from pages.base_page import BasePage, SimpleTooltip
+from core.ui_dispatch import post_to_ui
 
 
 AWP1744_AWP1766_VOLTAGE_TABLE = [
@@ -788,7 +789,7 @@ class AWP1921AWP1923Page(BasePage):
                 bits=16,
             )
             try:
-                self.after(0, finish, response.ok, response.error)
+                post_to_ui(self, finish, response.ok, response.error)
             except tk.TclError:
                 pass
 
@@ -1374,7 +1375,7 @@ class AWP1744AWP1766PumpModePage(BasePage):
         reader = getattr(self.ctx.serial, "read_frequency", None)
         resp = reader() if callable(reader) else self.ctx.serial.send_command("FREQ?", expect_response=True)
         try:
-            self.after(0, self._finish_frequency_request, resp.ok, resp.data, resp.error)
+            post_to_ui(self, self._finish_frequency_request, resp.ok, resp.data, resp.error)
         except Exception:
             pass
 
@@ -1393,7 +1394,7 @@ class AWP1744AWP1766PumpModePage(BasePage):
         period_text, hz_text = parsed
         if threading.current_thread() is not threading.main_thread():
             try:
-                self.after(0, self._set_frequency_reading, period_text, hz_text)
+                post_to_ui(self, self._set_frequency_reading, period_text, hz_text)
             except Exception:
                 pass
             return
