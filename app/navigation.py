@@ -106,8 +106,14 @@ class Navigation:
         # the sidebar canvas remains unmapped until a later resize.  A single
         # Map-boundary sync makes the initial layout deterministic without a
         # polling timer or a synthetic resize.
-        self.root.bind("<Map>", self._on_root_map, add="+")
-        self.root.bind("<Unmap>", self._on_root_unmap, add="+")
+        # Bind Map/Unmap on a tag owned only by the root.  Binding them on the
+        # toplevel itself would also fire for every descendant widget (Tk
+        # toplevel bindtags), costing hundreds of Python callbacks per page
+        # switch even though the handlers ignore non-root events.
+        root_tag = f"NavRootMap{id(self)}"
+        self.root.bindtags((root_tag,) + tuple(self.root.bindtags()))
+        self.root.bind_class(root_tag, "<Map>", self._on_root_map, add="+")
+        self.root.bind_class(root_tag, "<Unmap>", self._on_root_unmap, add="+")
 
         self.pages: dict[str, ttk.Frame] = {}
         self.buttons: dict[str, ttk.Button] = {}

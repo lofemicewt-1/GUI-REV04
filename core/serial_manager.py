@@ -278,13 +278,13 @@ class SerialManager:
                 self._rx_frame_chars.append(ch)
             else:
                 self._rx_loose_chars.append(ch)
-                self._rx_last_loose_at = time.time()
+                self._rx_last_loose_at = time.monotonic()
         return frames
 
     def _flush_rx_loose_if_due(self, *, final: bool = False) -> None:
         if not self._rx_loose_chars:
             return
-        if not final and time.time() - self._rx_last_loose_at <= 0.08:
+        if not final and time.monotonic() - self._rx_last_loose_at <= 0.08:
             return
         text = "".join(self._rx_loose_chars)
         self._rx_loose_chars = []
@@ -573,13 +573,13 @@ class SerialManager:
         handle = self._serial
         if handle is None or not getattr(handle, "is_open", False):
             return False
-        deadline = time.time() + max(0.0, timeout)
+        deadline = time.monotonic() + max(0.0, timeout)
         saved_timeout = getattr(handle, "timeout", self.timeout)
         try:
-            while time.time() < deadline:
+            while time.monotonic() < deadline:
                 if self.board_ready:
                     return True
-                remaining = deadline - time.time()
+                remaining = deadline - time.monotonic()
                 handle.timeout = min(0.2, max(0.01, remaining))
                 try:
                     data = handle.read(1)
@@ -610,9 +610,9 @@ class SerialManager:
         try:
             handle.write(command.encode("ascii", errors="ignore"))
             handle.flush()
-            deadline = time.time() + self.timeout
+            deadline = time.monotonic() + self.timeout
             handle.timeout = min(0.2, self.timeout)
-            while time.time() < deadline:
+            while time.monotonic() < deadline:
                 try:
                     data = handle.read(1)
                 except Exception as exc:
@@ -819,9 +819,9 @@ class SerialManager:
         if handle is None or not getattr(handle, "is_open", False):
             return ""
 
-        deadline = time.time() + self.timeout
+        deadline = time.monotonic() + self.timeout
 
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             try:
                 b = handle.read(1)
             except Exception as exc:
@@ -846,9 +846,9 @@ class SerialManager:
         if handle is None or not getattr(handle, "is_open", False):
             return
 
-        deadline = time.time() + 0.03
+        deadline = time.monotonic() + 0.03
         chars: list[str] = []
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             try:
                 waiting = getattr(handle, "in_waiting", 0)
                 if not waiting:

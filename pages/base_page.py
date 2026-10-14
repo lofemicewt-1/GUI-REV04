@@ -438,8 +438,27 @@ class FooterSplit(ttk.Frame):
 _CHIP_TITLE_KEYS = {"awp1921_1923", "awp1921", "awp1923", "awp1922", "awp1018", "awp1221"}
 
 
+_FONT_SIZE_FOR_HEIGHT_CACHE: dict[tuple[Any, ...], int] = {}
+
+
 def _font_size_for_pixel_height(root: tk.Misc, family: str, weight: str, target_px: int) -> int:
     target = max(12, int(target_px))
+    try:
+        scaling = str(root.tk.call("tk", "scaling"))
+    except tk.TclError:
+        scaling = ""
+    # Probing up to 60 Font objects is slow (~100 ms) and this runs on every
+    # header <Configure>; metrics only depend on these inputs, so memoize.
+    cache_key = (str(root), family, weight, target, scaling)
+    cached = _FONT_SIZE_FOR_HEIGHT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    chosen = _font_size_for_pixel_height_uncached(root, family, weight, target)
+    _FONT_SIZE_FOR_HEIGHT_CACHE[cache_key] = chosen
+    return chosen
+
+
+def _font_size_for_pixel_height_uncached(root: tk.Misc, family: str, weight: str, target: int) -> int:
     chosen = 12
     for size in range(12, 73):
         probe = tkfont.Font(root=root, family=family, size=size, weight=weight)

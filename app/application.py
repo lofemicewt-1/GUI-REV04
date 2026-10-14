@@ -3875,13 +3875,28 @@ class PiezoApplication:
         small_size = max(7, body_size - 1)
         mono_size = int(getattr(self.root, "_piezo_mono_font_size", 9))
 
+        # Resolving font.actual() goes through fontconfig on Linux (~4 ms per
+        # call) and this walk visits every widget, so cache by font spec for
+        # the duration of this pass.  Identical specs resolve identically.
+        flags_cache: dict[str, tuple[bool, bool]] = {}
+
         def current_font_flags(widget: tk.Misc) -> tuple[bool, bool]:
             try:
-                font = tkfont.Font(root=self.root, font=widget.cget("font"))
-                actual = font.actual()
-                return actual.get("weight") == "bold", bool(actual.get("underline"))
+                spec = widget.cget("font")
             except Exception:
                 return False, False
+            key = str(spec)
+            cached = flags_cache.get(key)
+            if cached is not None:
+                return cached
+            try:
+                font = tkfont.Font(root=self.root, font=spec)
+                actual = font.actual()
+                result = (actual.get("weight") == "bold", bool(actual.get("underline")))
+            except Exception:
+                result = (False, False)
+            flags_cache[key] = result
+            return result
 
         def apply(widget: tk.Misc) -> None:
             try:
