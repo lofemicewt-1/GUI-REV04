@@ -99,7 +99,16 @@ def _measurer(label: tk.Misc) -> Callable[[str], int]:
             for ch in text:
                 w = _g.get(ch)
                 if w is None:
-                    w = _g[ch] = _font.measure(ch)
+                    if "\u4e00" <= ch <= "\u9fff":
+                        # CJK ideographs share one advance in a font: measure
+                        # one and reuse (each fresh glyph measure can cost
+                        # several ms through font fallback).
+                        w = _g.get("\u4e2d")
+                        if w is None:
+                            w = _g["\u4e2d"] = _font.measure("\u4e2d")
+                        _g[ch] = w
+                    else:
+                        w = _g[ch] = _font.measure(ch)
                 total += w
             return total
 

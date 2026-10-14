@@ -218,7 +218,7 @@ class PageShowFinalFontsTests(unittest.TestCase):
                     pump(r, 0.4)
                     after = snap(nav.pages[name], {})
                     self.assertEqual(before, after, name)
-                    self.assertIsNone(nav._layout_cover.place_info().get("in"))
+                    self.assertIsNone(getattr(nav, "_layout_cover", None))
             self.assertEqual(calls["families"], 0)
         finally:
             app.close()

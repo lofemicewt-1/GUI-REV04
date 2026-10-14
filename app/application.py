@@ -3276,8 +3276,6 @@ class PiezoApplication:
         self._register_pages()
         self._refresh_widget_fonts()
         self.navigation.show("home")
-        # Wrapped-text measuring for every page, in small idle slices.
-        self.root.after(300, self.navigation.prewarm_pages)
         self.root.bind("<Configure>", self._on_root_configure, add="+")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 

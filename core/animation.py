@@ -36,7 +36,21 @@ HOVER_MS = 150
 NAV_SLIDE_MS = 220
 PAGE_TRANSITION_MS = 220
 FADE_MS = 160
-DEBUG = os.environ.get("PIEZO_ANIM_DEBUG", "") not in ("", "0")
+def _app_dir() -> str:
+    """Folder of main.py / the frozen exe (debug flag file and log live here)."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+# Enabled by PIEZO_ANIM_DEBUG=1, by "--anim-debug" on the command line, or by
+# a file named piezo_anim_debug.flag next to main.py / the exe (useful when
+# environment variables do not reach the process, e.g. Store Python).
+DEBUG = (
+    os.environ.get("PIEZO_ANIM_DEBUG", "") not in ("", "0")
+    or "--anim-debug" in sys.argv
+    or os.path.exists(os.path.join(_app_dir(), "piezo_anim_debug.flag"))
+)
 
 
 def cubic_bezier(x1: float, y1: float, x2: float, y2: float) -> Callable[[float], float]:
@@ -122,7 +136,12 @@ class _Tween:
     requested: float = 0.0
 
 
-_debug_path = os.path.join(tempfile.gettempdir(), "piezo_anim_debug.log")
+# Written next to main.py first (Microsoft Store Python virtualizes %TEMP%
+# into its package folder, so a %TEMP% log is hard to find), then %TEMP%.
+_debug_paths = [
+    os.path.join(_app_dir(), "piezo_anim_debug.log"),
+    os.path.join(tempfile.gettempdir(), "piezo_anim_debug.log"),
+]
 
 
 def debug_log(message: str) -> None:
@@ -134,11 +153,13 @@ def debug_log(message: str) -> None:
         print(line, file=sys.stderr, flush=True)
     except Exception:
         pass
-    try:
-        with open(_debug_path, "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-    except OSError:
-        pass
+    for path in _debug_paths:
+        try:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+            return
+        except OSError:
+            continue
 
 
 class Animator:

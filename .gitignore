@@ -32,3 +32,5 @@ htmlcov/
 
 *.egg-info/
 *.whl
+piezo_anim_debug.log
+piezo_anim_debug.flag

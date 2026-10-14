@@ -14,7 +14,7 @@ import os
 import time
 
 from core import animation as anim
-from core.text_wrap import guard_orphans, warm_glyphs, widget_wraps
+from core.text_wrap import guard_orphans
 from styles.theme import BRAND_ENLARGE, logo_asset, scale_photoimage
 
 
@@ -259,85 +259,62 @@ class Navigation:
             if current_page is not None and hasattr(current_page, "on_hide"):
                 current_page.on_hide()
 
-        for page in self.pages.values():
-            page.grid_remove()
+        for other_name, other in self.pages.items():
+            if other_name != name and other.winfo_ismapped():
+                other.grid_remove()
 
         page = self.pages[name]
         t0 = time.perf_counter()
-        # Keep the page off screen while it is sized and its fonts/texts are
-        # finalised; reveal it in one paint (no visible font/re-layout pass).
-        covered = self._cover_content()
         page.grid()
         self.ctx.state.current_page = name
         self._refresh_button_styles()
         # A hidden page keeps the geometry it had when it was last shown (e.g.
-        # before the window was maximized).  Size the canvas window and run
-        # the pending geometry pass now, before on_show() or the event loop
-        # can repaint, so the page never appears at the stale size first.
+        # before the window was maximized); size it now, before on_show().
         self._sync_content_window_immediately()
-
         if hasattr(page, "on_show"):
             page.on_show()
         self._sync_mode_buttons(page)
         t1 = time.perf_counter()
+        # One geometry pass with the page at the current window size, then
+        # the size-dependent text steps, then size the canvas window -- all
+        # before the event loop can paint, so the page is first drawn in its
+        # final layout.  (Fonts never depend on the window size; they are
+        # set once by _refresh_widget_fonts.)
         self.prepare_page_fonts(page)
         t2 = time.perf_counter()
         self._sync_content_window_immediately()
-        if covered:
-            self._uncover_content()
+        t3 = time.perf_counter()
+        if anim.DEBUG:
+            def settled(started: float = t0) -> None:
+                anim.debug_log(f"show {name}: settled (first idle) {(time.perf_counter() - started) * 1000:.1f} ms after click")
+
+            try:
+                self.root.after_idle(settled)
+            except tk.TclError:
+                pass
         anim.debug_log(
-            f"show {name}: layout+on_show {(t1 - t0) * 1000:.1f} ms, font/text prep {(t2 - t1) * 1000:.1f} ms, "
-            f"final layout {(time.perf_counter() - t2) * 1000:.1f} ms (page covered until done)"
+            f"show {name}: grid+on_show {(t1 - t0) * 1000:.1f} ms, text prep {(t2 - t1) * 1000:.1f} ms, "
+            f"layout {(t3 - t2) * 1000:.1f} ms, transition={mode}"
         )
         if fading:
             self._run_page_fade()
         elif mode == "slide":
             self._run_page_slide()
 
-    def _cover_content(self) -> bool:
-        """Cover the content canvas with a plain background frame while the
-        page is laid out underneath (a hidden canvas item would not be sized)."""
-        try:
-            cover = getattr(self, "_layout_cover", None)
-            if cover is None:
-                cover = self._layout_cover = tk.Frame(self.content_canvas.master, bd=0, highlightthickness=0)
-            cover.configure(bg=self.ctx.colors.get("bg", "#FFFFFF"))
-            cover.place(in_=self.content_canvas, x=0, y=0, relwidth=1, relheight=1)
-            cover.lift(self.content_canvas)
-            return True
-        except tk.TclError:
-            return False
-
-    def _uncover_content(self) -> None:
-        cover = getattr(self, "_layout_cover", None)
-        if cover is not None:
-            try:
-                cover.place_forget()
-            except tk.TclError:
-                pass
-
     def prepare_page_fonts(self, page: tk.Misc) -> None:
-        """Run every size-dependent font/text step synchronously (normally
-        driven by <Configure> after the page is visible): header wordmark
-        font, wrapping bars, orphan guard."""
-        if not getattr(page, "_piezo_orphans_guarded", False):
-            page._piezo_orphans_guarded = True  # type: ignore[attr-defined]
-            guard_orphans(page)
-        # Nested scroll areas take their width from their canvas <Configure>,
-        # which may be delivered only after the page is on screen; sync them
-        # now (outer first) so the reveal paints the final layout.
+        """Run the size-dependent text steps synchronously for the page being
+        shown (normally driven by <Configure> after it is visible): nested
+        scroll-area widths, wrapping bars, orphan guard, header wordmark.
+        Only the shown page is touched; hidden pages catch up when shown."""
         try:
-            page.update_idletasks()
-            queue: list[tk.Misc] = [page]
-            while queue:
-                widget = queue.pop(0)
-                sync = getattr(widget, "_sync_scroll_region", None)
-                if callable(sync) and hasattr(widget, "window_id"):
-                    sync()
-                    widget.update_idletasks()
-                queue.extend(widget.winfo_children())
+            self.root.update_idletasks()
         except tk.TclError:
             return
+        first = not getattr(page, "_piezo_orphans_guarded", False)
+        if first:
+            page._piezo_orphans_guarded = True  # type: ignore[attr-defined]
+            guard_orphans(page)
+        synced = False
         stack: list[tk.Misc] = [page]
         while stack:
             widget = stack.pop()
@@ -345,9 +322,17 @@ class Navigation:
                 stack.extend(widget.winfo_children())
             except tk.TclError:
                 continue
-            guard = getattr(widget, "_piezo_orphan_guard", None)
-            if guard is not None:
-                guard.apply()
+            sync = getattr(widget, "_sync_scroll_region", None)
+            if callable(sync) and hasattr(widget, "window_id"):
+                try:
+                    sync()
+                    synced = True
+                except tk.TclError:
+                    pass
+            if not first:
+                guard = getattr(widget, "_piezo_orphan_guard", None)
+                if guard is not None:
+                    guard.apply()
             reflow = getattr(widget, "reflow", None)
             if callable(reflow) and hasattr(widget, "_signature"):
                 try:
@@ -361,40 +346,11 @@ class Navigation:
                     configure_logo(logo)
                 except tk.TclError:
                     pass
-
-    def prewarm_pages(self, pending: list[tk.Misc] | None = None, started: float | None = None) -> None:
-        """Measure wrapped texts (orphan guard) of all pages ahead of time in
-        idle slices of <= 8 ms, so later page shows only reveal final text."""
-        if started is None:
-            started = time.perf_counter()
-        if pending is None:
-            pending = []
-            for page in self.pages.values():
-                stack = [page]
-                while stack:
-                    widget = stack.pop()
-                    stack.extend(widget.winfo_children())
-                    if isinstance(widget, ttk.Label):
-                        pending.append(widget)
-        deadline = time.perf_counter() + 0.008
-        while pending and time.perf_counter() < deadline:
-            widget = pending[-1]
+        if synced:
             try:
-                if widget_wraps(widget) and not warm_glyphs(widget, deadline):
-                    break  # out of budget mid-label; continue next slice
-                pending.pop()
-                guard_orphans(widget)
-            except tk.TclError:
-                pending.pop()
-        if pending:
-            try:
-                self.root.after(16, self.prewarm_pages, pending, started)
+                page.update_idletasks()
             except tk.TclError:
                 pass
-        else:
-            for page in self.pages.values():
-                page._piezo_orphans_guarded = True  # type: ignore[attr-defined]
-            anim.debug_log(f"prewarm wrapped texts done in {(time.perf_counter() - started) * 1000:.0f} ms (sliced)")
 
     def _page_transition_mode(self) -> str:
         """slide (default, in-window, works everywhere) | fade (overlay
@@ -403,12 +359,22 @@ class Navigation:
         animator = anim.animator_for(self.root)
         if animator is None or not animator.enabled:
             return "none"
-        mode = os.environ.get("PIEZO_PAGE_TRANSITION", "slide").strip().lower()
+        # Windows: every Tk widget is a native child window, so moving the
+        # page per frame (slide) costs a repaint of all of them and delays
+        # the click; default to none there.  PIEZO_PAGE_TRANSITION overrides.
+        default = "none" if self._windowing_system() == "win32" else "slide"
+        mode = os.environ.get("PIEZO_PAGE_TRANSITION", default).strip().lower()
         if mode not in {"slide", "fade", "none"}:
-            mode = "slide"
+            mode = default
         if mode == "fade" and not self._page_fade_capable():
-            mode = "slide"
+            mode = default
         return mode
+
+    def _windowing_system(self) -> str:
+        try:
+            return str(self.root.tk.call("tk", "windowingsystem"))
+        except tk.TclError:
+            return ""
 
     def _run_page_slide(self) -> None:
         """New page rises a few pixels into place (ease-out).  Only the
