@@ -476,8 +476,15 @@ class AWP1922Page(BasePage):
         self._write8_async(0x00, self.current_ctrl_reg, on_success=lambda: self._set_button_selected("start_play", False))
 
     def wake(self) -> None:
+        """Set only EN (bit7); no write if already 1; never rewrites 0x05/0x06."""
+        if not self._ensure_connected():
+            return
         self._user_shutdown_addrs().discard(self._addr())
-        self.current_ctrl_reg = self.current_ctrl_reg | AWP1922_CTRL_ENABLE_BIT
+        current = self._read_control_reg()  # chip readback; falls back to cached value
+        if current & AWP1922_CTRL_ENABLE_BIT:
+            return
+        self.current_ctrl_reg = (current | AWP1922_CTRL_ENABLE_BIT) & 0xFF
+        # Explicit enable, not a forced re-enable: _write8 sees EN=1 -> no rewrite.
         self._write8(0x00, self.current_ctrl_reg)
 
     def shutdown(self) -> None:

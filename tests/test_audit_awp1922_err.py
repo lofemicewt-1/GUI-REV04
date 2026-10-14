@@ -76,11 +76,16 @@ class Awp1922ShutdownStateTests(unittest.TestCase):
         page._write8(0x00, 0x40)          # manual/play write while shut down
         self.assertEqual(calls[-1], ("W", 0x00, 0x40))
         page.wake()
-        self.assertEqual(calls[-1][:2], ("W", 0x00))
-        self.assertTrue(calls[-1][2] & 0x80)
+        self.assertEqual(calls[-1], ("W", 0x00, 0xC0))  # only EN set, PLAY kept
+        self.assertNotIn(("R", 0x05), calls)              # no 0x05/0x06 rewrite
         calls.clear()
         page._write8(0x00, 0x40)          # forced again after Wake
         self.assertEqual(calls[0], ("W", 0x00, 0xC0))
+
+    def test_wake_noop_when_enabled(self):
+        page, calls = _page({0x00: 0x80})
+        page.wake()
+        self.assertEqual(calls, [("R", 0x00)])
 
     def test_shutdown_is_per_address(self):
         page, calls = _page({})
