@@ -247,11 +247,33 @@ class Navigation:
         page.grid()
         self.ctx.state.current_page = name
         self._refresh_button_styles()
+        # A hidden page keeps the geometry it had when it was last shown (e.g.
+        # before the window was maximized).  Size the canvas window and run
+        # the pending geometry pass now, before on_show() or the event loop
+        # can repaint, so the page never appears at the stale size first.
+        self._sync_content_window_immediately()
 
         if hasattr(page, "on_show"):
             page.on_show()
         self._sync_mode_buttons(page)
         self._sync_content_window()
+
+    def _sync_content_window_immediately(self) -> None:
+        if self._sync_after is not None:
+            try:
+                self.root.after_cancel(self._sync_after)
+            except tk.TclError:
+                pass
+            self._sync_after = None
+        try:
+            self.root.update_idletasks()
+        except tk.TclError:
+            return
+        self._sync_content_window_now()
+        try:
+            self.root.update_idletasks()
+        except tk.TclError:
+            pass
 
     def refresh_language(self) -> None:
         lang = self.ctx.state.language
