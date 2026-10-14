@@ -27,6 +27,13 @@ except Exception:
     serial = None
 
 
+# CFGEND/CFGDEL rewrite up to 256 EEPROM bytes (~3.3 ms each on AVR, ~0.85 s)
+# and CFGAPPLY drives many I2C writes before replying, which can exceed the
+# default 0.8 s command timeout.  A late reply would otherwise be reported as
+# "No response" and then leak into the next command's read.
+CFG_EEPROM_WRITE_TIMEOUT_S = 3.0
+
+
 def is_fatal_serial_exception(exc: BaseException) -> bool:
     """Return whether a transport exception invalidates the current handle.
 
@@ -740,6 +747,7 @@ class SerialManager:
         *,
         expect_response: bool = True,
         display_body: str | None = None,
+        response_timeout: float | None = None,
     ) -> SerialResponse:
         """
         body does not include ^ or ~, for example:
@@ -783,7 +791,7 @@ class SerialManager:
                     if not expect_response:
                         return SerialResponse(True, data=cmd)
 
-                    data = self._read_frame(handle)
+                    data = self._read_frame(handle, timeout=response_timeout)
                     if not data:
                         error = f"No response for command: {display_cmd}"
                         self.emit_log(f"ERROR {error}")
@@ -806,7 +814,7 @@ class SerialManager:
             # released so a listener cannot re-enter transport/Tk code.
             self._dispatch_event_queue()
 
-    def _read_frame(self, serial_handle: Any = None) -> str:
+    def _read_frame(self, serial_handle: Any = None, *, timeout: float | None = None) -> str:
         """
         Read one Arduino ^...~ frame.
 
@@ -819,7 +827,7 @@ class SerialManager:
         if handle is None or not getattr(handle, "is_open", False):
             return ""
 
-        deadline = time.monotonic() + self.timeout
+        deadline = time.monotonic() + (self.timeout if timeout is None else max(self.timeout, timeout))
 
         while time.monotonic() < deadline:
             try:
@@ -1138,7 +1146,7 @@ class SerialManager:
 
     def cfg_end(self, slot: int) -> SerialResponse:
         """End preset upload: CFGEND <slot> -> ^CFGEND OK CRC=<crc>~"""
-        return self._cfg_response(self.send_command(base_tool.build_cfg_end_command(slot)))
+        return self._cfg_response(self.send_command(base_tool.build_cfg_end_command(slot), response_timeout=CFG_EEPROM_WRITE_TIMEOUT_S))
 
     def cfg_use(self, slot: int) -> SerialResponse:
         """Mark a slot as active boot preset: CFGUSE <slot> -> ^CFGUSE OK <slot>~"""
@@ -1146,11 +1154,11 @@ class SerialManager:
 
     def cfg_apply(self, slot: int) -> SerialResponse:
         """Apply a stored preset immediately: CFGAPPLY <slot> -> ^CFGAPPLY OK <slot>~ or ^ERR CFG_UNSUPPORTED~"""
-        return self._cfg_response(self.send_command(base_tool.build_cfg_apply_command(slot)))
+        return self._cfg_response(self.send_command(base_tool.build_cfg_apply_command(slot), response_timeout=CFG_EEPROM_WRITE_TIMEOUT_S))
 
     def cfg_delete(self, slot: int) -> SerialResponse:
         """Clear a stored preset slot: CFGDEL <slot> -> ^CFGDEL OK <slot>~"""
-        return self._cfg_response(self.send_command(base_tool.build_cfg_delete_command(slot)))
+        return self._cfg_response(self.send_command(base_tool.build_cfg_delete_command(slot), response_timeout=CFG_EEPROM_WRITE_TIMEOUT_S))
 
     def sync_config_preset(self, slot: int, payload: bytes, *, set_active: bool = True) -> SerialResponse:
         """
