@@ -51,6 +51,7 @@ from pages.gpio_controls import (
     active_serial_identity,
 )
 from core.ui_dispatch import post_to_ui
+from pages.fast_label import make_label
 
 _GPIO_CATEGORY_BY_LABEL = {label: key for key, label in GPIO_CATEGORY_LABELS.items()}
 _GPIO_FUNCTION_BY_LABEL = {label: code for code, label in GPIO_FUNCTION_LABELS.items()}
@@ -1140,7 +1141,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         right.columnconfigure(0, weight=1)
         right.rowconfigure(1, weight=3)
         right.rowconfigure(2, weight=2)
-        self._labels["awp1221_basic_parameters"] = ttk.Label(right, style="Muted.TLabel")
+        self._labels["awp1221_basic_parameters"] = make_label(right, style="Muted.TLabel")
         self._labels["awp1221_basic_parameters"].grid(row=0, column=0, sticky="w", padx=4, pady=(4, 10))
 
         self.tools_notebook = ttk.Notebook(right)
@@ -1262,7 +1263,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self.sinc_depth_var,
             self.ROM_DEPTH_OPTIONS,
         )
-        sinc_depth_hint = ttk.Label(
+        sinc_depth_hint = make_label(
             controls,
             style="Muted.TLabel",
             wraplength=340,
@@ -1280,7 +1281,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 variable,
             )
         self._rom_entry(controls, 12, "awp1221_sinc_sin_repeat", self.sinc_sin_repeat_var)
-        sinc_match = ttk.Label(
+        sinc_match = make_label(
             controls,
             textvariable=self.sinc_match_var,
             style="Muted.TLabel",
@@ -1288,20 +1289,20 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         sinc_match.grid(row=13, column=0, columnspan=3, sticky="w", pady=(8, 0))
         self._selector_widgets["awp1221_sinc_match"] = [sinc_match]
-        sinc_period = ttk.Label(
+        sinc_period = make_label(
             controls, textvariable=self.sinc_haptic_period_var,
             style="Panel.TLabel", wraplength=280,
         )
         sinc_period.grid(row=14, column=0, columnspan=3, sticky="w", pady=(6, 0))
         self._selector_widgets["awp1221_sinc_haptic_period"] = [sinc_period]
-        sinc_group_hint = ttk.Label(
+        sinc_group_hint = make_label(
             controls,
             textvariable=self.sinc_group_hint_var,
             style="Muted.TLabel",
             wraplength=280,
         )
         self._selector_widgets["awp1221_sinc_group_hint"] = [sinc_group_hint]
-        sinc_hint = ttk.Label(controls, style="Muted.TLabel", wraplength=280)
+        sinc_hint = make_label(controls, style="Muted.TLabel", wraplength=280)
         self._register_text(sinc_hint, "awp1221_sinc_hint")
         self._selector_widgets["awp1221_sinc_hint"] = [sinc_hint]
 
@@ -1322,7 +1323,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         self._rom_combo(controls, 18, "awp1221_rom_amplitude", self.rom_vpk_var, self.VPK_OPTIONS)
         peak_to_peak_label = self._form_label(controls, "awp1221_rom_peak_to_peak", row=19, column=0)
-        peak_to_peak_value = ttk.Label(
+        peak_to_peak_value = make_label(
             controls,
             textvariable=self.rom_vpp_var,
             style="Muted.TLabel",
@@ -1348,7 +1349,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         infinite.grid(row=25, column=2, sticky="w", padx=(8, 0), pady=5)
         self._register_text(infinite, "awp1221_rom_infinite_loop")
         self._selector_widgets["awp1221_rom_infinite_loop"] = [infinite]
-        offset_hint = ttk.Label(controls, style="Muted.TLabel", wraplength=280)
+        offset_hint = make_label(controls, style="Muted.TLabel", wraplength=280)
         offset_hint.grid(row=26, column=0, columnspan=3, sticky="w", pady=(8, 0))
         self._register_text(offset_hint, "awp1221_waveform_word3_pending")
         self._selector_widgets["awp1221_waveform_word3_pending"] = [offset_hint]
@@ -1367,9 +1368,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._waveform_selector_preview = preview
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(2, weight=1)
-        metric_label = ttk.Label(preview, textvariable=self.rom_metric_var, style="Panel.TLabel", wraplength=280)
+        metric_label = make_label(preview, textvariable=self.rom_metric_var, style="Panel.TLabel", wraplength=280)
         metric_label.grid(row=0, column=0, sticky="w")
-        frequency_label = ttk.Label(preview, textvariable=self.rom_frequency_var, style="Muted.TLabel", wraplength=280)
+        frequency_label = make_label(preview, textvariable=self.rom_frequency_var, style="Muted.TLabel", wraplength=280)
         frequency_label.grid(row=1, column=0, sticky="w", pady=(4, 8))
         self._selector_widgets["awp1221_rom_preview_captions"] = [metric_label, frequency_label]
         colors = getattr(self.ctx, "colors", {})
@@ -3214,7 +3215,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._translated_widgets.append((widget, key))
 
     def _add_help_button(self, parent: tk.Misc, row: int, column: int, text_key: str) -> None:
-        label = ttk.Label(
+        label = make_label(
             parent,
             text=self.tr("awp1018_help_symbol"),
             style="Muted.TLabel",
@@ -3242,12 +3243,12 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if key in help_keys:
             holder = ttk.Frame(parent, style="Panel.TFrame")
             holder.grid(row=row, column=column, sticky="w", padx=(0 if column == 0 else 12, 8), pady=5)
-            label = ttk.Label(holder, style="Panel.TLabel")
+            label = make_label(holder, style="Panel.TLabel")
             label.grid(row=0, column=0, sticky="w")
             self._register_text(label, key)
             self._add_help_button(holder, 0, 1, help_keys[key])
             return label
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=column, sticky="w", padx=(0 if column == 0 else 12, 8), pady=5)
         self._register_text(label, key)
         return label
@@ -3507,7 +3508,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         entry = ttk.Entry(holder, textvariable=variable, width=12)
         entry.grid(row=0, column=0, sticky="ew")
         hint_var = tk.StringVar(value=awp1221_threshold_hex_hint(variable.get()))
-        ttk.Label(holder, textvariable=hint_var, style="Muted.TLabel", width=8).grid(
+        make_label(holder, textvariable=hint_var, style="Muted.TLabel", width=8).grid(
             row=0, column=1, sticky="w", padx=(8, 0)
         )
         variable.trace_add("write", lambda *_: hint_var.set(awp1221_threshold_hex_hint(variable.get())))
@@ -3539,7 +3540,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         check.grid(row=1, column=0, sticky="w", padx=(0, 8))
         self._register_text(check, "awp1221_en_enabled")
-        status = ttk.Label(section, textvariable=host.en_status_var, style="Muted.TLabel")
+        status = make_label(section, textvariable=host.en_status_var, style="Muted.TLabel")
         status.grid(row=1, column=1, sticky="w")
 
     def _build_gpio_settings(self, parent: ttk.Frame, *, row: int) -> None:
@@ -3586,10 +3587,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         frame = ttk.Frame(parent, style="Panel.TFrame")
         frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, 4))
         frame.columnconfigure(1, weight=1)
-        heading = ttk.Label(frame, style="Panel.TLabel")
+        heading = make_label(frame, style="Panel.TLabel")
         heading.grid(row=0, column=0, columnspan=2, sticky="w")
         heading.configure(text=f"{name} ({pin})")
-        mcu_label = ttk.Label(
+        mcu_label = make_label(
             frame,
             textvariable=host.gpio_mcu_role_vars[index],
             style="Muted.TLabel",
@@ -3637,10 +3638,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._register_text(low_btn, "awp1221_gpio_drive_low")
         host.gpio_action_widgets[index].extend((high_btn, low_btn))
         host._sync_gpio_actions(index)
-        ttk.Label(frame, textvariable=host.gpio_chip_status_vars[index], style="Muted.TLabel").grid(
+        make_label(frame, textvariable=host.gpio_chip_status_vars[index], style="Muted.TLabel").grid(
             row=3, column=0, columnspan=2, sticky="w"
         )
-        ttk.Label(frame, textvariable=host.gpio_mcu_status_vars[index], style="Muted.TLabel").grid(
+        make_label(frame, textvariable=host.gpio_mcu_status_vars[index], style="Muted.TLabel").grid(
             row=3, column=2, columnspan=2, sticky="e"
         )
 
@@ -3655,7 +3656,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
         debounce_label = ttk.Frame(section, style="Panel.TFrame")
         debounce_label.grid(row=1, column=0, sticky="w", pady=5, padx=(0, 8))
-        debounce_text = ttk.Label(debounce_label, style="Panel.TLabel")
+        debounce_text = make_label(debounce_label, style="Panel.TLabel")
         debounce_text.grid(row=0, column=0, sticky="w")
         self._register_text(debounce_text, "awp1221_debounce_time")
         self._add_help_button(debounce_label, 0, 1, "awp1221_debounce_time_help")
@@ -3723,7 +3724,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._register_text(sleep_sensitivity_check, "awp1221_sleep_sensitivity")
         self._add_help_button(zps_frame, 0, 5, "awp1221_sleep_sensitivity_help")
 
-        adc_value_label = ttk.Label(section, style="Panel.TLabel")
+        adc_value_label = make_label(section, style="Panel.TLabel")
         adc_value_label.grid(row=5, column=0, sticky="w", pady=(10, 5), padx=(0, 8))
         self._register_text(adc_value_label, "button_adc_value")
         adc_display = ttk.Frame(section, style="Panel.TFrame")
@@ -4733,7 +4734,7 @@ class AWP1221Page(BasePage):
         serial_group = parent.add_group()
         self.make_serial_selector(serial_group, page_name=self.page_name, row=0, column=0)
         addr_group = parent.add_group()
-        self._labels["current_chip_addr"] = ttk.Label(addr_group, style="Panel.TLabel")
+        self._labels["current_chip_addr"] = make_label(addr_group, style="Panel.TLabel")
         self._labels["current_chip_addr"].grid(row=0, column=0, padx=(0, 8))
         self.addr_combo = ttk.Combobox(
             addr_group,
@@ -4749,22 +4750,22 @@ class AWP1221Page(BasePage):
         detect_btn.grid(row=0, column=0)
         self._buttons["detect_chip"] = detect_btn
         status_group = parent.add_group()
-        ttk.Label(status_group, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        make_label(status_group, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
 
     def _build_register_bar(self, parent: ttk.Frame) -> None:
         title_group = parent.add_group()
-        self._labels["read_write_registers"] = ttk.Label(title_group, style="Panel.TLabel")
+        self._labels["read_write_registers"] = make_label(title_group, style="Panel.TLabel")
         self._labels["read_write_registers"].grid(row=0, column=0, sticky="w")
         addr_group = parent.add_group()
-        self._labels["reg_addr"] = ttk.Label(addr_group, style="Panel.TLabel")
+        self._labels["reg_addr"] = make_label(addr_group, style="Panel.TLabel")
         self._labels["reg_addr"].grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Entry(addr_group, textvariable=self.reg_addr_var, width=8).grid(row=0, column=1, sticky="w")
         write_group = parent.add_group()
-        self._labels["write_value"] = ttk.Label(write_group, style="Panel.TLabel")
+        self._labels["write_value"] = make_label(write_group, style="Panel.TLabel")
         self._labels["write_value"].grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Entry(write_group, textvariable=self.write_value_var, width=10).grid(row=0, column=1, sticky="w")
         read_group = parent.add_group()
-        self._labels["read_value"] = ttk.Label(read_group, style="Panel.TLabel")
+        self._labels["read_value"] = make_label(read_group, style="Panel.TLabel")
         self._labels["read_value"].grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Entry(read_group, textvariable=self.read_value_var, width=12, state="readonly").grid(
             row=0, column=1, sticky="w"

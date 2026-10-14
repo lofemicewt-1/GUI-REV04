@@ -12,6 +12,7 @@ from core.base_tool import (
     GPIO_MODE_PULLUP,
 )
 from pages.base_page import SimpleTooltip
+from pages.fast_label import make_label
 
 
 GPIO_PIN_MAP = ((0, "D2"), (1, "D3"), (2, "D4"), (3, "D5"))
@@ -160,14 +161,14 @@ class GpioControlPanel(ttk.Frame):
         self._tooltips: list[SimpleTooltip] = []
 
         self.columnconfigure(2, weight=1)
-        self._title_label = ttk.Label(self, style="Panel.TLabel")
+        self._title_label = make_label(self, style="Panel.TLabel")
         self._title_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
-        self._hint_label = ttk.Label(self, style="Muted.TLabel")
+        self._hint_label = make_label(self, style="Muted.TLabel")
         self._hint_label.grid(row=0, column=1, columnspan=2, sticky="w")
 
         for row, gpio_index in enumerate(self.gpio_indexes, start=1):
             pin = self._pin_for_index(gpio_index)
-            label = ttk.Label(self, style="Panel.TLabel")
+            label = make_label(self, style="Panel.TLabel")
             label.grid(row=row, column=0, sticky="w", padx=(0, 10), pady=(4, 0))
             self._labels[gpio_index] = label
 
@@ -188,7 +189,7 @@ class GpioControlPanel(ttk.Frame):
             self._combos[gpio_index] = combo
             self._tooltips.append(SimpleTooltip(combo, lambda index=gpio_index: self._tooltip(index)))
 
-            status = ttk.Label(self, style="Muted.TLabel")
+            status = make_label(self, style="Muted.TLabel")
             status.grid(row=row, column=2, sticky="w", pady=(4, 0))
             self._status_labels[gpio_index] = status
 

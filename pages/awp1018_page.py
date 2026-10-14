@@ -45,6 +45,7 @@ from core.base_tool import (
 from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen, lazy_mode_pages
 from pages.gpio_controls import GpioControlGroup, GpioControlPanel, active_serial_identity
 from core.ui_dispatch import post_to_ui
+from pages.fast_label import make_label
 
 
 class AWP1018Page(BasePage):
@@ -149,7 +150,7 @@ class AWP1018Page(BasePage):
         serial_group = parent.add_group()
         self.make_serial_selector(serial_group, page_name=self.page_name, row=0, column=0)
         addr_group = parent.add_group()
-        addr_label = ttk.Label(addr_group, style="Panel.TLabel")
+        addr_label = make_label(addr_group, style="Panel.TLabel")
         addr_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels["current_chip_addr"] = addr_label
         self.addr_combo = ttk.Combobox(
@@ -166,28 +167,28 @@ class AWP1018Page(BasePage):
         detect_btn.grid(row=0, column=0, sticky="w")
         self._buttons["detect_chip"] = detect_btn
         status_group = parent.add_group()
-        ttk.Label(status_group, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        make_label(status_group, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
 
     def _build_register_bar(self, parent: tk.Misc) -> None:
         title_group = parent.add_group()
-        title_label = ttk.Label(title_group, style="Panel.TLabel")
+        title_label = make_label(title_group, style="Panel.TLabel")
         title_label.grid(row=0, column=0, sticky="w")
         self._labels["read_write_registers"] = title_label
 
         addr_group = parent.add_group()
-        reg_addr_label = ttk.Label(addr_group, style="Panel.TLabel")
+        reg_addr_label = make_label(addr_group, style="Panel.TLabel")
         reg_addr_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._labels["reg_addr"] = reg_addr_label
         ttk.Entry(addr_group, textvariable=self.reg_addr_var, width=8).grid(row=0, column=1, sticky="w")
 
         write_group = parent.add_group()
-        write_value_label = ttk.Label(write_group, style="Panel.TLabel")
+        write_value_label = make_label(write_group, style="Panel.TLabel")
         write_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._labels["write_value"] = write_value_label
         ttk.Entry(write_group, textvariable=self.write_value_var, width=10).grid(row=0, column=1, sticky="w")
 
         read_group = parent.add_group()
-        read_value_label = ttk.Label(read_group, style="Panel.TLabel")
+        read_value_label = make_label(read_group, style="Panel.TLabel")
         read_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._labels["read_value"] = read_value_label
         ttk.Entry(read_group, textvariable=self.read_value_var, width=12, state="readonly").grid(row=0, column=1, sticky="w")
@@ -1308,7 +1309,7 @@ class AWP1018NormalModePage(BasePage):
             self._stage_buttons[stage] = btn
 
     def _build_adc_channel_selector(self, parent: tk.Misc, row: int) -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="nw", pady=7, padx=(0, 8))
         self._labels["awp1018_channel_select"] = label
 
@@ -1326,14 +1327,14 @@ class AWP1018NormalModePage(BasePage):
             self._channel_checks[index] = check
 
     def _add_help_button(self, parent: tk.Misc, row: int, column: int, text_key: str) -> None:
-        label = ttk.Label(parent, text=self.tr("awp1018_help_symbol"), style="Muted.TLabel", cursor="question_arrow")
+        label = make_label(parent, text=self.tr("awp1018_help_symbol"), style="Muted.TLabel", cursor="question_arrow")
         label.grid(row=row, column=column, sticky="w", padx=(4, 0))
         self._tooltips.append(SimpleTooltip(label, lambda key=text_key: self.tr(key)))
 
     def _build_adc_timing_row(self, parent: tk.Misc, row: int) -> None:
         debounce_frame = ttk.Frame(parent, style="Panel.TFrame")
         debounce_frame.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
-        debounce_label = ttk.Label(debounce_frame, style="Panel.TLabel")
+        debounce_label = make_label(debounce_frame, style="Panel.TLabel")
         debounce_label.grid(row=0, column=0, sticky="w")
         self._labels["awp1018_debounce"] = debounce_label
         self._add_help_button(debounce_frame, 0, 1, "awp1018_debounce_time_help")
@@ -1341,7 +1342,7 @@ class AWP1018NormalModePage(BasePage):
 
         sample_frame = ttk.Frame(parent, style="Panel.TFrame")
         sample_frame.grid(row=row, column=2, sticky="w", pady=7, padx=(12, 8))
-        sample_label = ttk.Label(sample_frame, style="Panel.TLabel")
+        sample_label = make_label(sample_frame, style="Panel.TLabel")
         sample_label.grid(row=0, column=0, sticky="w")
         self._labels["awp1018_adc_sample_update_time"] = sample_label
         self._add_help_button(sample_frame, 0, 1, "awp1018_adc_sample_update_time_help")
@@ -1358,13 +1359,13 @@ class AWP1018NormalModePage(BasePage):
         frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         frame.columnconfigure(1, weight=1)
 
-        label = ttk.Label(frame, style="Panel.TLabel")
+        label = make_label(frame, style="Panel.TLabel")
         label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels["awp1018_dac_sample_rate"] = label
         ttk.Entry(frame, textvariable=self.dac_sample_rate_var, width=14).grid(row=0, column=1, sticky="w")
 
     def _build_zero_return_bit_row(self, parent: tk.Misc, row: int) -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
         self._labels["awp1018_zero_time"] = label
 
@@ -1412,7 +1413,7 @@ class AWP1018NormalModePage(BasePage):
         self._checks["awp1018_release_return_bit_time_enhance"] = release_time_enhance_check
 
     def _build_arbitration_return_time_row(self, parent: tk.Misc, row: int) -> None:
-        arbitration_label = ttk.Label(parent, style="Panel.TLabel")
+        arbitration_label = make_label(parent, style="Panel.TLabel")
         arbitration_label.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
         self._labels["awp1018_arbitration_mode"] = arbitration_label
 
@@ -1427,7 +1428,7 @@ class AWP1018NormalModePage(BasePage):
 
         return_time_frame = ttk.Frame(parent, style="Panel.TFrame")
         return_time_frame.grid(row=row, column=2, sticky="w", pady=7, padx=(12, 8))
-        return_time_label = ttk.Label(return_time_frame, style="Panel.TLabel")
+        return_time_label = make_label(return_time_frame, style="Panel.TLabel")
         return_time_label.grid(row=0, column=0, sticky="w")
         self._labels["awp1018_return_bit_time"] = return_time_label
         self._add_help_button(return_time_frame, 0, 1, "awp1018_return_bit_time_help")
@@ -1483,7 +1484,7 @@ class AWP1018NormalModePage(BasePage):
         self._trace_stage_threshold(stage, "press", high_var)
         self._trace_stage_threshold(stage, "release", low_var)
 
-        ovv_label = ttk.Label(frame, style="Panel.TLabel")
+        ovv_label = make_label(frame, style="Panel.TLabel")
         ovv_label.grid(row=0, column=0, sticky="w", pady=5, padx=(0, 8))
         self._labels[f"{stage}_ovv_time"] = ovv_label
         ttk.Combobox(
@@ -1494,7 +1495,7 @@ class AWP1018NormalModePage(BasePage):
             width=10,
         ).grid(row=0, column=1, sticky="ew", pady=5)
 
-        jump_target_label = ttk.Label(frame, style="Panel.TLabel")
+        jump_target_label = make_label(frame, style="Panel.TLabel")
         jump_target_label.grid(row=0, column=2, sticky="w", pady=5, padx=(12, 8))
         self._labels[f"{stage}_jump_target"] = jump_target_label
 
@@ -1506,20 +1507,20 @@ class AWP1018NormalModePage(BasePage):
             width=10,
         ).grid(row=0, column=3, sticky="ew", pady=5)
 
-        high_label = ttk.Label(frame, style="Panel.TLabel")
+        high_label = make_label(frame, style="Panel.TLabel")
         high_label.grid(row=1, column=0, sticky="w", pady=5, padx=(0, 8))
         self._labels[f"{stage}_high"] = high_label
         high_entry = ttk.Entry(frame, textvariable=high_var, width=10)
         high_entry.grid(row=1, column=1, sticky="ew", pady=5)
 
-        low_label = ttk.Label(frame, style="Panel.TLabel")
+        low_label = make_label(frame, style="Panel.TLabel")
         low_label.grid(row=1, column=2, sticky="w", pady=5, padx=(12, 8))
         self._labels[f"{stage}_low"] = low_label
         low_entry = ttk.Entry(frame, textvariable=low_var, width=10)
         low_entry.grid(row=1, column=3, sticky="ew", pady=5)
         self._stage_entries[stage] = {"press": high_entry, "release": low_entry}
 
-        waveform_label = ttk.Label(frame, style="Panel.TLabel")
+        waveform_label = make_label(frame, style="Panel.TLabel")
         waveform_label.grid(row=2, column=0, sticky="w", pady=5, padx=(0, 8))
         self._labels[f"{stage}_waveform"] = waveform_label
         ttk.Combobox(
@@ -1530,7 +1531,7 @@ class AWP1018NormalModePage(BasePage):
             width=14,
         ).grid(row=2, column=1, sticky="ew", pady=5)
 
-        jump_condition_label = ttk.Label(frame, style="Panel.TLabel")
+        jump_condition_label = make_label(frame, style="Panel.TLabel")
         jump_condition_label.grid(row=2, column=2, sticky="w", pady=5, padx=(12, 8))
         self._labels[f"{stage}_jump_condition"] = jump_condition_label
 
@@ -1575,7 +1576,7 @@ class AWP1018NormalModePage(BasePage):
         self._checks[f"{stage}_release_debounce_enable"] = release_debounce_check
         self._stage_debounce_checks[stage] = {"press": press_debounce_check, "release": release_debounce_check}
 
-        group_label = ttk.Label(frame, style="Panel.TLabel")
+        group_label = make_label(frame, style="Panel.TLabel")
         group_label.grid(row=4, column=0, sticky="nw", pady=5, padx=(0, 8))
         self._labels[f"{stage}_group_start"] = group_label
 
@@ -2379,11 +2380,11 @@ class AWP1018NormalModePage(BasePage):
             self._buttons["awp1018_write_rom_waveform"] = apply_btn
             row += 1
 
-            self.rom_hint_label = ttk.Label(controls, style="Muted.TLabel", wraplength=280)
+            self.rom_hint_label = make_label(controls, style="Muted.TLabel", wraplength=280)
             self.rom_hint_label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 0))
             row += 1
 
-            self.diff_play_hint_label = ttk.Label(controls, style="Muted.TLabel", wraplength=280)
+            self.diff_play_hint_label = make_label(controls, style="Muted.TLabel", wraplength=280)
             self.diff_play_hint_label.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(8, 0))
 
             self._build_rom_preview(parent)
@@ -2479,7 +2480,7 @@ class AWP1018NormalModePage(BasePage):
         self._buttons["awp1018_write_rom_waveform"] = apply_btn
         row += 1
 
-        self.rom_hint_label = ttk.Label(controls, style="Muted.TLabel", wraplength=280)
+        self.rom_hint_label = make_label(controls, style="Muted.TLabel", wraplength=280)
         self.rom_hint_label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 0))
 
         self._build_rom_preview(parent)
@@ -2491,10 +2492,10 @@ class AWP1018NormalModePage(BasePage):
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(2, weight=1)
 
-        self.rom_metric_label = ttk.Label(preview, textvariable=self.rom_metric_var, style="Panel.TLabel", wraplength=760)
+        self.rom_metric_label = make_label(preview, textvariable=self.rom_metric_var, style="Panel.TLabel", wraplength=760)
         self.rom_metric_label.grid(row=0, column=0, sticky="w", pady=(0, 4))
 
-        self.rom_frequency_label = ttk.Label(preview, textvariable=self.rom_frequency_var, style="Muted.TLabel", wraplength=760)
+        self.rom_frequency_label = make_label(preview, textvariable=self.rom_frequency_var, style="Muted.TLabel", wraplength=760)
         self.rom_frequency_label.grid(row=1, column=0, sticky="w", pady=(0, 8))
 
         self.rom_canvas = tk.Canvas(
@@ -2515,7 +2516,7 @@ class AWP1018NormalModePage(BasePage):
         *,
         column: int,
     ) -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=column, sticky="w", padx=(0 if column == 0 else 12, 8), pady=5)
         self._labels[key] = label
         entry = ttk.Entry(parent, textvariable=variable, width=12)
@@ -2533,7 +2534,7 @@ class AWP1018NormalModePage(BasePage):
         column: int,
         width: int = 14,
     ) -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=column, sticky="w", padx=(0 if column == 0 else 12, 8), pady=5)
         self._labels[key] = label
         combo = ttk.Combobox(parent, textvariable=variable, values=values, state="readonly", width=width)
@@ -2848,7 +2849,7 @@ class AWP1018NormalModePage(BasePage):
         return row + 1
 
     def _add_entry(self, parent: tk.Misc, row: int, key: str, variable: tk.StringVar) -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
         self._labels[key] = label
         ttk.Entry(parent, textvariable=variable).grid(row=row, column=1, columnspan=3, sticky="ew", pady=7)
@@ -2862,18 +2863,18 @@ class AWP1018NormalModePage(BasePage):
         key2: str,
         variable2: tk.StringVar,
     ) -> None:
-        label1 = ttk.Label(parent, style="Panel.TLabel")
+        label1 = make_label(parent, style="Panel.TLabel")
         label1.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
         self._labels[key1] = label1
         ttk.Entry(parent, textvariable=variable1, width=10).grid(row=row, column=1, sticky="ew", pady=7)
 
-        label2 = ttk.Label(parent, style="Panel.TLabel")
+        label2 = make_label(parent, style="Panel.TLabel")
         label2.grid(row=row, column=2, sticky="w", pady=7, padx=(12, 8))
         self._labels[key2] = label2
         ttk.Entry(parent, textvariable=variable2, width=10).grid(row=row, column=3, sticky="ew", pady=7)
 
     def _add_combo(self, parent: tk.Misc, row: int, key: str, variable: tk.StringVar, values: list[str]) -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
         self._labels[key] = label
         ttk.Combobox(parent, textvariable=variable, values=values, state="readonly").grid(
@@ -5373,7 +5374,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         dac_frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(10, 0))
         dac_frame.columnconfigure(1, weight=1)
 
-        label = ttk.Label(dac_frame, style="Panel.TLabel")
+        label = make_label(dac_frame, style="Panel.TLabel")
         label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels["awp1018_dac_sample_rate"] = label
         ttk.Entry(dac_frame, textvariable=self.dac_sample_rate_var, width=14).grid(
@@ -5505,7 +5506,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         row = self._add_section_title(content, row, "full_mode_serial")
         row = self._add_full_serial4_tools(content, row)
 
-        status_label = ttk.Label(content, textvariable=self.full_action_status_var, style="Muted.TLabel", wraplength=340)
+        status_label = make_label(content, textvariable=self.full_action_status_var, style="Muted.TLabel", wraplength=340)
         status_label.grid(row=row, column=0, sticky="ew", pady=(8, 0))
 
     def _add_full_memory_tools(self, parent: tk.Misc, row: int) -> int:
@@ -5515,7 +5516,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         frame.columnconfigure(2, weight=1)
         frame.columnconfigure(3, weight=1)
 
-        addr_label = ttk.Label(frame, style="Panel.TLabel")
+        addr_label = make_label(frame, style="Panel.TLabel")
         addr_label.grid(row=0, column=0, sticky="w", padx=(0, 8), pady=5)
         self._labels["ram_address"] = addr_label
         ttk.Entry(frame, textvariable=self.full_ram_addr_var, width=12).grid(row=0, column=1, sticky="ew", pady=5)
@@ -5526,7 +5527,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         read_addr_btn.grid(row=0, column=3, sticky="ew", padx=(8, 0), pady=5)
         self._buttons["full_read_ram_addr"] = read_addr_btn
 
-        data_label = ttk.Label(frame, style="Panel.TLabel")
+        data_label = make_label(frame, style="Panel.TLabel")
         data_label.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=5)
         self._labels["sram_data"] = data_label
         ttk.Entry(frame, textvariable=self.full_sram_data_var, width=12).grid(row=1, column=1, sticky="ew", pady=5)
@@ -5544,7 +5545,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(3, weight=1)
 
-        channel_label = ttk.Label(frame, style="Panel.TLabel")
+        channel_label = make_label(frame, style="Panel.TLabel")
         channel_label.grid(row=0, column=0, sticky="w", padx=(0, 8), pady=5)
         self._labels["awp1018_full_adc_channel"] = channel_label
         ttk.Combobox(
@@ -5555,7 +5556,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
             width=8,
         ).grid(row=0, column=1, sticky="ew", pady=5)
 
-        value_label = ttk.Label(frame, style="Panel.TLabel")
+        value_label = make_label(frame, style="Panel.TLabel")
         value_label.grid(row=0, column=2, sticky="w", padx=(12, 8), pady=5)
         self._labels["awp1018_full_adc_value"] = value_label
         ttk.Entry(frame, textvariable=self.full_adc_value_var, state="readonly", width=12).grid(
@@ -5579,7 +5580,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         self.full_serial4_segment_combos = []
         options = self._serial4_segment_options()
         for index, variable in enumerate(self.diff_serial4_segment_vars, start=1):
-            label = ttk.Label(frame, style="Panel.TLabel")
+            label = make_label(frame, style="Panel.TLabel")
             grid_row = (index - 1) // 2
             grid_column = 0 if index % 2 else 2
             label.grid(row=grid_row, column=grid_column, sticky="w", padx=(0 if grid_column == 0 else 12, 8), pady=5)
@@ -5624,7 +5625,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
             button.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 4, 0))
             self._buttons[key] = button
 
-        status_label = ttk.Label(summary, style="Panel.TLabel")
+        status_label = make_label(summary, style="Panel.TLabel")
         status_label.grid(row=1, column=0, sticky="w", pady=6, padx=(0, 8))
         self._labels["full_status"] = status_label
         ttk.Entry(summary, textvariable=self.full_status_value_var, state="readonly").grid(
@@ -5638,7 +5639,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         status_btn.grid(row=1, column=3, sticky="ew", pady=6, padx=(8, 0))
         self._buttons["full_read_status"] = status_btn
 
-        chip_label = ttk.Label(summary, style="Panel.TLabel")
+        chip_label = make_label(summary, style="Panel.TLabel")
         chip_label.grid(row=2, column=0, sticky="w", pady=6, padx=(0, 8))
         self._labels["chip_id"] = chip_label
         ttk.Entry(summary, textvariable=self.full_chip_id_var, state="readonly").grid(
@@ -5847,7 +5848,7 @@ class AWP1018ReservedModePage(BasePage):
         self.title_label = ttk.Label(panel, style="Prominent.TLabel")
         self.title_label.grid(row=0, column=0, sticky="w")
 
-        self.hint_label = ttk.Label(panel, style="Muted.TLabel", wraplength=720)
+        self.hint_label = make_label(panel, style="Muted.TLabel", wraplength=720)
         self.hint_label.grid(row=1, column=0, sticky="w", pady=(10, 0))
 
         self.refresh_language()

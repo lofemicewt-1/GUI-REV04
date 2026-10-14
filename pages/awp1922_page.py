@@ -8,6 +8,7 @@ from typing import Any
 from pages.base_page import BasePage
 from core.base_tool import parse_firmware_error
 from core.ui_dispatch import post_to_ui
+from pages.fast_label import make_label
 
 
 def awp1922_amplitude_code(label: str) -> int | None:
@@ -108,7 +109,7 @@ class AWP1922Page(BasePage):
         serial_group = identity.add_group()
         self.make_serial_selector(serial_group, page_name=self.page_name, row=0, column=0)
         addr_group = identity.add_group()
-        addr_label = ttk.Label(addr_group, style="Panel.TLabel")
+        addr_label = make_label(addr_group, style="Panel.TLabel")
         addr_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels["awp1922_addr"] = addr_label
         ttk.Combobox(
@@ -125,10 +126,10 @@ class AWP1922Page(BasePage):
         self._buttons["detect_chip"] = detect_btn
 
         status_group = identity.add_group()
-        ttk.Label(status_group, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        make_label(status_group, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
 
         title_group = reg_panel.add_group()
-        reg_title = ttk.Label(title_group, style="Panel.TLabel")
+        reg_title = make_label(title_group, style="Panel.TLabel")
         reg_title.grid(row=0, column=0, sticky="w")
         self._labels["register_tools"] = reg_title
         self._add_footer_field(reg_panel, "reg_addr", self.reg_addr_var, 8)
@@ -196,7 +197,7 @@ class AWP1922Page(BasePage):
         shutdown_btn.grid(row=0, column=1, sticky="ew", padx=(6, 0))
         self._buttons["shutdown"] = shutdown_btn
 
-        self.hint_label = ttk.Label(left, style="Muted.TLabel", wraplength=420)
+        self.hint_label = make_label(left, style="Muted.TLabel", wraplength=420)
         self.hint_label.grid(row=row + 1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
 
         log_frame = self.make_serial_log(right, height=12, subscribe=True)
@@ -217,7 +218,7 @@ class AWP1922Page(BasePage):
         readonly: bool = False,
     ) -> None:
         group = bar.add_group()
-        label = ttk.Label(group, style="Panel.TLabel")
+        label = make_label(group, style="Panel.TLabel")
         label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._labels[key] = label
         entry = ttk.Entry(group, textvariable=variable, width=width)
@@ -264,7 +265,7 @@ class AWP1922Page(BasePage):
         return [f"{(i + 1) * 2.8:.2f} V" for i in range(0x20)]
 
     def _add_combo(self, parent: tk.Misc, row: int, key: str, variable: tk.StringVar, values: list[str]) -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="w", pady=8, padx=(0, 10))
         self._labels[key] = label
 
@@ -272,7 +273,7 @@ class AWP1922Page(BasePage):
         combo.grid(row=row, column=1, sticky="ew", pady=8)
 
     def _add_entry(self, parent: tk.Misc, row: int, key: str, variable: tk.StringVar, readonly: bool = False) -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="w", pady=8, padx=(0, 10))
         self._labels[key] = label
 

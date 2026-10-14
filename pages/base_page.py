@@ -13,6 +13,7 @@ from config.app_info import CHIP_WEBSITE_URLS
 from config.languages import t
 from styles.fonts import digits_font, page_title_weight, sidebar_brand_font_spec
 from core.ui_dispatch import post_to_ui
+from pages.fast_label import make_label
 
 
 def fit_toplevel_to_screen(
@@ -692,7 +693,7 @@ class BasePage(ttk.Frame):
         column: int = 0,
         padx: tuple[int, int] = (0, 8),
     ) -> int:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=column, sticky="w", padx=padx)
         self.bind_text(label, "communication_port")
 

@@ -649,6 +649,9 @@ class Navigation:
                 page.refresh_language()
 
     def refresh_theme(self) -> None:
+        from pages.fast_label import refresh_all as _refresh_fast_labels
+
+        _refresh_fast_labels()  # plain tk labels take colours from their ttk style
         self._reset_nav_hover()
         self.refresh_layout()
         self._settings_images.clear()

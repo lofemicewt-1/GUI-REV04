@@ -46,6 +46,7 @@ from pages.awp1922_page import AWP1922Page
 from pages.chip_pages import AWP1921AWP1923Page
 from styles.fonts import digits_font, page_title_weight
 from styles.theme import apply_theme
+from pages.fast_label import make_label
 
 
 CONNECT_RESULT_POLL_MS = 25
@@ -191,17 +192,17 @@ class HomePage(BasePage):
         main_title.grid(row=0, column=0, sticky="w", pady=(0, 12))
         self.bind_text(main_title, "connect_board_title")
 
-        self.status_label = ttk.Label(panel, style="Panel.TLabel")
+        self.status_label = make_label(panel, style="Panel.TLabel")
         self.status_label.grid(row=1, column=0, sticky="w", pady=(0, 12))
 
-        self.port_hint_label = ttk.Label(panel, style="Muted.TLabel")
+        self.port_hint_label = make_label(panel, style="Muted.TLabel")
         self.port_hint_label.grid(row=2, column=0, sticky="w", pady=(0, 10))
 
         toolbar = ttk.Frame(panel, style="Panel.TFrame")
         toolbar.grid(row=3, column=0, sticky="ew")
         toolbar.columnconfigure(7, weight=1)
 
-        self.port_label = ttk.Label(toolbar, style="Panel.TLabel")
+        self.port_label = make_label(toolbar, style="Panel.TLabel")
         self.port_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
 
         self.port_var = tk.StringVar()
@@ -209,7 +210,7 @@ class HomePage(BasePage):
         self.port_combo.grid(row=0, column=1, sticky="w")
         self.port_combo.bind("<<ComboboxSelected>>", self._on_status_port_changed)
 
-        self.baud_label = ttk.Label(toolbar, style="Panel.TLabel")
+        self.baud_label = make_label(toolbar, style="Panel.TLabel")
         self.baud_label.grid(row=0, column=2, sticky="w", padx=(14, 8))
 
         self.baud_var = tk.StringVar(value=str(self.ctx.state.baudrate))
@@ -228,15 +229,15 @@ class HomePage(BasePage):
         self.connect_btn = ttk.Button(toolbar, style="Primary.TButton", command=self.toggle_connection)
         self.connect_btn.grid(row=0, column=5, padx=(8, 0))
 
-        self.current_port_name_label = ttk.Label(toolbar, style="Panel.TLabel")
+        self.current_port_name_label = make_label(toolbar, style="Panel.TLabel")
         self.current_port_name_label.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
 
         self.current_port_name_var = tk.StringVar(value="")
-        ttk.Label(toolbar, textvariable=self.current_port_name_var, style="Muted.TLabel").grid(
+        make_label(toolbar, textvariable=self.current_port_name_var, style="Muted.TLabel").grid(
             row=1, column=1, columnspan=6, sticky="w", pady=(10, 0)
         )
 
-        self.i2c_label = ttk.Label(toolbar, style="Panel.TLabel")
+        self.i2c_label = make_label(toolbar, style="Panel.TLabel")
         self.i2c_label.grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
 
         self.i2c_speed_var = tk.StringVar(value="400000")
@@ -256,25 +257,25 @@ class HomePage(BasePage):
         rr_panel.grid(row=4, column=0, sticky="ew", pady=(18, 0))
         rr_panel.columnconfigure(7, weight=1)
 
-        self.device_addr_label = ttk.Label(rr_panel, style="Panel.TLabel")
+        self.device_addr_label = make_label(rr_panel, style="Panel.TLabel")
         self.device_addr_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
 
         self.device_addr_var = tk.StringVar(value="0x44")
         ttk.Entry(rr_panel, textvariable=self.device_addr_var, width=8).grid(row=0, column=1, sticky="w", padx=(0, 16))
 
-        self.reg_addr_label = ttk.Label(rr_panel, style="Panel.TLabel")
+        self.reg_addr_label = make_label(rr_panel, style="Panel.TLabel")
         self.reg_addr_label.grid(row=0, column=2, sticky="w", padx=(0, 8))
 
         self.reg_addr_var = tk.StringVar(value="0x00")
         ttk.Entry(rr_panel, textvariable=self.reg_addr_var, width=8).grid(row=0, column=3, sticky="w", padx=(0, 16))
 
-        self.write_value_label = ttk.Label(rr_panel, style="Panel.TLabel")
+        self.write_value_label = make_label(rr_panel, style="Panel.TLabel")
         self.write_value_label.grid(row=0, column=4, sticky="w", padx=(0, 8))
 
         self.write_value_var = tk.StringVar(value="0x0000")
         ttk.Entry(rr_panel, textvariable=self.write_value_var, width=10).grid(row=0, column=5, sticky="w", padx=(0, 16))
 
-        self.register_width_label = ttk.Label(rr_panel, style="Panel.TLabel")
+        self.register_width_label = make_label(rr_panel, style="Panel.TLabel")
         self.register_width_label.grid(row=0, column=6, sticky="w", padx=(0, 8))
 
         self.register_width_var = tk.StringVar(value="16-bit")
@@ -287,7 +288,7 @@ class HomePage(BasePage):
         )
         self.register_width_combo.grid(row=0, column=7, sticky="w")
 
-        self.read_value_label = ttk.Label(rr_panel, style="Panel.TLabel")
+        self.read_value_label = make_label(rr_panel, style="Panel.TLabel")
         self.read_value_label.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
 
         self.read_value_var = tk.StringVar(value="")
@@ -312,7 +313,7 @@ class HomePage(BasePage):
         self.board_tools_panel = board_panel
         self.board_tools_title = ttk.Label(board_panel, style="SectionTitle.TLabel")
         self.board_tools_title.grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 6))
-        self.gpio_pin_label = ttk.Label(board_panel, style="Panel.TLabel")
+        self.gpio_pin_label = make_label(board_panel, style="Panel.TLabel")
         self.gpio_pin_label.grid(row=1, column=0, sticky="w", padx=(0, 8))
         self.gpio_pin_var = tk.StringVar(value="D2")
         self.gpio_pin_combo = ttk.Combobox(
@@ -324,7 +325,7 @@ class HomePage(BasePage):
         )
         self.gpio_pin_combo.grid(row=1, column=1, sticky="w", padx=(0, 16))
         self.gpio_pin_combo.bind("<<ComboboxSelected>>", self._on_board_gpio_pin_selected)
-        self.gpio_mode_label = ttk.Label(board_panel, style="Panel.TLabel")
+        self.gpio_mode_label = make_label(board_panel, style="Panel.TLabel")
         self.gpio_mode_label.grid(row=1, column=2, sticky="w", padx=(0, 8))
         self.gpio_mode_var = tk.StringVar(value="HIGH")
         self.gpio_mode_combo = ttk.Combobox(
@@ -352,7 +353,7 @@ class HomePage(BasePage):
             row=1, column=6, sticky="w"
         )
 
-        self.adc_pin_label = ttk.Label(board_panel, style="Panel.TLabel")
+        self.adc_pin_label = make_label(board_panel, style="Panel.TLabel")
         self.adc_pin_label.grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
         self.adc_pin_var = tk.StringVar(value="A1")
         self.adc_pin_combo = ttk.Combobox(
@@ -399,19 +400,19 @@ class HomePage(BasePage):
         self.status_cache_title = ttk.Label(panel, style="SectionTitle.TLabel")
         self.status_cache_title.grid(row=0, column=0, columnspan=7, sticky="w", pady=(0, 6))
         self.bind_text(self.status_cache_title, "status_cache_title")
-        self.status_cache_hint = ttk.Label(panel, style="Muted.TLabel")
+        self.status_cache_hint = make_label(panel, style="Muted.TLabel")
         self.status_cache_hint.grid(row=1, column=0, columnspan=7, sticky="w", pady=(0, 8))
         self.bind_text(self.status_cache_hint, "status_cache_hint")
 
         headers = ("status_cache_slot", "status_cache_type", "status_cache_address", "status_cache_enabled", "status_cache_value")
         for column, key in enumerate(headers):
-            label = ttk.Label(panel, style="Muted.TLabel")
+            label = make_label(panel, style="Muted.TLabel")
             label.grid(row=2, column=column, sticky="w", padx=(0, 8))
             self.bind_text(label, key)
 
         for slot in range(self.STATUS_MAX_TARGETS):
             row = 3 + slot
-            slot_label = ttk.Label(panel, text=f"{slot}", style="Panel.TLabel", width=4)
+            slot_label = make_label(panel, text=f"{slot}", style="Panel.TLabel", width=4)
             slot_label.grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
             type_var = tk.StringVar(value=chip_status_cache.CHIP_TYPE_192)
             type_combo = ttk.Combobox(
@@ -446,7 +447,7 @@ class HomePage(BasePage):
             )
             remove_btn.grid(row=row, column=4, sticky="w", padx=(0, 8), pady=2)
             value_var = tk.StringVar(value="--")
-            value_label = ttk.Label(panel, textvariable=value_var, style="Muted.TLabel")
+            value_label = make_label(panel, textvariable=value_var, style="Muted.TLabel")
             value_label.grid(row=row, column=5, columnspan=2, sticky="w", pady=2)
             type_combo.bind(
                 "<<ComboboxSelected>>",
@@ -2572,7 +2573,7 @@ class ContinuousRegisterReadDialog(tk.Toplevel):
         self.refresh_language()
 
     def _add_label(self, parent: tk.Misc, row: int, column: int, key: str) -> ttk.Label:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=column, sticky="w", padx=(0, 8), pady=5)
         self._labels.append((label, key))
         return label
@@ -2615,7 +2616,7 @@ class ContinuousRegisterReadDialog(tk.Toplevel):
         self.expected_entry = ttk.Entry(body, textvariable=self.expected_var, width=13)
         self.expected_entry.grid(row=1, column=3, sticky="ew", pady=5)
 
-        self.expected_hint = ttk.Label(body, style="Muted.TLabel", wraplength=540)
+        self.expected_hint = make_label(body, style="Muted.TLabel", wraplength=540)
         self.expected_hint.grid(row=2, column=1, columnspan=3, sticky="w", pady=(0, 5))
 
         self._add_label(body, 3, 0, "continuous_read_mismatch_policy")
@@ -2646,7 +2647,7 @@ class ContinuousRegisterReadDialog(tk.Toplevel):
             width=10,
         )
         self.expected_bit_combo.grid(row=6, column=3, sticky="w", pady=5)
-        self.bit_hint = ttk.Label(body, style="Muted.TLabel", wraplength=540)
+        self.bit_hint = make_label(body, style="Muted.TLabel", wraplength=540)
         self.bit_hint.grid(row=7, column=1, columnspan=3, sticky="w", pady=(0, 5))
 
         self._add_label(body, 8, 0, "continuous_read_count")
@@ -2685,7 +2686,7 @@ class ContinuousRegisterReadDialog(tk.Toplevel):
         )
         self.close_button.grid(row=0, column=2)
 
-        self.counts_label = ttk.Label(body, textvariable=self.counts_var, style="Panel.TLabel")
+        self.counts_label = make_label(body, textvariable=self.counts_var, style="Panel.TLabel")
         self.counts_label._piezo_digits = True  # type: ignore[attr-defined]
         try:
             _root = self.counts_label.winfo_toplevel()._root()
@@ -2695,7 +2696,7 @@ class ContinuousRegisterReadDialog(tk.Toplevel):
         except tk.TclError:
             pass
         self.counts_label.grid(row=11, column=0, columnspan=4, sticky="w", pady=(6, 2))
-        self.status_label = ttk.Label(body, textvariable=self.status_var, style="Muted.TLabel")
+        self.status_label = make_label(body, textvariable=self.status_var, style="Muted.TLabel")
         self.status_label.grid(row=12, column=0, columnspan=4, sticky="w", pady=(0, 6))
 
         results_frame = ttk.Frame(body, style="Panel.TFrame")
@@ -3139,13 +3140,13 @@ class SettingsPage(BasePage):
         panel.grid(row=1, column=0, sticky="nsew")
         panel.columnconfigure(1, weight=1)
 
-        self.lang_label = ttk.Label(panel, style="Panel.TLabel")
+        self.lang_label = make_label(panel, style="Panel.TLabel")
         self.lang_label.grid(row=0, column=0, sticky="w", padx=(0, 10), pady=8)
         ttk.Combobox(panel, textvariable=self.language_var, values=["中文", "English"], state="readonly").grid(
             row=0, column=1, sticky="w", pady=8
         )
 
-        self.theme_label = ttk.Label(panel, style="Panel.TLabel")
+        self.theme_label = make_label(panel, style="Panel.TLabel")
         self.theme_label.grid(row=1, column=0, sticky="w", padx=(0, 10), pady=8)
         ttk.Combobox(
             panel,
@@ -3157,7 +3158,7 @@ class SettingsPage(BasePage):
             row=1, column=1, sticky="w", pady=8
         )
 
-        self.font_size_label = ttk.Label(panel, style="Panel.TLabel")
+        self.font_size_label = make_label(panel, style="Panel.TLabel")
         self.font_size_label.grid(row=2, column=0, sticky="w", padx=(0, 10), pady=8)
         ttk.Combobox(
             panel,
@@ -3167,7 +3168,7 @@ class SettingsPage(BasePage):
             width=8,
         ).grid(row=2, column=1, sticky="w", pady=8)
 
-        self.animations_label = ttk.Label(panel, style="Panel.TLabel")
+        self.animations_label = make_label(panel, style="Panel.TLabel")
         self.animations_label.grid(row=3, column=0, sticky="w", padx=(0, 10), pady=8)
         self.animations_check = ttk.Checkbutton(
             panel,

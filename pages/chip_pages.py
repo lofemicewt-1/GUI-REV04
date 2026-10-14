@@ -14,6 +14,7 @@ from pages.awp1221_page import AWP1221Page
 from pages.awp192x_modes import ButtonModePage, FullModePage, PumpModePage
 from pages.base_page import BasePage, SimpleTooltip, lazy_mode_pages
 from core.ui_dispatch import post_to_ui
+from pages.fast_label import make_label
 
 
 AWP1744_AWP1766_VOLTAGE_TABLE = [
@@ -234,7 +235,7 @@ class AWP1921AWP1923Page(BasePage):
         serial_group = parent.add_group()
         self.make_serial_selector(serial_group, page_name=self.page_name, row=0, column=0)
         addr_group = parent.add_group()
-        self.addr_label = ttk.Label(addr_group, style="Panel.TLabel")
+        self.addr_label = make_label(addr_group, style="Panel.TLabel")
         self.addr_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.addr_combo = ttk.Combobox(
             addr_group,
@@ -248,16 +249,16 @@ class AWP1921AWP1923Page(BasePage):
 
     def _build_register_bar(self, parent: tk.Misc) -> None:
         title_group = parent.add_group()
-        self.reg_title_label = ttk.Label(title_group, style="Panel.TLabel")
+        self.reg_title_label = make_label(title_group, style="Panel.TLabel")
         self.reg_title_label.grid(row=0, column=0, sticky="w")
 
         addr_group = parent.add_group()
-        self.reg_addr_label = ttk.Label(addr_group, style="Panel.TLabel")
+        self.reg_addr_label = make_label(addr_group, style="Panel.TLabel")
         self.reg_addr_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Entry(addr_group, textvariable=self.reg_addr_var, width=8).grid(row=0, column=1, sticky="w")
 
         write_group = parent.add_group()
-        self.write_value_label = ttk.Label(write_group, style="Panel.TLabel")
+        self.write_value_label = make_label(write_group, style="Panel.TLabel")
         self.write_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self.write_value_entry = ttk.Entry(write_group, textvariable=self.write_value_var, width=10)
         self.write_value_entry.grid(row=0, column=1, sticky="w")
@@ -265,7 +266,7 @@ class AWP1921AWP1923Page(BasePage):
         self.write_value_entry.bind("<FocusOut>", lambda _event: self._commit_detail_shared_value(), add="+")
 
         read_group = parent.add_group()
-        self.read_value_label = ttk.Label(read_group, style="Panel.TLabel")
+        self.read_value_label = make_label(read_group, style="Panel.TLabel")
         self.read_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Entry(read_group, textvariable=self.read_value_var, width=12, state="readonly").grid(row=0, column=1, sticky="w")
 
@@ -294,7 +295,7 @@ class AWP1921AWP1923Page(BasePage):
         self.detail_frame.columnconfigure(1, weight=1)
         self.detail_frame.columnconfigure(3, weight=1)
 
-        self.detail_register_label = ttk.Label(self.detail_frame, style="Panel.TLabel")
+        self.detail_register_label = make_label(self.detail_frame, style="Panel.TLabel")
         self.detail_register_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
 
         self.detail_register_combo = ttk.Combobox(
@@ -307,7 +308,7 @@ class AWP1921AWP1923Page(BasePage):
         self.detail_register_combo.grid(row=0, column=1, sticky="ew", padx=(0, 12))
         self.detail_register_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_detail_register_selected())
 
-        self.detail_note_label = ttk.Label(
+        self.detail_note_label = make_label(
             self.detail_frame,
             textvariable=self.detail_note_var,
             style="Muted.TLabel",
@@ -905,7 +906,7 @@ class AWP1744AWP1766Page(BasePage):
         serial_group = identity.add_group()
         self.make_serial_selector(serial_group, page_name=self.page_name, row=0, column=0)
         addr_group = identity.add_group()
-        self.addr_label = ttk.Label(addr_group, style="Panel.TLabel")
+        self.addr_label = make_label(addr_group, style="Panel.TLabel")
         self.addr_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.addr_combo = ttk.Combobox(
             addr_group,
@@ -933,21 +934,21 @@ class AWP1744AWP1766Page(BasePage):
 
     def _build_register_bar(self, parent: tk.Misc) -> None:
         title_group = parent.add_group()
-        self.reg_title_label = ttk.Label(title_group, style="Panel.TLabel")
+        self.reg_title_label = make_label(title_group, style="Panel.TLabel")
         self.reg_title_label.grid(row=0, column=0, sticky="w")
 
         addr_group = parent.add_group()
-        self.reg_addr_label = ttk.Label(addr_group, style="Panel.TLabel")
+        self.reg_addr_label = make_label(addr_group, style="Panel.TLabel")
         self.reg_addr_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Entry(addr_group, textvariable=self.reg_addr_var, width=8).grid(row=0, column=1, sticky="w")
 
         write_group = parent.add_group()
-        self.write_value_label = ttk.Label(write_group, style="Panel.TLabel")
+        self.write_value_label = make_label(write_group, style="Panel.TLabel")
         self.write_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Entry(write_group, textvariable=self.write_value_var, width=10).grid(row=0, column=1, sticky="w")
 
         read_group = parent.add_group()
-        self.read_value_label = ttk.Label(read_group, style="Panel.TLabel")
+        self.read_value_label = make_label(read_group, style="Panel.TLabel")
         self.read_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Entry(read_group, textvariable=self.read_value_var, width=12, state="readonly").grid(row=0, column=1, sticky="w")
 
@@ -1146,7 +1147,7 @@ class AWP1744AWP1766PumpModePage(BasePage):
         panel.columnconfigure(4, weight=1)
         panel.rowconfigure(5, weight=1)
 
-        state_label = ttk.Label(panel, style="Panel.TLabel")
+        state_label = make_label(panel, style="Panel.TLabel")
         state_label.grid(row=0, column=0, sticky="w", padx=(0, 10), pady=8)
         self._labels["awp1744_awp1766_pump_switch"] = state_label
 
@@ -1161,11 +1162,11 @@ class AWP1744AWP1766PumpModePage(BasePage):
         close_btn.grid(row=0, column=1, sticky="w")
         self._buttons["awp1744_awp1766_pump_close"] = close_btn
 
-        gpio2_label = ttk.Label(switch_frame, style="Muted.TLabel")
+        gpio2_label = make_label(switch_frame, style="Muted.TLabel")
         gpio2_label.grid(row=0, column=2, sticky="w", padx=(18, 0))
         self._labels["awp1744_awp1766_use_gpio2"] = gpio2_label
 
-        amp_label = ttk.Label(panel, style="Panel.TLabel")
+        amp_label = make_label(panel, style="Panel.TLabel")
         amp_label.grid(row=1, column=0, sticky="w", padx=(0, 10), pady=8)
         self._labels["amplitude"] = amp_label
 
@@ -1173,29 +1174,29 @@ class AWP1744AWP1766PumpModePage(BasePage):
         amp_combo.grid(row=1, column=1, sticky="ew", pady=8)
         amp_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_amp_changed())
 
-        actual_label = ttk.Label(panel, style="Panel.TLabel")
+        actual_label = make_label(panel, style="Panel.TLabel")
         actual_label.grid(row=1, column=2, sticky="w", padx=(18, 10), pady=8)
         self._labels["awp1744_awp1766_actual_voltage"] = actual_label
 
-        self.mark_digits(ttk.Label(panel, textvariable=self.actual_voltage_var, style="Panel.TLabel")).grid(
+        self.mark_digits(make_label(panel, textvariable=self.actual_voltage_var, style="Panel.TLabel")).grid(
             row=1,
             column=3,
             sticky="w",
             pady=8,
         )
 
-        freq_label = ttk.Label(panel, style="Panel.TLabel")
+        freq_label = make_label(panel, style="Panel.TLabel")
         freq_label.grid(row=2, column=0, sticky="w", padx=(0, 10), pady=8)
         self._labels["chip_frequency"] = freq_label
 
-        self.mark_digits(ttk.Label(panel, textvariable=self.frequency_var, style="Panel.TLabel")).grid(
+        self.mark_digits(make_label(panel, textvariable=self.frequency_var, style="Panel.TLabel")).grid(
             row=2,
             column=1,
             sticky="w",
             pady=8,
         )
 
-        gpio3_label = ttk.Label(panel, style="Muted.TLabel")
+        gpio3_label = make_label(panel, style="Muted.TLabel")
         gpio3_label.grid(row=2, column=2, sticky="w", padx=(18, 10), pady=8)
         self._labels["awp1744_awp1766_use_gpio3"] = gpio3_label
 
@@ -1203,7 +1204,7 @@ class AWP1744AWP1766PumpModePage(BasePage):
         freq_btn.grid(row=2, column=3, sticky="w", padx=(18, 10), pady=8)
         self._buttons["awp1744_awp1766_read_frequency"] = freq_btn
 
-        ttk.Label(panel, textvariable=self.freq_status_var, style="Muted.TLabel").grid(
+        make_label(panel, textvariable=self.freq_status_var, style="Muted.TLabel").grid(
             row=2,
             column=4,
             sticky="w",
@@ -1437,7 +1438,7 @@ class ReservedModePage(BasePage):
         panel.grid(row=0, column=0, sticky="nsew")
         self.title_label = ttk.Label(panel, style="Prominent.TLabel")
         self.title_label.grid(row=0, column=0, sticky="w")
-        self.hint_label = ttk.Label(panel, style="Muted.TLabel", wraplength=620)
+        self.hint_label = make_label(panel, style="Muted.TLabel", wraplength=620)
         self.hint_label.grid(row=1, column=0, sticky="w", pady=(10, 0))
         self.refresh_language()
 

@@ -26,6 +26,7 @@ from core.awp192x_button_runtime import (
 )
 from pages.base_page import BasePage
 from core.ui_dispatch import post_to_ui
+from pages.fast_label import make_label
 
 
 ARDUINO_I2C_TRANSACTION_BYTES = 31
@@ -361,7 +362,7 @@ class WaveformGeneratorPage(BasePage):
         readonly: bool = False,
         unit: str = "",
     ) -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="w", pady=5, padx=(0, 8))
         self._labels[key] = label
 
@@ -372,7 +373,7 @@ class WaveformGeneratorPage(BasePage):
 
         widgets: list[tk.Widget] = [label, entry]
         if unit:
-            unit_label = ttk.Label(parent, text=unit, style="Muted.TLabel")
+            unit_label = make_label(parent, text=unit, style="Muted.TLabel")
             unit_label.grid(row=row, column=2, sticky="w", padx=(6, 0), pady=5)
             widgets.append(unit_label)
 
@@ -387,7 +388,7 @@ class WaveformGeneratorPage(BasePage):
         from_: int,
         to: int,
     ) -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="w", pady=5, padx=(0, 8))
         self._labels[key] = label
 
@@ -403,7 +404,7 @@ class WaveformGeneratorPage(BasePage):
         variable: tk.StringVar,
         values: list[str],
     ) -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="w", pady=5, padx=(0, 8))
         self._labels[key] = label
 
@@ -556,18 +557,18 @@ class WaveformGeneratorPage(BasePage):
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(2, weight=1)
 
-        ttk.Label(frame, text="Serial", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        slice_header = ttk.Label(frame, style="Panel.TLabel")
+        make_label(frame, text="Serial", style="Panel.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        slice_header = make_label(frame, style="Panel.TLabel")
         slice_header.grid(row=0, column=1, sticky="w", padx=(0, 8))
         self.bind_text(slice_header, "serial_slice")
-        repeat_header = ttk.Label(frame, style="Panel.TLabel")
+        repeat_header = make_label(frame, style="Panel.TLabel")
         repeat_header.grid(row=0, column=2, sticky="w")
         self.bind_text(repeat_header, "serial_repeat")
 
         slice_options = [f"slice{index}" for index in range(30)] + ["0x1E", "0x1F"]
         repeat_options = [str(count) for count in range(1, 9)]
         for index, (slice_var, repeat_var) in enumerate(zip(self.serial_slice_vars, self.serial_repeat_vars)):
-            ttk.Label(frame, text=f"serial{index}", style="Panel.TLabel").grid(
+            make_label(frame, text=f"serial{index}", style="Panel.TLabel").grid(
                 row=index + 1,
                 column=0,
                 sticky="w",

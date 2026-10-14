@@ -12,6 +12,7 @@ from tkinter import messagebox, ttk
 
 from pages.base_page import BasePage
 
+from pages.fast_label import make_label
 from core.awp1221_sram import (
     SegmentRatioCapacityError,
     ZeroIntervalCandidate,
@@ -66,8 +67,8 @@ class AWP1221SramEditor(BasePage):
         plot.grid(row=0, column=1, sticky="nsew")
         plot.columnconfigure(0, weight=1)
         plot.rowconfigure(2, weight=1)
-        ttk.Label(plot, textvariable=self.rom_metric_var, style="Muted.TLabel", wraplength=320).grid(row=0, column=0, sticky="w")
-        ttk.Label(plot, textvariable=self.rom_frequency_var, style="Muted.TLabel", wraplength=320).grid(row=1, column=0, sticky="w")
+        make_label(plot, textvariable=self.rom_metric_var, style="Muted.TLabel", wraplength=320).grid(row=0, column=0, sticky="w")
+        make_label(plot, textvariable=self.rom_frequency_var, style="Muted.TLabel", wraplength=320).grid(row=1, column=0, sticky="w")
         self.rom_canvas = tk.Canvas(plot, width=320, height=280, highlightthickness=0, background=self.colors["panel"])
         self.rom_canvas.grid(row=2, column=0, sticky="nsew")
         self._init_sram_editor(controls)
@@ -163,11 +164,11 @@ class AWP1221SramEditor(BasePage):
             ("OFFSET", self.rom_offset_var, self.ROM_OFFSET_OPTIONS),
             ("SAMPLE_TIME (us)", self.sram_sample_var, [str(i) for i in range(1, 257)]),
         )):
-            ttk.Label(frame, text=label, style="Panel.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 10), pady=7)
+            make_label(frame, text=label, style="Panel.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 10), pady=7)
             combo = ttk.Combobox(frame, textvariable=variable, values=values, width=16, state="readonly")
             combo.grid(row=row, column=1, sticky="ew", pady=7)
             combo.bind("<<ComboboxSelected>>", lambda _e: self._draw_sram_waveform())
-        self._sram_help = ttk.Label(frame, style="Muted.TLabel", wraplength=260)
+        self._sram_help = make_label(frame, style="Muted.TLabel", wraplength=260)
         self._sram_help.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(14, 8))
         self._sram_values_entry = ttk.Entry(frame, textvariable=self.sram_values_var, width=25)
         self._sram_values_entry.grid(row=5, column=0, columnspan=2, sticky="ew")
@@ -178,24 +179,24 @@ class AWP1221SramEditor(BasePage):
         ratio = self._sram_ratio_frame = ttk.Frame(frame, style="Panel.TFrame")
         ratio.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(0, 6))
         ratio.columnconfigure(0, weight=1)
-        self._sram_ratio_title = ttk.Label(ratio, style="Panel.TLabel", wraplength=180)
+        self._sram_ratio_title = make_label(ratio, style="Panel.TLabel", wraplength=180)
         self._sram_ratio_title.grid(row=0, column=0, sticky="w")
         self._sram_equal_btn = ttk.Button(ratio, command=self._equalize_sram_ratios)
         self._sram_equal_btn.grid(row=0, column=1, sticky="e")
         self._sram_ratio_rows_frame = ttk.Frame(ratio, style="Panel.TFrame")
         self._sram_ratio_rows_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         self._sram_ratio_rows_frame.columnconfigure(0, weight=1)
-        self._sram_ratio_total = ttk.Label(ratio, style="Muted.TLabel")
+        self._sram_ratio_total = make_label(ratio, style="Muted.TLabel")
         self._sram_ratio_total.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        self._sram_points_label = ttk.Label(frame, style="Panel.TLabel", wraplength=250)
+        self._sram_points_label = make_label(frame, style="Panel.TLabel", wraplength=250)
         self._sram_points_label.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(7, 0))
         self._sram_points_entry = ttk.Entry(frame, textvariable=self.sram_points_var, width=12)
         self._sram_points_entry.grid(row=9, column=0, columnspan=2, sticky="ew")
         self._sram_points_entry.bind("<Return>", lambda _event: self._apply_sram_values())
         self._sram_points_entry.bind("<FocusOut>", lambda _event: self._apply_sram_values())
-        self._sram_points_hint = ttk.Label(frame, style="Muted.TLabel", wraplength=250)
+        self._sram_points_hint = make_label(frame, style="Muted.TLabel", wraplength=250)
         self._sram_points_hint.grid(row=10, column=0, columnspan=2, sticky="ew")
-        self._sram_start_label = ttk.Label(frame, style="Panel.TLabel", wraplength=250)
+        self._sram_start_label = make_label(frame, style="Panel.TLabel", wraplength=250)
         self._sram_start_label.grid(row=11, column=0, columnspan=2, sticky="ew", pady=(7, 0))
         self._sram_start_entry = ttk.Entry(frame, textvariable=self.sram_start_var, width=12)
         self._sram_start_entry.grid(row=12, column=0, columnspan=2, sticky="ew")
@@ -203,7 +204,7 @@ class AWP1221SramEditor(BasePage):
         self._sram_start_entry.bind("<FocusOut>", lambda _event: self._apply_sram_values())
         self._sram_write_btn = ttk.Button(frame, style="Primary.TButton", command=self._start_sram_write)
         self._sram_write_btn.grid(row=13, column=0, columnspan=2, sticky="ew", pady=8)
-        ttk.Label(frame, textvariable=self.sram_status_var, style="Muted.TLabel", wraplength=250).grid(
+        make_label(frame, textvariable=self.sram_status_var, style="Muted.TLabel", wraplength=250).grid(
             row=14, column=0, columnspan=2, sticky="ew", pady=8)
         self._sram_progress = ttk.Progressbar(frame, maximum=100)
         self._sram_progress.grid(row=15, column=0, columnspan=2, sticky="ew", pady=4)
@@ -288,16 +289,16 @@ class AWP1221SramEditor(BasePage):
                 row_frame = ttk.Frame(self._sram_ratio_rows_frame, style="Panel.TFrame")
                 row_frame.grid(row=index, column=0, sticky="ew", pady=2)
                 row_frame.columnconfigure(2, weight=1)
-                label = ttk.Label(row_frame, style="Panel.TLabel", wraplength=250)
+                label = make_label(row_frame, style="Panel.TLabel", wraplength=250)
                 label.grid(row=0, column=0, columnspan=3, sticky="ew")
                 variable = tk.StringVar(value=self._format_basis(basis[index]))
                 state = "readonly" if count == 1 or index == count - 1 else "normal"
                 entry = ttk.Entry(row_frame, textvariable=variable, width=8, state=state)
                 entry.grid(row=1, column=0, sticky="w")
-                percent = ttk.Label(row_frame, text="%", style="Panel.TLabel")
+                percent = make_label(row_frame, text="%", style="Panel.TLabel")
                 percent.grid(row=1, column=1, sticky="w", padx=(4, 8))
                 actual_var = tk.StringVar()
-                actual = ttk.Label(row_frame, textvariable=actual_var, style="Muted.TLabel", wraplength=250)
+                actual = make_label(row_frame, textvariable=actual_var, style="Muted.TLabel", wraplength=250)
                 actual.grid(row=2, column=0, columnspan=3, sticky="ew")
                 if state == "normal":
                     entry.bind("<Return>", lambda _event: self._apply_sram_values())

@@ -32,6 +32,7 @@ from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_top
 from pages.waveform_generator import WAVEFORM_DEFAULT_POINTS_PER_WRITE, WaveformGeneratorPage
 from core.animation import FADE_MS, animator_for, lerp_color
 from core.ui_dispatch import post_to_ui
+from pages.fast_label import make_label
 
 
 def build_awp192x_amp_options() -> list[tuple[str, float, int]]:
@@ -595,7 +596,7 @@ class ButtonModePage(BasePage):
         self._add_entry(left, row, "single_point_duration", self.duration_var, unit="us")
         row += 1
 
-        hint = ttk.Label(left, textvariable=self.period_hint_var, style="Muted.TLabel", wraplength=360)
+        hint = make_label(left, textvariable=self.period_hint_var, style="Muted.TLabel", wraplength=360)
         hint.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(0, 8))
         row += 1
 
@@ -624,7 +625,7 @@ class ButtonModePage(BasePage):
         adc_pol_frame = ttk.Frame(adc_gain_pol_frame, style="Panel.TFrame")
         adc_pol_frame.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         adc_pol_frame.columnconfigure(1, weight=1)
-        adc_pol_label = ttk.Label(adc_pol_frame, style="Panel.TLabel")
+        adc_pol_label = make_label(adc_pol_frame, style="Panel.TLabel")
         adc_pol_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels["adc_pol"] = adc_pol_label
         ttk.Combobox(
@@ -638,7 +639,7 @@ class ButtonModePage(BasePage):
         adc_gain_frame = ttk.Frame(adc_gain_pol_frame, style="Panel.TFrame")
         adc_gain_frame.grid(row=0, column=1, sticky="ew", padx=(6, 0))
         adc_gain_frame.columnconfigure(1, weight=1)
-        adc_gain_label = ttk.Label(adc_gain_frame, style="Panel.TLabel")
+        adc_gain_label = make_label(adc_gain_frame, style="Panel.TLabel")
         adc_gain_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels["adc_gain"] = adc_gain_label
         ttk.Combobox(
@@ -663,7 +664,7 @@ class ButtonModePage(BasePage):
         )
         row += 1
 
-        self.endless_hint_label = ttk.Label(left, style="Muted.TLabel", wraplength=360)
+        self.endless_hint_label = make_label(left, style="Muted.TLabel", wraplength=360)
         self.endless_hint_label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(0, 8))
         row += 1
 
@@ -704,11 +705,11 @@ class ButtonModePage(BasePage):
         status_text = ttk.Frame(status_frame, style="Panel.TFrame")
         status_text.grid(row=0, column=0, sticky="ew", padx=(0, 8))
 
-        status_title = ttk.Label(status_text, style="Panel.TLabel")
+        status_title = make_label(status_text, style="Panel.TLabel")
         status_title.grid(row=0, column=0, sticky="w")
         self.bind_text(status_title, "sense_status_title")
 
-        status_hint = ttk.Label(status_text, style="Muted.TLabel", wraplength=260)
+        status_hint = make_label(status_text, style="Muted.TLabel", wraplength=260)
         status_hint.grid(row=1, column=0, sticky="w", pady=(2, 0))
         self.bind_text(status_hint, "sense_status_hint")
 
@@ -721,7 +722,7 @@ class ButtonModePage(BasePage):
         adc_frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         adc_frame.columnconfigure(1, weight=1)
 
-        adc_label = ttk.Label(adc_frame, style="Panel.TLabel")
+        adc_label = make_label(adc_frame, style="Panel.TLabel")
         adc_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels["button_adc_value"] = adc_label
 
@@ -797,7 +798,7 @@ class ButtonModePage(BasePage):
         self._refresh_threshold_register_value_labels()
 
     def _add_entry(self, parent: tk.Misc, row: int, key: str, variable: tk.StringVar, unit: str = "") -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
         self._labels[key] = label
 
@@ -805,7 +806,7 @@ class ButtonModePage(BasePage):
         entry.grid(row=row, column=1, sticky="ew", pady=7)
 
         if unit:
-            ttk.Label(parent, text=unit, style="Muted.TLabel").grid(row=row, column=2, sticky="w", padx=(8, 0))
+            make_label(parent, text=unit, style="Muted.TLabel").grid(row=row, column=2, sticky="w", padx=(8, 0))
 
     def _add_paired_entries(
         self,
@@ -833,30 +834,30 @@ class ButtonModePage(BasePage):
         second.grid(row=1, column=0, sticky="ew")
         second.columnconfigure(1, weight=1)
 
-        label1 = ttk.Label(first, style="Panel.TLabel")
+        label1 = make_label(first, style="Panel.TLabel")
         label1.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels[key1] = label1
 
         ttk.Entry(first, textvariable=variable1, width=8).grid(row=0, column=1, sticky="ew")
         if unit1:
-            ttk.Label(first, text=unit1, style="Muted.TLabel").grid(row=0, column=2, sticky="w", padx=(6, 0))
+            make_label(first, text=unit1, style="Muted.TLabel").grid(row=0, column=2, sticky="w", padx=(6, 0))
         if value_var1 is not None:
-            ttk.Label(first, textvariable=value_var1, style="Muted.TLabel", width=7).grid(
+            make_label(first, textvariable=value_var1, style="Muted.TLabel", width=7).grid(
                 row=0,
                 column=3,
                 sticky="w",
                 padx=(8, 0),
             )
 
-        label2 = ttk.Label(second, style="Panel.TLabel")
+        label2 = make_label(second, style="Panel.TLabel")
         label2.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels[key2] = label2
 
         ttk.Entry(second, textvariable=variable2, width=8).grid(row=0, column=1, sticky="ew")
         if unit2:
-            ttk.Label(second, text=unit2, style="Muted.TLabel").grid(row=0, column=2, sticky="w", padx=(6, 0))
+            make_label(second, text=unit2, style="Muted.TLabel").grid(row=0, column=2, sticky="w", padx=(6, 0))
         if value_var2 is not None:
-            ttk.Label(second, textvariable=value_var2, style="Muted.TLabel", width=7).grid(
+            make_label(second, textvariable=value_var2, style="Muted.TLabel", width=7).grid(
                 row=0,
                 column=3,
                 sticky="w",
@@ -876,7 +877,7 @@ class ButtonModePage(BasePage):
         *,
         include_endless: bool = False,
     ) -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
         self._labels[key] = label
 
@@ -960,7 +961,7 @@ class ButtonModePage(BasePage):
             widget.bind("<Leave>", lambda _event: self._hide_preset_tooltip(), add="+")
 
     def _add_combo(self, parent: tk.Misc, row: int, key: str, variable: tk.StringVar, values: list[str]) -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
         self._labels[key] = label
 
@@ -3412,7 +3413,7 @@ class FullModePage(ButtonModePage):
         adc_value_frame.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(6, 0))
         adc_value_frame.columnconfigure(1, weight=1)
 
-        adc_value_label = ttk.Label(adc_value_frame, style="Panel.TLabel")
+        adc_value_label = make_label(adc_value_frame, style="Panel.TLabel")
         adc_value_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels["button_adc_value"] = adc_value_label
 
@@ -3466,7 +3467,7 @@ class FullModePage(ButtonModePage):
         self._add_entry(middle, row, "single_point_duration", self.duration_var, unit="us")
         row += 1
 
-        hint = ttk.Label(middle, textvariable=self.period_hint_var, style="Muted.TLabel", wraplength=300)
+        hint = make_label(middle, textvariable=self.period_hint_var, style="Muted.TLabel", wraplength=300)
         hint.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, 10))
         row += 1
 
@@ -3499,7 +3500,7 @@ class FullModePage(ButtonModePage):
         self._add_full_play_row(middle, row)
         row += 1
 
-        self.endless_hint_label = ttk.Label(middle, style="Muted.TLabel", wraplength=360)
+        self.endless_hint_label = make_label(middle, style="Muted.TLabel", wraplength=360)
         self.endless_hint_label.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(0, 8))
         row += 1
 
@@ -3600,21 +3601,21 @@ class FullModePage(ButtonModePage):
         unit1: str = "",
         unit2: str = "",
     ) -> None:
-        label1 = ttk.Label(parent, style="Panel.TLabel")
+        label1 = make_label(parent, style="Panel.TLabel")
         label1.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
         self._labels[key1] = label1
 
         ttk.Entry(parent, textvariable=variable1, width=10).grid(row=row, column=1, sticky="ew", pady=7)
         if unit1:
-            ttk.Label(parent, text=unit1, style="Muted.TLabel").grid(row=row, column=2, sticky="w", padx=(6, 12))
+            make_label(parent, text=unit1, style="Muted.TLabel").grid(row=row, column=2, sticky="w", padx=(6, 12))
 
-        label2 = ttk.Label(parent, style="Panel.TLabel")
+        label2 = make_label(parent, style="Panel.TLabel")
         label2.grid(row=row, column=3, sticky="w", pady=7, padx=(12, 8))
         self._labels[key2] = label2
 
         ttk.Entry(parent, textvariable=variable2, width=10).grid(row=row, column=4, sticky="ew", pady=7)
         if unit2:
-            ttk.Label(parent, text=unit2, style="Muted.TLabel").grid(row=row, column=5, sticky="w", padx=(6, 0))
+            make_label(parent, text=unit2, style="Muted.TLabel").grid(row=row, column=5, sticky="w", padx=(6, 0))
 
     def _add_paired_combos(
         self,
@@ -3627,14 +3628,14 @@ class FullModePage(ButtonModePage):
         variable2: tk.StringVar,
         values2: list[str],
     ) -> None:
-        label1 = ttk.Label(parent, style="Panel.TLabel")
+        label1 = make_label(parent, style="Panel.TLabel")
         label1.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
         self._labels[key1] = label1
 
         combo1 = ttk.Combobox(parent, textvariable=variable1, values=values1, state="readonly")
         combo1.grid(row=row, column=1, columnspan=2, sticky="ew", pady=7, padx=(0, 12))
 
-        label2 = ttk.Label(parent, style="Panel.TLabel")
+        label2 = make_label(parent, style="Panel.TLabel")
         label2.grid(row=row, column=3, sticky="w", pady=7, padx=(12, 8))
         self._labels[key2] = label2
 
@@ -3655,15 +3656,15 @@ class FullModePage(ButtonModePage):
         frame.grid(row=row, column=0, columnspan=6, sticky="ew", pady=5)
         frame.columnconfigure(1, weight=1)
 
-        label = ttk.Label(frame, style="Panel.TLabel", width=18)
+        label = make_label(frame, style="Panel.TLabel", width=18)
         label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels[key] = label
 
         ttk.Entry(frame, textvariable=variable, width=16).grid(row=0, column=1, sticky="ew")
         if unit:
-            ttk.Label(frame, text=unit, style="Muted.TLabel").grid(row=0, column=2, sticky="w", padx=(8, 0))
+            make_label(frame, text=unit, style="Muted.TLabel").grid(row=0, column=2, sticky="w", padx=(8, 0))
         if value_var is not None:
-            ttk.Label(frame, textvariable=value_var, style="Muted.TLabel", width=7).grid(
+            make_label(frame, textvariable=value_var, style="Muted.TLabel", width=7).grid(
                 row=0,
                 column=3,
                 sticky="w",
@@ -3682,7 +3683,7 @@ class FullModePage(ButtonModePage):
         frame.grid(row=row, column=0, columnspan=6, sticky="ew", pady=5)
         frame.columnconfigure(1, weight=1)
 
-        label = ttk.Label(frame, style="Panel.TLabel", width=18)
+        label = make_label(frame, style="Panel.TLabel", width=18)
         label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels[key] = label
 
@@ -3695,7 +3696,7 @@ class FullModePage(ButtonModePage):
         ).grid(row=0, column=1, sticky="ew")
 
     def _add_adc_trigger_grid(self, parent: tk.Misc, row: int) -> int:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, columnspan=6, sticky="w", pady=(7, 4), padx=(0, 8))
         self._labels["adc_inpt_stop_source"] = label
 
@@ -3714,14 +3715,14 @@ class FullModePage(ButtonModePage):
         return [f"slice{i}" for i in range(30)] + ["serial", "ROM sin"]
 
     def _add_full_half_phase_row(self, parent: tk.Misc, row: int) -> None:
-        half_label = ttk.Label(parent, style="Panel.TLabel")
+        half_label = make_label(parent, style="Panel.TLabel")
         half_label.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
         self._labels["half_cycle_en"] = half_label
 
         half_check = ttk.Checkbutton(parent, variable=self.full_half_cycle_var)
         half_check.grid(row=row, column=1, sticky="w", pady=7, padx=(0, 12))
 
-        phase_label = ttk.Label(parent, style="Panel.TLabel")
+        phase_label = make_label(parent, style="Panel.TLabel")
         phase_label.grid(row=row, column=3, sticky="w", pady=7, padx=(12, 8))
         self._labels["phase"] = phase_label
 
@@ -3733,7 +3734,7 @@ class FullModePage(ButtonModePage):
         ).grid(row=row, column=4, columnspan=2, sticky="ew", pady=7)
 
     def _add_full_play_row(self, parent: tk.Misc, row: int) -> None:
-        wave_label = ttk.Label(parent, style="Panel.TLabel")
+        wave_label = make_label(parent, style="Panel.TLabel")
         wave_label.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
         self._labels["manual_waveform"] = wave_label
 
@@ -3744,7 +3745,7 @@ class FullModePage(ButtonModePage):
             state="readonly",
         ).grid(row=row, column=1, columnspan=2, sticky="ew", pady=7, padx=(0, 12))
 
-        repeat_label = ttk.Label(parent, style="Panel.TLabel")
+        repeat_label = make_label(parent, style="Panel.TLabel")
         repeat_label.grid(row=row, column=3, sticky="w", pady=7, padx=(12, 8))
         self._labels["play_repeat_count"] = repeat_label
 
@@ -3764,12 +3765,12 @@ class FullModePage(ButtonModePage):
 
         headers = ("adc_trigger_type", "event_enable", "manual_waveform", "event_loop_count", "event_endless")
         for column, key in enumerate(headers):
-            label = ttk.Label(table, style="Muted.TLabel")
+            label = make_label(table, style="Muted.TLabel")
             label.grid(row=0, column=column, sticky="w", padx=(0, 8), pady=(0, 4))
             self._labels[f"full_event_header_{key}"] = label
 
         for event_row, (event_key, _reg, _source_bit) in enumerate(self.ADC_EVENT_CONFIGS, start=1):
-            event_label = ttk.Label(table, style="Panel.TLabel")
+            event_label = make_label(table, style="Panel.TLabel")
             event_label.grid(row=event_row, column=0, sticky="w", padx=(0, 8), pady=4)
             self._labels[f"full_event_label_{event_key}"] = event_label
 
@@ -3804,7 +3805,7 @@ class FullModePage(ButtonModePage):
         return row + 1
 
     def _add_full_system_controls(self, parent: tk.Misc, row: int) -> int:
-        status_label = ttk.Label(parent, style="Panel.TLabel")
+        status_label = make_label(parent, style="Panel.TLabel")
         status_label.grid(row=row, column=0, sticky="w", pady=6, padx=(0, 8))
         self._labels["full_status"] = status_label
         ttk.Entry(parent, textvariable=self.status_value_var, state="readonly").grid(
@@ -3820,7 +3821,7 @@ class FullModePage(ButtonModePage):
         self._buttons["full_read_status"] = status_btn
         row += 1
 
-        chip_label = ttk.Label(parent, style="Panel.TLabel")
+        chip_label = make_label(parent, style="Panel.TLabel")
         chip_label.grid(row=row, column=0, sticky="w", pady=6, padx=(0, 8))
         self._labels["chip_id"] = chip_label
         ttk.Entry(parent, textvariable=self.chip_id_var, state="readonly").grid(
@@ -3845,7 +3846,7 @@ class FullModePage(ButtonModePage):
         for index, (key, _bit) in enumerate(self.INT_MASK_BITS):
             check = ttk.Checkbutton(grid, variable=self.int_mask_vars[key])
             check.grid(row=index // 2, column=(index % 2) * 2, sticky="w", pady=2, padx=(0, 4))
-            label = ttk.Label(grid, text=self.tr(key), style="Muted.TLabel")
+            label = make_label(grid, text=self.tr(key), style="Muted.TLabel")
             label.grid(
                 row=index // 2,
                 column=(index % 2) * 2 + 1,
@@ -3899,7 +3900,7 @@ class FullModePage(ButtonModePage):
         for index, (key, variable) in enumerate(checks):
             check = ttk.Checkbutton(grid, variable=variable)
             check.grid(row=index // 2, column=(index % 2) * 2, sticky="w", pady=2, padx=(0, 4))
-            label = ttk.Label(grid, text=self.tr(key), style="Muted.TLabel")
+            label = make_label(grid, text=self.tr(key), style="Muted.TLabel")
             label.grid(
                 row=index // 2,
                 column=(index % 2) * 2 + 1,
@@ -3925,7 +3926,7 @@ class FullModePage(ButtonModePage):
         return row + 1
 
     def _add_full_memory_controls(self, parent: tk.Misc, row: int) -> int:
-        ram_label = ttk.Label(parent, style="Panel.TLabel")
+        ram_label = make_label(parent, style="Panel.TLabel")
         ram_label.grid(row=row, column=0, sticky="w", pady=6, padx=(0, 8))
         self._labels["ram_address"] = ram_label
         ttk.Entry(parent, textvariable=self.ram_address_var, width=12).grid(
@@ -3937,7 +3938,7 @@ class FullModePage(ButtonModePage):
         )
         row += 1
 
-        sram_label = ttk.Label(parent, style="Panel.TLabel")
+        sram_label = make_label(parent, style="Panel.TLabel")
         sram_label.grid(row=row, column=0, sticky="w", pady=6, padx=(0, 8))
         self._labels["sram_data"] = sram_label
         ttk.Entry(parent, textvariable=self.sram_data_var, width=12).grid(
@@ -3985,12 +3986,12 @@ class FullModePage(ButtonModePage):
 
         headers = ("serial_index", "serial_wave", "serial_loop")
         for column, key in enumerate(headers):
-            label = ttk.Label(table, style="Muted.TLabel")
+            label = make_label(table, style="Muted.TLabel")
             label.grid(row=0, column=column, sticky="w", padx=(0, 8), pady=(0, 4))
             self._labels[f"full_serial_header_{key}"] = label
 
         for index in range(8):
-            ttk.Label(table, text=f"serial{index}", style="Panel.TLabel").grid(
+            make_label(table, text=f"serial{index}", style="Panel.TLabel").grid(
                 row=index + 1,
                 column=0,
                 sticky="w",
@@ -4547,7 +4548,7 @@ class FullModePage(ButtonModePage):
         self._adc_detect_pol_var = tk.StringVar(value=self.adc_pol_var.get())
         self._adc_detect_result_var = tk.StringVar(value="")
 
-        gain_label = ttk.Label(body, text=self.tr("adc_gain"), style="Panel.TLabel")
+        gain_label = make_label(body, text=self.tr("adc_gain"), style="Panel.TLabel")
         gain_label.grid(row=0, column=0, sticky="w", padx=(16, 8), pady=(16, 8))
         ttk.Combobox(
             body,
@@ -4556,7 +4557,7 @@ class FullModePage(ButtonModePage):
             state="readonly",
         ).grid(row=0, column=1, sticky="ew", padx=(0, 16), pady=(16, 8))
 
-        pol_label = ttk.Label(body, text=self.tr("adc_pol"), style="Panel.TLabel")
+        pol_label = make_label(body, text=self.tr("adc_pol"), style="Panel.TLabel")
         pol_label.grid(row=1, column=0, sticky="w", padx=(16, 8), pady=8)
         ttk.Combobox(
             body,
@@ -4568,7 +4569,7 @@ class FullModePage(ButtonModePage):
         read_btn = ttk.Button(body, text=self.tr("adc_read_value"), style="Primary.TButton", command=self.read_adc_detect_value)
         read_btn.grid(row=2, column=0, columnspan=2, sticky="ew", padx=16, pady=(12, 8))
 
-        result_label = self.mark_digits(ttk.Label(body, textvariable=self._adc_detect_result_var, style="Panel.TLabel"))
+        result_label = self.mark_digits(make_label(body, textvariable=self._adc_detect_result_var, style="Panel.TLabel"))
         result_label.grid(row=3, column=0, columnspan=2, sticky="w", padx=16, pady=(8, 16))
 
         self.start_adc_detect_monitor(reset_records=True)
@@ -4863,7 +4864,7 @@ class PumpModePage(BasePage):
         self._add_combo(panel, row, "slow_down_time", self.slow_down_var, [x[0] for x in self.PUMP_SLOW_TIME_OPTIONS])
         row += 1
 
-        self.hint_label = ttk.Label(panel, style="Muted.TLabel")
+        self.hint_label = make_label(panel, style="Muted.TLabel")
         self.hint_label.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 14))
         row += 1
 
@@ -4961,7 +4962,7 @@ class PumpModePage(BasePage):
         self._on_freq_changed()
 
     def _add_combo(self, parent: tk.Misc, row: int, key: str, variable: tk.StringVar, values: list[str]) -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="w", pady=8, padx=(0, 10))
         self._labels[key] = label
 
@@ -4969,7 +4970,7 @@ class PumpModePage(BasePage):
         combo.grid(row=row, column=1, sticky="ew", pady=8)
 
     def _add_frequency_row(self, parent: tk.Misc, row: int) -> None:
-        label = ttk.Label(parent, style="Panel.TLabel")
+        label = make_label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="w", pady=8, padx=(0, 10))
         self._labels["chip_frequency"] = label
 
