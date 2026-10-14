@@ -85,3 +85,9 @@
 - 设置页新增“动画效果 / 启用过渡动画”开关（即时生效，未持久化，与其他设置一致）。
 - 实测（Linux/Xvfb）：动画帧间隔中位 17.3 ms、p95 18.3 ms（≈58 fps）；切页 median 25.7 ms（改前 25.0–26.6 ms，无退化）。用 ttk.Style 逐帧改按钮颜色每帧约 65 ms（会重绘所有 ttk 控件），已弃用。
 - 第二轮（用户确认）：保留指示条与悬停预览条；切页淡入（内容区上方背景色无边框顶层窗，alpha 1→0，200 ms ease-out，受动画开关控制；Windows/macOS 默认开启，X11 需合成器且 `PIEZO_X11_FADE=1`）；输入框与读数标签用等宽数字字体（Consolas 优先，行高不超过正文字体，布局高度不变）；深色模式仅大标题（Title/Prominent/ChipTitle）Bold→Regular；提示/说明换行标签避免末行单字（`core/text_wrap.py`，模拟 Tk 换行规则，宽度/字体/文字变化时重算，页面首次显示时挂载）。
+
+### 动画可感知性修正（Windows 反馈：看不到过渡）
+- 时长加长：导航指示条 220ms（ease-snap）、悬停 150ms、页面过渡 220ms（ease-out）、sense 状态 160ms。
+- Animator 每帧进度最多推进约 2 个标称帧：页面切换后首帧被重绘占用时动画变慢而不是直接跳到终点。
+- 页面过渡默认改为窗口内「上滑入场」（仅移动 canvas 窗口项 18px→0，不依赖 alpha 叠加窗口）；`PIEZO_PAGE_TRANSITION=fade|slide|none` 可切换，fade 叠加窗口改为 -topmost 并避免 Windows 的 -32000 最小化坐标。
+- 调试：`PIEZO_ANIM_DEBUG=1` 打印并写入 `%TEMP%/piezo_anim_debug.log`（每个动画的开始、结束耗时、帧数、首帧延迟）。

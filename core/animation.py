@@ -10,6 +10,9 @@ straight to its final value, so the end state is identical either way.
 
 from __future__ import annotations
 
+import os
+import sys
+import tempfile
 import time
 import tkinter as tk
 from dataclasses import dataclass
@@ -26,9 +29,14 @@ DUR_SLOW = 450    # background / ambient colour
 GRAPHEME_MS = 90  # per-character reveal
 GRAPHEME_STAGGER_MS = 30
 
-HOVER_MS = DUR_FAST
-NAV_SLIDE_MS = DUR_SNAP
-FADE_MS = DUR_SNAP
+# The CDS tokens are tuned for a browser compositor at 60-120 Hz.  In Tk the
+# first frames after a page switch are often eaten by the page's own repaint,
+# so the GUI uses slightly longer, clearly perceptible durations.
+HOVER_MS = 150
+NAV_SLIDE_MS = 220
+PAGE_TRANSITION_MS = 220
+FADE_MS = 160
+DEBUG = os.environ.get("PIEZO_ANIM_DEBUG", "") not in ("", "0")
 
 
 def cubic_bezier(x1: float, y1: float, x2: float, y2: float) -> Callable[[float], float]:
@@ -109,6 +117,28 @@ class _Tween:
     ease: Callable[[float], float]
     step: Callable[[float], None]
     done: Callable[[], None] | None
+    progress: float = 0.0
+    frames: int = 0
+    requested: float = 0.0
+
+
+_debug_path = os.path.join(tempfile.gettempdir(), "piezo_anim_debug.log")
+
+
+def debug_log(message: str) -> None:
+    """With PIEZO_ANIM_DEBUG=1: print and append to %TEMP%/piezo_anim_debug.log."""
+    if not DEBUG:
+        return
+    line = f"[anim {time.strftime('%H:%M:%S')}.{int(time.time() * 1000) % 1000:03d}] {message}"
+    try:
+        print(line, file=sys.stderr, flush=True)
+    except Exception:
+        pass
+    try:
+        with open(_debug_path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
 
 
 class Animator:
@@ -132,12 +162,14 @@ class Animator:
         """Run ``step(eased_progress)`` each frame; ``step(1.0)`` is always the last call."""
         self._tweens.pop(key, None)
         if not self.enabled or duration_ms <= 0:
+            debug_log(f"{key!r}: skipped (enabled={self.enabled}, duration={duration_ms})")
             self._finish(step, done)
             return
+        debug_log(f"{key!r}: start {duration_ms:.0f} ms")
         # The clock starts on the first tick, not now: the caller is usually
         # in the middle of heavier work (e.g. a page switch) and starting the
         # clock here would skip the first part of the motion.
-        self._tweens[key] = _Tween(None, duration_ms / 1000.0, ease, step, done)
+        self._tweens[key] = _Tween(None, duration_ms / 1000.0, ease, step, done, requested=time.perf_counter())
         try:
             step(ease(0.0))
         except tk.TclError:
@@ -194,9 +226,19 @@ class Animator:
                 continue
             if tween.start is None:
                 tween.start = now - FRAME_MS / 1000.0
-            p = (now - tween.start) / tween.duration
+            # Time based, but never jump more than ~2 nominal frames per tick:
+            # when the UI is busy (page repaint right after a switch) the
+            # motion slows down instead of skipping straight to the end.
+            max_step = 2.0 * (FRAME_MS / 1000.0) / tween.duration
+            p = min((now - tween.start) / tween.duration, tween.progress + max_step)
+            tween.progress = p
+            tween.frames += 1
             if p >= 1.0:
                 self._tweens.pop(key, None)
+                debug_log(
+                    f"{key!r}: finished after {(now - tween.requested) * 1000:.0f} ms, "
+                    f"{tween.frames} frames (first frame {(tween.start - tween.requested) * 1000 + FRAME_MS:.0f} ms after start)"
+                )
                 self._finish(tween.step, tween.done)
                 continue
             try:

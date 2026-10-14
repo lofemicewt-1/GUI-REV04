@@ -251,7 +251,8 @@ class Navigation:
             return
 
         current_name = self.ctx.state.current_page
-        fading = current_name != name and self._begin_page_fade()
+        mode = self._page_transition_mode() if current_name != name else "none"
+        fading = mode == "fade" and self._begin_page_fade()
         if current_name != name:
             current_page = self.pages.get(current_name)
             if current_page is not None and hasattr(current_page, "on_hide"):
@@ -279,6 +280,49 @@ class Navigation:
             guard_orphans(page)
         if fading:
             self._run_page_fade()
+        elif mode == "slide":
+            self._run_page_slide()
+
+    def _page_transition_mode(self) -> str:
+        """slide (default, in-window, works everywhere) | fade (overlay
+        window with alpha; needs a compositor) | none.  PIEZO_PAGE_TRANSITION
+        overrides."""
+        animator = anim.animator_for(self.root)
+        if animator is None or not animator.enabled:
+            return "none"
+        mode = os.environ.get("PIEZO_PAGE_TRANSITION", "slide").strip().lower()
+        if mode not in {"slide", "fade", "none"}:
+            mode = "slide"
+        if mode == "fade" and not self._page_fade_capable():
+            mode = "slide"
+        return mode
+
+    def _run_page_slide(self) -> None:
+        """New page rises a few pixels into place (ease-out).  Only the
+        canvas window item moves: no widget is re-laid out per frame."""
+        animator = anim.animator_for(self.root)
+        if animator is None:
+            return
+        canvas = self.content_canvas
+        item = self.content_window
+        offset = max(8, self._scaled(18))
+
+        def step(p: float) -> None:
+            canvas.coords(item, 0, round(offset * (1.0 - p)))
+
+        def done() -> None:
+            try:
+                canvas.coords(item, 0, 0)
+            except tk.TclError:
+                return
+            self._last_canvas_state = None  # scrollregion was measured mid-slide
+            self._sync_content_window()
+
+        try:
+            canvas.coords(item, 0, offset)
+        except tk.TclError:
+            return
+        animator.animate("page-transition", anim.PAGE_TRANSITION_MS, step, ease=anim.EASE_OUT, done=done)
 
     # -- page fade-in ------------------------------------------------------
     # Tk cannot blend a widget, so a borderless toplevel in the background
@@ -307,7 +351,7 @@ class Navigation:
             overlay.withdraw()
             overlay.overrideredirect(True)
             overlay.attributes("-alpha", 0.0)
-            overlay.geometry("1x1+-32000+-32000")
+            overlay.geometry("1x1+-4000+-4000")
             overlay.deiconify()
         except tk.TclError:
             self._fade_capable = False
@@ -321,9 +365,10 @@ class Navigation:
             return
         try:
             overlay.attributes("-alpha", 0.0)
+            overlay.attributes("-topmost", False)
             # Keep the size, only move it away: re-sizing every switch costs
             # a full Configure/Expose of the overlay.
-            overlay.geometry("+-32000+-32000")
+            overlay.geometry("+-4000+-4000")
         except tk.TclError:
             pass
 
@@ -351,6 +396,7 @@ class Navigation:
                 overlay.geometry(f"{w}x{h}+{x}+{y}")
             else:
                 overlay.geometry(f"+{x}+{y}")
+            overlay.attributes("-topmost", True)  # keep it above the main window on Windows
             overlay.tk.call("raise", overlay._w, self.root._w)
         except tk.TclError:
             return False
@@ -366,7 +412,7 @@ class Navigation:
         def step(p: float) -> None:
             overlay.attributes("-alpha", max(0.0, 1.0 - p))
 
-        animator.animate("page-fade", anim.DUR_BASE, step, ease=anim.EASE_OUT, done=self._park_fade_overlay)
+        animator.animate("page-transition", anim.PAGE_TRANSITION_MS, step, ease=anim.EASE_OUT, done=self._park_fade_overlay)
 
     def _sync_content_window_immediately(self) -> None:
         if self._sync_after is not None:

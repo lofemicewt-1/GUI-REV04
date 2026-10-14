@@ -113,7 +113,7 @@ class AppPolishTests(unittest.TestCase):
 
     def test_page_fade_overlay_runs_and_parks(self) -> None:
         nav = self.app.navigation
-        with mock.patch.dict(os.environ, {"PIEZO_X11_FADE": "1"}):
+        with mock.patch.dict(os.environ, {"PIEZO_X11_FADE": "1", "PIEZO_PAGE_TRANSITION": "fade"}):
             nav._fade_capable = None
             alphas: list[float] = []
             nav.show("awp1922")
@@ -138,6 +138,32 @@ class AppPolishTests(unittest.TestCase):
             nav.show("awp1018")
             pump(self.app.root, 0.1)
             self.assertEqual(alphas, [])  # toggle off: no overlay at all
+
+    def test_default_slide_transition_is_visible_and_settles(self) -> None:
+        nav = self.app.navigation
+        os.environ.pop("PIEZO_PAGE_TRANSITION", None)
+        ys: list[float] = []
+        canvas = nav.content_canvas
+        original = canvas.coords
+
+        def spy(*args):
+            if len(args) == 3:
+                ys.append(float(args[2]))
+            return original(*args)
+
+        canvas.coords = spy
+        nav.show("awp1922")
+        pump(self.app.root, 0.6)
+        self.assertGreaterEqual(len(ys), 8)  # many intermediate frames
+        self.assertGreater(ys[0], 0)
+        self.assertEqual(ys[-1], 0.0)
+        self.assertEqual(ys[:-1], sorted(ys[:-1], reverse=True))
+        self.assertEqual(original(nav.content_window)[1], 0.0)
+        ys.clear()
+        self.app.animator.set_enabled(False)
+        nav.show("home")
+        pump(self.app.root, 0.1)
+        self.assertTrue(all(y == 0.0 for y in ys))
 
     def test_no_fade_without_compositor_support(self) -> None:
         nav = self.app.navigation

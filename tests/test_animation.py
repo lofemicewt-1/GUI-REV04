@@ -54,6 +54,15 @@ class AnimatorTests(unittest.TestCase):
         self.assertGreater(len(seen), 3)
         self.assertEqual(done, [True])
 
+    def test_busy_ui_slows_motion_instead_of_skipping(self) -> None:
+        seen: list[float] = []
+        self.a.animate("k", 100, seen.append)
+        self.root.update()
+        time.sleep(0.3)  # heavy page build right after start: > duration
+        pump(self.root, 0.4)
+        self.assertGreaterEqual(len([p for p in seen if 0 < p < 1]), 3)
+        self.assertEqual(seen[-1], 1.0)
+
     def test_disabled_jumps_to_end(self) -> None:
         self.a.set_enabled(False)
         seen: list[float] = []
