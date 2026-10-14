@@ -64,9 +64,29 @@ def _report_startup_failure(exc: BaseException) -> None:
 
 
 def main() -> None:
+    splash = None
+    if os.environ.get("PIEZO_SPLASH", "1") != "0":
+        try:
+            from app.splash import StartupSplash
+
+            splash = StartupSplash()
+        except Exception:
+            splash = None
+
+    def progress(label: str, index: int, total: int) -> None:
+        if splash is not None:
+            splash.pump()
+
+    if splash is not None:
+        splash.pump()
     from app.application import PiezoApplication
 
-    app = PiezoApplication()
+    if splash is not None:
+        splash.pump()
+    app = PiezoApplication(on_startup_progress=progress, start_withdrawn=splash is not None)
+    if splash is not None:
+        splash.close()
+        app.reveal()
     app.run()
 
 
