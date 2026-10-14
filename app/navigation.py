@@ -13,6 +13,10 @@ from styles.fonts import sidebar_brand_font_spec
 import os
 import time
 
+# Stacked pages (default): see Navigation.show.  PIEZO_PAGE_STACK=0 restores
+# the old grid/grid_remove switching.
+_PAGE_STACK = os.environ.get("PIEZO_PAGE_STACK", "1") != "0"
+
 from core import animation as anim
 from core.text_wrap import guard_orphans
 from styles.theme import BRAND_ENLARGE, logo_asset, scale_photoimage
@@ -243,8 +247,9 @@ class Navigation:
 
         self.sidebar.columnconfigure(0, weight=1)
         self.pages[name] = page
-        page.grid(row=0, column=0, sticky="nsew")
-        page.grid_remove()
+        if not _PAGE_STACK:
+            page.grid(row=0, column=0, sticky="nsew")
+            page.grid_remove()
         self._sync_content_window()
 
     def show(self, name: str) -> None:
@@ -259,21 +264,42 @@ class Navigation:
             if current_page is not None and hasattr(current_page, "on_hide"):
                 current_page.on_hide()
 
-        for other_name, other in self.pages.items():
-            if other_name != name and other.winfo_ismapped():
-                other.grid_remove()
-
         page = self.pages[name]
         t0 = time.perf_counter()
-        page.grid()
-        self.ctx.state.current_page = name
+        spans: list[tuple[str, float]] = []
+
+        def span(label: str, _last: list[float] = [t0]) -> None:
+            now = time.perf_counter()
+            spans.append((label, (now - _last[0]) * 1000))
+            _last[0] = now
+
+        if _PAGE_STACK:
+            # Pages stay mapped once shown and are stacked: switching only
+            # raises the page (Windows: one z-order change) instead of
+            # unmapping/remapping hundreds of native child windows.
+            self.ctx.state.current_page = name
+            self._place_current_page(page)
+            span("place")
+            page.lift()
+            span("lift")
+        else:
+            for other_name, other in self.pages.items():
+                if other_name != name and other.winfo_ismapped():
+                    other.grid_remove()
+            page.grid()
+            self.ctx.state.current_page = name
+            span("grid")
         self._refresh_button_styles()
+        span("nav styles")
         # A hidden page keeps the geometry it had when it was last shown (e.g.
         # before the window was maximized); size it now, before on_show().
         self._sync_content_window_immediately()
+        span("pre-layout(update_idletasks)")
         if hasattr(page, "on_show"):
             page.on_show()
+        span("on_show")
         self._sync_mode_buttons(page)
+        span("mode buttons")
         t1 = time.perf_counter()
         # One geometry pass with the page at the current window size, then
         # the size-dependent text steps, then size the canvas window -- all
@@ -292,6 +318,7 @@ class Navigation:
                 self.root.after_idle(settled)
             except tk.TclError:
                 pass
+        anim.debug_log(f"show {name} spans: " + ", ".join(f"{k} {v:.1f}" for k, v in spans))
         anim.debug_log(
             f"show {name}: grid+on_show {(t1 - t0) * 1000:.1f} ms, text prep {(t2 - t1) * 1000:.1f} ms, "
             f"layout {(t3 - t2) * 1000:.1f} ms, transition={mode}"
@@ -973,15 +1000,42 @@ class Navigation:
         except tk.TclError:
             self._sync_after = None
 
+    def _place_current_page(self, page: tk.Misc, width: int | None = None, height: int | None = None) -> None:
+        """Stack mode: the current page is placed at the content size (minus
+        padding).  Hidden pages keep their last size until shown again."""
+        padx, pady = self._pad(16, 8)
+        if width is None or height is None:
+            info = self.content_canvas.itemconfigure(self.content_window)
+            try:
+                width = int(float(info["width"][-1])) or self.content.winfo_width()
+                height = int(float(info["height"][-1])) or self.content.winfo_height()
+            except (KeyError, ValueError, TypeError):
+                width, height = self.content.winfo_width(), self.content.winfo_height()
+        w = max(1, int(width) - 2 * padx)
+        h = max(1, int(height) - 2 * pady)
+        key = (w, h, padx, pady)
+        if getattr(page, "_piezo_place_key", None) == key and page.winfo_manager() == "place":
+            return
+        page._piezo_place_key = key  # type: ignore[attr-defined]
+        page.place(in_=self.content, x=0, y=0, width=w, height=h)  # ttk padding = internal border
+        if not getattr(page, "_piezo_stack_bound", False):
+            page._piezo_stack_bound = True  # type: ignore[attr-defined]
+            page.bind("<Configure>", lambda _e: self._sync_content_window(), add="+")
+
     def _sync_content_window_now(self) -> None:
         self._sync_after = None
         try:
             canvas_width = max(1, self.content_canvas.winfo_width())
             canvas_height = max(1, self.content_canvas.winfo_height())
-            required_width = max(1, self.content.winfo_reqwidth())
-            required_height = max(1, self.content.winfo_reqheight())
             current_name = getattr(self.ctx.state, "current_page", "")
             page = self.pages.get(current_name)
+            if _PAGE_STACK and page is not None:
+                padx, pady = self._pad(16, 8)
+                required_width = max(1, page.winfo_reqwidth() + 2 * padx)
+                required_height = max(1, page.winfo_reqheight() + 2 * pady)
+            else:
+                required_width = max(1, self.content.winfo_reqwidth())
+                required_height = max(1, self.content.winfo_reqheight())
             pin = bool(getattr(page, "pin_window_footer", False)) if page is not None else False
             window_width = canvas_width if pin else max(canvas_width, required_width)
             window_height = canvas_height if pin else max(canvas_height, required_height)
@@ -995,6 +1049,8 @@ class Navigation:
                 width=window_width,
                 height=window_height,
             )
+            if _PAGE_STACK and page is not None:
+                self._place_current_page(page, window_width, window_height)
             self.content_canvas.configure(scrollregion=self.content_canvas.bbox("all"))
             self._update_scrollbars((not pin) and required_width > canvas_width, (not pin) and required_height > canvas_height)
         except tk.TclError:

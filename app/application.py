@@ -3271,11 +3271,24 @@ class PiezoApplication:
             app=self,
         )
 
-        self.navigation = Navigation(self.root, self.ctx)
+        _t = [time.perf_counter()]
+        _spans: list[str] = []
 
+        def _span(label: str) -> None:
+            now = time.perf_counter()
+            _spans.append(f"{label} {(now - _t[0]) * 1000:.0f}")
+            _t[0] = now
+
+        self.navigation = Navigation(self.root, self.ctx)
+        _span("navigation")
         self._register_pages()
+        _span("build pages")
         self._refresh_widget_fonts()
+        _span("fonts")
         self.navigation.show("home")
+        _span("show home")
+        from core import animation as _anim
+        _anim.debug_log("startup spans (ms): " + ", ".join(_spans))
         self.root.bind("<Configure>", self._on_root_configure, add="+")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
