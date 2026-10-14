@@ -79,12 +79,22 @@ class GpioControlGroup:
 
     def __init__(self) -> None:
         self.panels: list[GpioControlPanel] = []
+        # Set by a host with lazily built panels: builds them all before a
+        # confirmed mode is fanned out, as when all were built at startup.
+        self.before_fanout: Callable[[], Any] | None = None
+
+    def _ensure_all(self) -> None:
+        hook = self.before_fanout
+        if hook is not None:
+            hook()
 
     def add(self, panel: GpioControlPanel) -> GpioControlPanel:
         self.panels.append(panel)
         return panel
 
     def invalidate_modes(self) -> None:
+        # No build needed: a panel built later starts in exactly this
+        # invalidated (unconfirmed) state.
         for panel in self.panels:
             panel.invalidate_modes()
 
@@ -93,6 +103,7 @@ class GpioControlGroup:
             panel.refresh_language()
 
     def apply_external_mode(self, pin: str, mode: str) -> None:
+        self._ensure_all()
         for panel in self.panels:
             panel.apply_external_mode(pin, mode)
 

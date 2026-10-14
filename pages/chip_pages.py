@@ -12,7 +12,7 @@ from core import register_base
 from pages import awp192x_registers
 from pages.awp1221_page import AWP1221Page
 from pages.awp192x_modes import ButtonModePage, FullModePage, PumpModePage
-from pages.base_page import BasePage, SimpleTooltip
+from pages.base_page import BasePage, SimpleTooltip, lazy_mode_pages
 from core.ui_dispatch import post_to_ui
 
 
@@ -173,7 +173,7 @@ class AWP1921AWP1923Page(BasePage):
         self.current_mode = "button_mode"
         self.mode_buttons: dict[str, ttk.Button] = {}
         self.state_buttons: dict[str, ttk.Button] = {}
-        self.mode_pages: dict[str, ttk.Frame] = {}
+        self.mode_pages = lazy_mode_pages(self)
         self._detail_field_vars: dict[str, tk.StringVar] = {}
         self._detail_field_choice_values: dict[str, dict[str, int]] = {}
         self._detail_tooltips: list[SimpleTooltip] = []
@@ -210,13 +210,10 @@ class AWP1921AWP1923Page(BasePage):
         self.mode_container.rowconfigure(0, weight=1)
         self.mode_container.columnconfigure(0, weight=1)
 
-        self.mode_pages["button_mode"] = ButtonModePage(self.mode_container, self.ctx)
-        self.mode_pages["pump_mode"] = PumpModePage(self.mode_container, self.ctx)
-        self.mode_pages["full_mode"] = FullModePage(self.mode_container, self.ctx)
-
-        for page in self.mode_pages.values():
-            page.grid(row=0, column=0, sticky="nsew")
-            page.grid_remove()
+        # Built on first switch / lookup (LazyPageDict); gridded on build.
+        self.mode_pages.register("button_mode", lambda: ButtonModePage(self.mode_container, self.ctx))
+        self.mode_pages.register("pump_mode", lambda: PumpModePage(self.mode_container, self.ctx))
+        self.mode_pages.register("full_mode", lambda: FullModePage(self.mode_container, self.ctx))
 
         self.refresh_language()
         self._on_addr_changed()
@@ -817,7 +814,7 @@ class AWP1921AWP1923Page(BasePage):
             return
         self.current_mode = mode
         self._sync_mode_button_styles()
-        for page in self.mode_pages.values():
+        for page in self.mode_pages.built_values():
             page.grid_remove()
         page = self.mode_pages[mode]
         page.grid()
@@ -846,7 +843,7 @@ class AWP1921AWP1923Page(BasePage):
             btn.configure(text=self.tr(key))
         for key, btn in self.state_buttons.items():
             btn.configure(text=self.tr(key))
-        for page in self.mode_pages.values():
+        for page in self.mode_pages.built_values():
             if hasattr(page, "refresh_language"):
                 page.refresh_language()
 
@@ -859,7 +856,7 @@ class AWP1921AWP1923Page(BasePage):
         if self.detail_mode_active():
             self._refresh_detail_fields(view=self._detail_last_view)
             self._apply_detail_host_height()
-        for page in self.mode_pages.values():
+        for page in self.mode_pages.built_values():
             if hasattr(page, "refresh_theme"):
                 page.refresh_theme()
 
@@ -881,7 +878,7 @@ class AWP1744AWP1766Page(BasePage):
         self.read_value_var = tk.StringVar(value="")
         self.current_mode = "awp1744_awp1766_pump_mode"
         self.mode_buttons: dict[str, ttk.Button] = {}
-        self.mode_pages: dict[str, ttk.Frame] = {}
+        self.mode_pages = lazy_mode_pages(self)
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -922,16 +919,13 @@ class AWP1744AWP1766Page(BasePage):
         self.mode_container.rowconfigure(0, weight=1)
         self.mode_container.columnconfigure(0, weight=1)
 
-        self.mode_pages["awp1744_awp1766_pump_mode"] = AWP1744AWP1766PumpModePage(self.mode_container, self.ctx)
-        self.mode_pages["awp1744_awp1766_fan_mode"] = ReservedModePage(
-            self.mode_container,
-            self.ctx,
-            "awp1744_awp1766_fan_mode",
+        self.mode_pages.register(
+            "awp1744_awp1766_pump_mode", lambda: AWP1744AWP1766PumpModePage(self.mode_container, self.ctx)
         )
-
-        for page in self.mode_pages.values():
-            page.grid(row=0, column=0, sticky="nsew")
-            page.grid_remove()
+        self.mode_pages.register(
+            "awp1744_awp1766_fan_mode",
+            lambda: ReservedModePage(self.mode_container, self.ctx, "awp1744_awp1766_fan_mode"),
+        )
 
         self.refresh_language()
         self._on_addr_changed()
@@ -1089,7 +1083,7 @@ class AWP1744AWP1766Page(BasePage):
             old_page.stop_frequency_read()
         self.current_mode = mode
         self._sync_mode_button_styles()
-        for page in self.mode_pages.values():
+        for page in self.mode_pages.built_values():
             page.grid_remove()
         page = self.mode_pages[mode]
         page.grid()
@@ -1107,13 +1101,13 @@ class AWP1744AWP1766Page(BasePage):
         self.rw_btn.configure(text=self.tr("rw"))
         for key, btn in self.mode_buttons.items():
             btn.configure(text=self.tr(key))
-        for page in self.mode_pages.values():
+        for page in self.mode_pages.built_values():
             if hasattr(page, "refresh_language"):
                 page.refresh_language()
 
     def refresh_theme(self) -> None:
         super().refresh_theme()
-        for page in self.mode_pages.values():
+        for page in self.mode_pages.built_values():
             if hasattr(page, "refresh_theme"):
                 page.refresh_theme()
 

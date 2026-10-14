@@ -42,7 +42,7 @@ from core.base_tool import (
     SerialResponse,
     execute_register_script_operations,
 )
-from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
+from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen, lazy_mode_pages
 from pages.gpio_controls import GpioControlGroup, GpioControlPanel, active_serial_identity
 from core.ui_dispatch import post_to_ui
 
@@ -63,7 +63,7 @@ class AWP1018Page(BasePage):
         self.status_var = tk.StringVar(value="")
         self.current_mode = "awp1018_normal_mode"
         self.mode_buttons: dict[str, ttk.Button] = {}
-        self.mode_pages: dict[str, ttk.Frame] = {}
+        self.mode_pages = lazy_mode_pages(self)
         self._labels: dict[str, ttk.Label] = {}
         self._buttons: dict[str, ttk.Button] = {}
         self._build_ui()
@@ -95,7 +95,7 @@ class AWP1018Page(BasePage):
         self._build_register_bar(reg_panel)
         self._build_identity_bar(identity)
 
-        self.mode_pages["awp1018_normal_mode"] = AWP1018NormalModePage(
+        self.mode_pages.register("awp1018_normal_mode", lambda: AWP1018NormalModePage(
             self.mode_container,
             self.ctx,
             import_page_settings=self.import_settings,
@@ -104,8 +104,8 @@ class AWP1018Page(BasePage):
             gpio_group=self.gpio_controls,
             on_gpio_mode_success=self._on_gpio_mode_success,
             on_gpio_mode_failure=self._on_gpio_mode_failure,
-        )
-        self.mode_pages["awp1018_diff_mode"] = AWP1018NormalModePage(
+        ))
+        self.mode_pages.register("awp1018_diff_mode", lambda: AWP1018NormalModePage(
             self.mode_container,
             self.ctx,
             diff_mode=True,
@@ -115,18 +115,18 @@ class AWP1018Page(BasePage):
             gpio_group=self.gpio_controls,
             on_gpio_mode_success=self._on_gpio_mode_success,
             on_gpio_mode_failure=self._on_gpio_mode_failure,
-        )
-        self.mode_pages["full_mode"] = AWP1018FullModePage(
+        ))
+        self.mode_pages.register("full_mode", lambda: AWP1018FullModePage(
             self.mode_container,
             self.ctx,
             gpio_group=self.gpio_controls,
             on_gpio_mode_success=self._on_gpio_mode_success,
             on_gpio_mode_failure=self._on_gpio_mode_failure,
-        )
+        ))
 
-        for page in self.mode_pages.values():
-            page.grid(row=0, column=0, sticky="nsew")
-            page.grid_remove()
+        # Panels added later must still receive shared-pin fan-outs that
+        # happened before: build every mode page before any fan-out.
+        self.gpio_controls.before_fanout = lambda: self.mode_pages.values()
 
         self.refresh_language()
         self._on_addr_changed()
@@ -696,7 +696,7 @@ class AWP1018Page(BasePage):
             self._set_diff_mode_registers(True)
         elif update_chip and mode == "awp1018_normal_mode":
             self._set_diff_mode_registers(False)
-        for page in self.mode_pages.values():
+        for page in self.mode_pages.built_values():
             page.grid_remove()
         page = self.mode_pages[mode]
         page.grid()
@@ -825,7 +825,7 @@ class AWP1018Page(BasePage):
             btn.configure(text=self.tr(key))
         for key, btn in self.mode_buttons.items():
             btn.configure(text=self.tr(key))
-        for page in self.mode_pages.values():
+        for page in self.mode_pages.built_values():
             if hasattr(page, "refresh_language"):
                 page.refresh_language()
         gpio_controls = getattr(self, "gpio_controls", None)
@@ -834,7 +834,7 @@ class AWP1018Page(BasePage):
 
     def refresh_theme(self) -> None:
         super().refresh_theme()
-        for page in self.mode_pages.values():
+        for page in self.mode_pages.built_values():
             if hasattr(page, "refresh_theme"):
                 page.refresh_theme()
 

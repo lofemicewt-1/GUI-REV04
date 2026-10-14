@@ -32,7 +32,7 @@ from core.base_tool import (
     GPIO_MODE_LOW,
     run_async_write,
 )
-from pages.base_page import BasePage, SimpleTooltip
+from pages.base_page import BasePage, SimpleTooltip, lazy_mode_pages
 from pages.awp1221_board_presets import AWP1221BoardPresetMixin
 from pages.awp1221_realtime_sram import (
     AWP1221RealtimeMixin,
@@ -4656,7 +4656,7 @@ class AWP1221Page(BasePage):
         self._init_gpio_state()
         self.current_mode = "button_mode"
         self.mode_buttons: dict[str, ttk.Button] = {}
-        self.mode_pages: dict[str, AWP1221ModePage] = {}
+        self.mode_pages = lazy_mode_pages(self)
         self._shared_state_owner = AWP1221SharedStateOwner()
         self._shared_addr: int | None = None
         self._labels: dict[str, ttk.Label] = {}
@@ -4694,19 +4694,19 @@ class AWP1221Page(BasePage):
 
         self.gpio_controls = NullGpioControlPanel()
         for mode in ("button_mode", "full_mode"):
-            page = AWP1221ModePage(
-                mode_container,
-                self.ctx,
-                tr=self.tr,
-                device_addr=self._device_addr,
-                mode_key=mode,
-                auto_serial_var=self.auto_serial_var,
-                shared_state_owner=self._shared_state_owner,
-                host=self,
+            self.mode_pages.register(
+                mode,
+                lambda mode=mode: AWP1221ModePage(
+                    mode_container,
+                    self.ctx,
+                    tr=self.tr,
+                    device_addr=self._device_addr,
+                    mode_key=mode,
+                    auto_serial_var=self.auto_serial_var,
+                    shared_state_owner=self._shared_state_owner,
+                    host=self,
+                ),
             )
-            page.grid(row=0, column=0, sticky="nsew")
-            page.grid_remove()
-            self.mode_pages[mode] = page
 
         self._on_addr_changed()
         self.show_mode("button_mode")
@@ -5369,7 +5369,7 @@ class AWP1221Page(BasePage):
         if previous_page is not None and previous_page is not next_page and hasattr(previous_page, "on_hide"):
             previous_page.on_hide()
         self.current_mode = mode
-        for page in self.mode_pages.values():
+        for page in self.mode_pages.built_values():
             page.grid_remove()
         self.mode_pages[mode].grid()
         next_page = self.mode_pages[mode]
@@ -5419,7 +5419,7 @@ class AWP1221Page(BasePage):
             button.configure(text=self.tr(key))
         for key, button in self.mode_buttons.items():
             button.configure(text=self.tr(key))
-        for page in self.mode_pages.values():
+        for page in self.mode_pages.built_values():
             page.refresh_language()
         gpio_controls = getattr(self, "gpio_controls", None)
         if gpio_controls is not None:
@@ -5431,7 +5431,7 @@ class AWP1221Page(BasePage):
 
     def refresh_theme(self) -> None:
         super().refresh_theme()
-        for page in self.mode_pages.values():
+        for page in self.mode_pages.built_values():
             refresh = getattr(page, "refresh_theme", None)
             if callable(refresh):
                 refresh()

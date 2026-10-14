@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import time
 import tkinter as tk
 import threading
 import webbrowser
 from tkinter import filedialog, font as tkfont, messagebox, ttk
-from typing import Any
+from typing import Any, Callable
 
 from config.app_info import CHIP_WEBSITE_URLS
 from config.languages import t
@@ -490,6 +491,113 @@ def _prominent_title(title_key: str) -> bool:
     if title_key in {"awp1921_1923", "awp1921", "awp1923", "awp1922", "awp1018", "awp1221", "awp1744_awp1766"}:
         return True
     return title_key.endswith("_mode")
+
+
+class LazyPageDict(dict):
+    """Mode sub-pages built on first use.
+
+    Registered with ``register(key, factory)``; any lookup (``[]``, ``get``,
+    ``values``/``items``) builds the page first, so code that reads or
+    updates a mode page behaves exactly as if it had been built at startup.
+    ``keys``/``in``/``len``/iteration list every registered key without
+    building.  ``built_values()`` is for broadcasts (language/theme/hide)
+    that a page built later picks up from the current settings anyway."""
+
+    def __init__(self, on_build: Callable[[str, tk.Misc], None] | None = None) -> None:
+        super().__init__()
+        self._factories: dict[str, Callable[[], tk.Misc]] = {}
+        self._order: list[str] = []
+        self.on_build = on_build
+
+    def register(self, key: str, factory: Callable[[], tk.Misc]) -> None:
+        if key not in self._order:
+            self._order.append(key)
+        self._factories[key] = factory
+
+    def _build(self, key: str) -> Any:
+        page = dict.get(self, key)
+        if page is not None:
+            return page
+        factory = self._factories.pop(key, None)
+        if factory is None:
+            return None
+        t0 = time.perf_counter()
+        page = factory()
+        dict.__setitem__(self, key, page)
+        if self.on_build is not None:
+            self.on_build(key, page)
+        try:
+            from core import animation as _anim
+            _anim.debug_log(f"lazy build mode {key}: {(time.perf_counter() - t0) * 1000:.0f} ms")
+        except Exception:
+            pass
+        return page
+
+    def is_built(self, key: str) -> bool:
+        return dict.__contains__(self, key)
+
+    def built_values(self) -> list[Any]:
+        return [dict.__getitem__(self, k) for k in self._order if dict.__contains__(self, k)]
+
+    def __setitem__(self, key: str, page: Any) -> None:
+        if key not in self._order:
+            self._order.append(key)
+        self._factories.pop(key, None)
+        dict.__setitem__(self, key, page)
+
+    def __contains__(self, key: object) -> bool:
+        return dict.__contains__(self, key) or key in self._factories
+
+    def __getitem__(self, key: str) -> Any:
+        page = self._build(key)
+        if page is None:
+            raise KeyError(key)
+        return page
+
+    def get(self, key: str, default: Any = None) -> Any:  # type: ignore[override]
+        page = self._build(key) if key is not None else None
+        return default if page is None else page
+
+    def __iter__(self):  # type: ignore[override]
+        return iter([k for k in self._order if k in self])
+
+    def keys(self):  # type: ignore[override]
+        return list(self.__iter__())
+
+    def __len__(self) -> int:
+        return len(self.keys())
+
+    def __bool__(self) -> bool:
+        return len(self) > 0
+
+    def values(self):  # type: ignore[override]
+        # A page still under construction (re-entrant lookup) is skipped.
+        return [p for p in (self._build(k) for k in self.keys()) if p is not None]
+
+    def items(self):  # type: ignore[override]
+        pairs = [(k, self._build(k)) for k in self.keys()]
+        return [(k, p) for k, p in pairs if p is not None]
+
+
+def lazy_mode_pages(owner: tk.Misc) -> LazyPageDict:
+    """A LazyPageDict whose pages are gridded into the shared mode cell and
+    get the application's widget fonts when built (same as at startup)."""
+
+    def on_build(_key: str, page: tk.Misc) -> None:
+        page.grid(row=0, column=0, sticky="nsew")
+        page.grid_remove()
+        app = getattr(getattr(owner, "ctx", None), "app", None)
+        refresh = getattr(app, "_refresh_widget_fonts", None)
+        if callable(refresh) and getattr(app, "navigation", None) is not None:
+            refresh(page)
+        # Settle the new page's own geometry now (as it was long settled when
+        # built at startup) so the host's scroll sync sees its final request.
+        try:
+            page.update_idletasks()
+        except tk.TclError:
+            pass
+
+    return LazyPageDict(on_build)
 
 
 class BasePage(ttk.Frame):
