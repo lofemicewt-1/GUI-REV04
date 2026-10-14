@@ -79,8 +79,8 @@
 - 取消连接卡死（cde9015 的问题）：握手期间（CH340 打开 → Nano 复位 → 等 READY，最长 30 s）`SerialManager.connect()` 持有 `_lock`，而 `is_connected` 已为真 → 按钮刷新成“断开”；点“断开”/后续操作在主线程 `disconnect()` 等 `_lock` → 未响应。修复：连接期间 `is_connected=False`（新增 `is_connecting`）；`cancel_connect()` 只置 Event；其他线程调用 `disconnect()` 遇到连接中只发取消、立即返回；握手各等待循环每 ≤0.2 s 检查取消，由连接线程自己关闭端口；握手写超时 0.3 s；连接/取消点击只刷新按钮与状态行。
 
 ## UI 动画（分支 ui-animation，基于 thread-queue 44ab319，未推送）
-- 新增 `core/animation.py`：CSS 同款 `cubic_bezier()`、`EASE_OUT(0.22,1,0.36,1)` / `EASE_IN_OUT` / `EASE_SETTLE(0.34,1.25,0.64,1，约 2% 回弹“咬合”)`、颜色插值、共享 16 ms 计时器的 `Animator`（同 key 替换、首帧才起表、关闭时直接到终值）。
-- 侧栏：选中页按钮左侧 3px 强调色指示条，切页时 200 ms EASE_SETTLE 滑动；悬停未选中按钮时左侧淡色预览条 140 ms 淡入/淡出。按钮本身样式不变。
-- AWP192x 感应状态块：按下闪色仍即时，恢复“就绪”色改为 140 ms 渐变。
+- 新增 `core/animation.py`：CSS 同款 `cubic_bezier()`、按参考笔记 CDS 令牌：时长 60/120/200/300/450 ms，曲线 ease-out(.165,.84,.44,1)、snap(.32,.72,0,1)、overshoot(.34,1.3,.64,1)、grapheme(.215,.61,.355,1)、颜色插值、共享 16 ms 计时器的 `Animator`（同 key 替换、首帧才起表、关闭时直接到终值）。
+- 侧栏：选中页按钮左侧 3px 强调色指示条，切页时 120 ms snap 曲线滑动；悬停未选中按钮时左侧淡色预览条 60 ms 淡入/淡出。按钮本身样式不变。
+- AWP192x 感应状态块：按下闪色仍即时，恢复“就绪”色改为 120 ms 渐变。
 - 设置页新增“动画效果 / 启用过渡动画”开关（即时生效，未持久化，与其他设置一致）。
 - 实测（Linux/Xvfb）：动画帧间隔中位 17.3 ms、p95 18.3 ms（≈58 fps）；切页 median 25.7 ms（改前 25.0–26.6 ms，无退化）。用 ttk.Style 逐帧改按钮颜色每帧约 65 ms（会重绘所有 ttk 控件），已弃用。

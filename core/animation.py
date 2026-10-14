@@ -17,11 +17,18 @@ from typing import Callable, Hashable
 
 FRAME_MS = 16
 
-# Durations (ms).  Hover/feedback: short and ease-out; travel: a bit longer
-# with a tiny overshoot so it "settles" into place.
-HOVER_MS = 140
-NAV_SLIDE_MS = 200
-FADE_MS = 140
+# Motion tokens (reference: Claude Desktop "CDS" tokens from the note).
+DUR_FAST = 60     # micro-interaction: hover / icon colour
+DUR_SNAP = 120    # switch: slider / tab
+DUR_BASE = 200    # basic transition: collapse / expand
+DUR_SHEET = 300   # large panel: drawer / sidebar
+DUR_SLOW = 450    # background / ambient colour
+GRAPHEME_MS = 90  # per-character reveal
+GRAPHEME_STAGGER_MS = 30
+
+HOVER_MS = DUR_FAST
+NAV_SLIDE_MS = DUR_SNAP
+FADE_MS = DUR_SNAP
 
 
 def cubic_bezier(x1: float, y1: float, x2: float, y2: float) -> Callable[[float], float]:
@@ -66,9 +73,12 @@ def cubic_bezier(x1: float, y1: float, x2: float, y2: float) -> Callable[[float]
     return ease
 
 
-EASE_OUT = cubic_bezier(0.22, 1.0, 0.36, 1.0)        # quick start, soft landing
-EASE_IN_OUT = cubic_bezier(0.65, 0.0, 0.35, 1.0)
-EASE_SETTLE = cubic_bezier(0.34, 1.25, 0.64, 1.0)    # ~4 % overshoot, then snaps in
+EASE_OUT = cubic_bezier(0.165, 0.84, 0.44, 1.0)      # --cds-ease-out: smooth decel
+EASE_SNAP = cubic_bezier(0.32, 0.72, 0.0, 1.0)       # --cds-ease-snap: "bite" into place
+EASE_OVERSHOOT = cubic_bezier(0.34, 1.3, 0.64, 1.0)  # --cds-ease-overshoot: ~3 % overshoot
+EASE_GRAPHEME = cubic_bezier(0.215, 0.61, 0.355, 1.0)  # text reveal
+EASE_IN_OUT = cubic_bezier(0.4, 0.0, 0.2, 1.0)       # standard (loading dots)
+EASE_SETTLE = EASE_OVERSHOOT
 
 
 def _hex_to_rgb(color: str) -> tuple[int, int, int]:

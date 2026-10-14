@@ -570,7 +570,7 @@ class Navigation:
                 animator.cancel("nav-indicator")
             step(1.0)
             return
-        animator.animate("nav-indicator", anim.NAV_SLIDE_MS, step, ease=anim.EASE_SETTLE)
+        animator.animate("nav-indicator", anim.NAV_SLIDE_MS, step, ease=anim.EASE_SNAP)
 
     def _mode_keys_for(self, page: Any) -> list[str]:
         mode_pages = getattr(page, "mode_pages", None)

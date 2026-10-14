@@ -19,14 +19,14 @@ class EasingTests(unittest.TestCase):
         linear = anim.cubic_bezier(0, 0, 1, 1)
         for x in (0.1, 0.33, 0.5, 0.9):
             self.assertAlmostEqual(linear(x), x, places=3)
-        for ease in (anim.EASE_OUT, anim.EASE_IN_OUT):
+        for ease in (anim.EASE_OUT, anim.EASE_IN_OUT, anim.EASE_SNAP, anim.EASE_GRAPHEME):
             self.assertEqual(ease(0), 0.0)
             self.assertEqual(ease(1), 1.0)
             values = [ease(i / 50) for i in range(51)]
             self.assertEqual(values, sorted(values))
         self.assertGreater(anim.EASE_OUT(0.25), 0.5)  # ease-out: fast start
         peak = max(anim.EASE_SETTLE(i / 200) for i in range(201))
-        self.assertTrue(1.0 < peak < 1.06)  # small settle overshoot
+        self.assertTrue(1.0 < peak < 1.08)  # small settle overshoot
 
     def test_lerp_color(self) -> None:
         self.assertEqual(anim.lerp_color("#000000", "#FFFFFF", 0), "#000000")
