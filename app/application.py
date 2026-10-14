@@ -3234,7 +3234,9 @@ class PiezoApplication:
         self.ui_dispatcher = UiDispatcher(self.root).start()
         self.animator = Animator(self.root, enabled=True)
         self.root._piezo_animator = self.animator  # type: ignore[attr-defined]
-        self.root.bind("<Destroy>", self._on_root_destroy, add="+")
+        destroy_tag = f"PiezoRootDestroy{id(self)}"
+        self.root.bindtags((destroy_tag,) + tuple(self.root.bindtags()))
+        self.root.bind_class(destroy_tag, "<Destroy>", self._on_root_destroy, add="+")
         # Let scroll containers handle the wheel without changing a hovered combobox value.
         self.root.bind_class("TCombobox", "<MouseWheel>", lambda _event: None)
         self.root.title("Piezo Control GUI")
@@ -3289,7 +3291,13 @@ class PiezoApplication:
         _span("show home")
         from core import animation as _anim
         _anim.debug_log("startup spans (ms): " + ", ".join(_spans))
-        self.root.bind("<Configure>", self._on_root_configure, add="+")
+        # Bound on a tag carried only by the toplevel itself: a binding on the
+        # toplevel name also fires for every descendant's <Configure> (Tk
+        # toplevel bindtags), i.e. hundreds of Python callbacks per page
+        # build/resize/theme change that the handler then ignores.
+        root_tag = f"PiezoRootOnly{id(self)}"
+        self.root.bindtags((root_tag,) + tuple(self.root.bindtags()))
+        self.root.bind_class(root_tag, "<Configure>", self._on_root_configure, add="+")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     def _apply_window_icon(self) -> None:
