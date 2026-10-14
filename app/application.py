@@ -9,7 +9,7 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import messagebox, ttk
-from typing import Any
+from typing import Any, Callable
 
 from app.navigation import Navigation
 from app.state import AppState
@@ -3229,7 +3229,22 @@ def _resolve_theme(theme: str) -> str:
 
 
 class PiezoApplication:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        on_startup_progress: Callable[[str, int, int], None] | None = None,
+        start_withdrawn: bool = False,
+    ) -> None:
+        """Create the app.
+
+        ``on_startup_progress(label, i, n)`` is called for the initial home
+        build and for every subsequent page/mode built during startup (used
+        by the splash to animate dots).  ``start_withdrawn`` keeps the main
+        window hidden until ``reveal()`` (splash owns the screen meanwhile).
+        """
+        self.on_startup_progress = on_startup_progress
+        self._start_withdrawn = start_withdrawn
+        self._startup_done = False
         self.root = tk.Tk()
         # Worker threads hand results to Tk only through this FIFO dispatcher.
         self.ui_dispatcher = UiDispatcher(self.root).start()
@@ -3251,6 +3266,7 @@ class PiezoApplication:
         initial_width = min(1700, max(480, screen_width - 80))
         initial_height = min(980, max(360, screen_height - 120))
         self.root.geometry(f"{initial_width}x{initial_height}")
+        self._initial_size = f"{initial_width}x{initial_height}"
         self.root.minsize(480, 320)
         self._base_width = 1700
         self._base_height = 980
@@ -3284,14 +3300,21 @@ class PiezoApplication:
 
         self.navigation = Navigation(self.root, self.ctx)
         _span("navigation")
+        if self._start_withdrawn:
+            self._prepare_offscreen_layout()
+        self._emit_startup_progress("home", 1, 1)
         self._register_pages()
         _span("build pages")
         self._refresh_widget_fonts()
         _span("fonts")
         self.navigation.show("home")
         _span("show home")
+        self._build_remaining_at_startup(_span)
         from core import animation as _anim
         _anim.debug_log("startup spans (ms): " + ", ".join(_spans))
+        self._startup_done = True
+        if self._start_withdrawn:
+            self.root.withdraw()
         # Bound on a tag carried only by the toplevel itself: a binding on the
         # toplevel name also fires for every descendant's <Configure> (Tk
         # toplevel bindtags), i.e. hundreds of Python callbacks per page
@@ -3310,10 +3333,149 @@ class PiezoApplication:
         except Exception:
             pass
 
+    def _emit_startup_progress(self, label: str, index: int, total: int) -> None:
+        hook = self.on_startup_progress
+        if callable(hook):
+            try:
+                hook(label, index, total)
+            except Exception:
+                pass
+
+    def _prepare_offscreen_layout(self) -> None:
+        """Map the main window off-screen at its real startup size while the
+        splash is up, so pages are laid out (and their native windows
+        created) exactly as they will be shown.  Alpha is not used: it is
+        ignored by Wine and some X11 setups, which would expose the window."""
+        size = getattr(self, "_initial_size", "1700x980")
+        self._offscreen_size = size
+        try:
+            self.root.geometry(f"{size}+-30000+-30000")
+            self.root.deiconify()
+            self.root.update_idletasks()
+            self.root.update()
+        except tk.TclError:
+            pass
+
+    def reveal(self) -> None:
+        """Show the main window after the splash closes."""
+        size = getattr(self, "_offscreen_size", None)
+        if size:
+            # Back from off-screen: centre on the screen (the window was never
+            # placed by the window manager, so there is no default position).
+            try:
+                w, h = (int(v) for v in size.split("x", 1))
+                sw = int(self.root.winfo_screenwidth())
+                sh = int(self.root.winfo_screenheight())
+                self.root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 2)}")
+            except (tk.TclError, ValueError):
+                pass
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+        except tk.TclError:
+            pass
+        try:
+            self.navigation._sync_content_window_immediately()
+        except Exception:
+            pass
+
+    def _build_remaining_at_startup(self, _span) -> None:
+        """Build every remaining page and mode sub-page before the UI is shown.
+
+        Keeps the lazy accessors as a safety net; after this returns, first
+        opens should cost the same as repeat opens.  Progress is reported
+        between steps so the splash can keep its dots moving.
+        """
+        from core import animation as _anim
+
+        nav = self.navigation
+        pending_pages = nav.pending_page_names()
+        # Modes are discovered after each page exists; estimate a stable total
+        # as pages + a generous mode slot count, then report with a running index.
+        work: list[tuple[str, str, str | None]] = [("page", name, None) for name in pending_pages]
+        done = 1  # home already built
+        # Grow total as we learn about modes; splash only needs monotonic i/n.
+        total = done + len(work) + 8
+
+        def bump_total(extra: int) -> None:
+            nonlocal total
+            total = max(total, done + extra)
+
+        t_all = time.perf_counter()
+        while work:
+            kind, name, mode = work.pop(0)
+            bump_total(len(work) + 1)
+            done += 1
+            label = name if mode is None else f"{name}/{mode}"
+            if kind == "premap":
+                label = f"{name} (layout)"
+            self._emit_startup_progress(label, done, total)
+            t0 = time.perf_counter()
+            if kind == "page":
+                if nav.is_page_built(name):
+                    _anim.debug_log(f"startup build skip page {name} (already built)")
+                else:
+                    page = nav.get_page(name)
+                    if page is not None:
+                        try:
+                            page.update_idletasks()
+                            nav.prepare_page_fonts(page)
+                        except tk.TclError:
+                            pass
+                        modes = getattr(page, "mode_pages", None)
+                        if modes is not None and hasattr(modes, "pending_keys"):
+                            for m in modes.pending_keys():
+                                work.append(("mode", name, m))
+                        work.append(("premap", name, None))
+                        bump_total(len(work) + 1)
+                _anim.debug_log(
+                    f"startup build page {name}: {(time.perf_counter() - t0) * 1000:.0f} ms"
+                )
+            elif kind == "premap":
+                page = nav.get_page(name, build=False)
+                if page is not None and self._start_withdrawn:
+                    try:
+                        nav.premap_page(page)
+                    except tk.TclError:
+                        pass
+                _anim.debug_log(f"startup premap {name}: {(time.perf_counter() - t0) * 1000:.0f} ms")
+            else:
+                page = nav.get_page(name, build=False)
+                modes = getattr(page, "mode_pages", None) if page is not None else None
+                if modes is not None and mode is not None and hasattr(modes, "ensure_built"):
+                    if not modes.is_built(mode):
+                        modes.ensure_built(mode)
+                        try:
+                            modes[mode].update_idletasks()
+                        except Exception:
+                            pass
+                    _anim.debug_log(
+                        f"startup build mode {name}/{mode}: {(time.perf_counter() - t0) * 1000:.0f} ms"
+                    )
+                else:
+                    _anim.debug_log(f"startup build skip mode {name}/{mode}")
+
+        # Final settle at the real window size so first show does not clip.
+        try:
+            nav._sync_content_window_immediately()
+            for page in nav.built_pages():
+                try:
+                    nav.prepare_page_fonts(page)
+                    page.update_idletasks()
+                except tk.TclError:
+                    pass
+        except Exception:
+            pass
+        _span("build all pages+modes")
+        _anim.debug_log(
+            f"startup build-all done: {(time.perf_counter() - t_all) * 1000:.0f} ms, "
+            f"{len(nav.built_pages())} pages"
+        )
+
     def _register_pages(self) -> None:
-        """Only home is built at startup; the other pages are built on first
-        use (shown, or looked up by another page) with the current theme,
-        language and font settings."""
+        """Build home now; other pages are registered lazy and filled in by
+        ``_build_remaining_at_startup`` (or on first use if that is skipped)."""
         from core import animation as _anim
         content = self.navigation.content
         self.navigation.on_page_built = self._refresh_widget_fonts

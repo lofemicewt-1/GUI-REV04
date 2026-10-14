@@ -278,6 +278,45 @@ class Navigation:
     def is_page_built(self, name: str) -> bool:
         return dict.__contains__(self.pages, name)
 
+    def premap_page(self, page: tk.Misc) -> None:
+        """Lay out and map a built page (and its built mode sub-pages) once,
+        without on_show/show_mode hooks, then hide it again.  Used during the
+        startup splash so the first real show only re-grids an already
+        realised page at the current window size."""
+        mapped_others = [
+            o for o in dict.values(self.pages) if o is not page and o.winfo_ismapped()
+        ]
+        for other in mapped_others:
+            other.grid_remove()
+        try:
+            page.grid()
+            self._sync_content_window_immediately()
+            self.prepare_page_fonts(page)
+            modes = getattr(page, "mode_pages", None)
+            if modes is not None and hasattr(modes, "built_values"):
+                built = modes.built_values()
+                current = [m for m in built if m.winfo_manager() == "grid"]
+                for mode_page in built:
+                    if mode_page in current:
+                        continue
+                    for c in current:
+                        c.grid_remove()
+                    mode_page.grid()
+                    page.update_idletasks()
+                    mode_page.grid_remove()
+                    for c in current:
+                        c.grid()
+                page.update_idletasks()
+        finally:
+            page.grid_remove()
+            for other in mapped_others:
+                other.grid()
+            self._sync_content_window_immediately()
+
+    def pending_page_names(self) -> list[str]:
+        """Registered pages not built yet (does not build)."""
+        return [n for n in self._page_order if n in self._page_factories]
+
     def get_page(self, name: str, build: bool = True) -> ttk.Frame | None:
         """The page called name; built now (with the current theme, language
         and font settings, not shown) when it does not exist yet."""

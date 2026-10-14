@@ -537,6 +537,18 @@ class LazyPageDict(dict):
     def is_built(self, key: str) -> bool:
         return dict.__contains__(self, key)
 
+    def registered_keys(self) -> list[str]:
+        """Every mode key, built or not, in registration order."""
+        return list(self._order)
+
+    def pending_keys(self) -> list[str]:
+        """Registered keys that have not been built yet (does not build)."""
+        return [k for k in self._order if k in self._factories]
+
+    def ensure_built(self, key: str) -> Any:
+        """Build key if needed and return the page; does not show/grid it beyond on_build."""
+        return self._build(key)
+
     def built_values(self) -> list[Any]:
         return [dict.__getitem__(self, k) for k in self._order if dict.__contains__(self, k)]
 
