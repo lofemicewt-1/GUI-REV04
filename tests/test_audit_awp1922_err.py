@@ -48,7 +48,8 @@ class Awp1922ReenableTests(unittest.TestCase):
         self.assertEqual(awp1922_ctrl_write_value(0x00, allow_disable=True), (0x00, False))
 
     def test_reenable_in_play_rewrites_freq_and_amp(self):
-        page, calls = _page({0x05: 0x03, 0x06: 0x1F})
+        # 0x05 readback carries RO I2C_ADDR bits6-4; only bits3-0 are rewritten.
+        page, calls = _page({0x05: 0x53, 0x06: 0xFF})
         self.assertTrue(page._write8(0x00, 0x40))
         self.assertEqual(calls, [("W", 0x00, 0xC0), ("R", 0x05), ("W", 0x05, 0x03), ("R", 0x06), ("W", 0x06, 0x1F)])
 
@@ -68,6 +69,27 @@ class Awp1922ReenableTests(unittest.TestCase):
         self.assertEqual(calls, [("W", 0x00, 0x00)])
 
 
+class Awp1922ShutdownStateTests(unittest.TestCase):
+    def test_no_force_after_user_shutdown_until_wake(self):
+        page, calls = _page({0x05: 0x01, 0x06: 0x02})
+        page.shutdown()
+        page._write8(0x00, 0x40)          # manual/play write while shut down
+        self.assertEqual(calls[-1], ("W", 0x00, 0x40))
+        page.wake()
+        self.assertEqual(calls[-1][:2], ("W", 0x00))
+        self.assertTrue(calls[-1][2] & 0x80)
+        calls.clear()
+        page._write8(0x00, 0x40)          # forced again after Wake
+        self.assertEqual(calls[0], ("W", 0x00, 0xC0))
+
+    def test_shutdown_is_per_address(self):
+        page, calls = _page({})
+        page.shutdown()
+        page._addr = lambda: 0x59
+        page._write8(0x00, 0x00)
+        self.assertEqual(calls[-1], ("W", 0x00, 0x80))
+
+
 class FirmwareErrorTests(unittest.TestCase):
     def test_parse_and_format(self):
         e = parse_firmware_error("^ERR WREGW I2C 3~")
@@ -83,6 +105,18 @@ class FirmwareErrorTests(unittest.TestCase):
         self.assertFalse(nack("ERR WREGW STOP"))
         self.assertTrue(nack("ERR RREGW I2C 2"))
         self.assertFalse(nack("ERR RREGW I2C 5"))
+
+    def test_error_has_request_context(self):
+        from core.base_tool import read_register_value, write_register_value
+        seq = [SerialResponse(True, data="ERR WREGW I2C"), SerialResponse(True, data="ERR WREGW I2C")]
+        err = write_register_value(lambda b, **k: seq.pop(0), 0x58, 0x06, 1, bits=8).response.error
+        for part in ("WREGW", "dev=0x58", "reg=0x06", "width=8", "count=1", "attempts=2", "^ERR WREGW I2C~"):
+            self.assertIn(part, err)
+        err = read_register_value(lambda b, **k: SerialResponse(True, data="ERR RREGW I2C 5"), 0x44, 0x1E, bits=16).response.error
+        self.assertIn("code=5 (I2C timeout)", err)
+        self.assertIn("attempts=1", err)
+        busy = read_register_value(lambda b, **k: SerialResponse(False, error="Serial command is busy"), 0x44, 0, bits=16)
+        self.assertEqual(busy.response.error, "Serial command is busy")
 
 
 if __name__ == "__main__":

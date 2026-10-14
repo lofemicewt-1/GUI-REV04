@@ -34,7 +34,10 @@ def awp1922_frequency_code(label: str, options: list[int]) -> int | None:
 # constants if the datasheet numbering differs.
 AWP1922_CTRL_ENABLE_BIT = 0x80
 AWP1922_CTRL_PLAY_BIT = 0x40
-AWP1922_REWRITE_ON_REENABLE_REGS = (0x05, 0x06)  # frequency, amplitude
+# Datasheet: 0x05 bits6-4 I2C_ADDR (RO), bits3-0 FREQ_CONTROL;
+#            0x06 bits4-0 VOUT_CONTROL.  Only R/W bits are rewritten.
+AWP1922_REWRITE_ON_REENABLE_MASKS = {0x05: 0x0F, 0x06: 0x1F}
+AWP1922_REWRITE_ON_REENABLE_REGS = tuple(AWP1922_REWRITE_ON_REENABLE_MASKS)  # frequency, amplitude
 
 
 def awp1922_play_value(current: int) -> int:
@@ -362,9 +365,19 @@ class AWP1922Page(BasePage):
             self.status_var.set(self.tr("chip_detect_failed") + f" 0x00={show}")
         self._clear_status(addr)
 
-    def _prepare_ctrl_write(self, reg: int, value: int, allow_disable: bool) -> tuple[int, bool]:
+    def _user_shutdown_addrs(self) -> set[int]:
+        addrs = getattr(self, "_shutdown_by_user", None)
+        if addrs is None:
+            addrs = set()
+            self._shutdown_by_user = addrs
+        return addrs
+
+    def _prepare_ctrl_write(self, reg: int, value: int, allow_disable: bool, dev: int | None = None) -> tuple[int, bool]:
         if (reg & 0xFF) != 0x00:
             return value, False
+        if dev is not None and dev in self._user_shutdown_addrs():
+            # User pressed Shutdown on this chip: no auto re-enable until Wake.
+            allow_disable = True
         value, reenabled = awp1922_ctrl_write_value(value, allow_disable=allow_disable)
         self.current_ctrl_reg = value
         if reenabled:
@@ -375,7 +388,7 @@ class AWP1922Page(BasePage):
         """After re-enable in play mode, rewrite 0x05/0x06 with their current values."""
         if not awp1922_needs_rewrite_after_reenable(value, reenabled):
             return
-        for reg in AWP1922_REWRITE_ON_REENABLE_REGS:
+        for reg, mask in AWP1922_REWRITE_ON_REENABLE_MASKS.items():
             current = None
             resp = self.ctx.serial.read_register_value(dev, reg, bits=8)
             if resp.ok:
@@ -383,9 +396,10 @@ class AWP1922Page(BasePage):
             if current is None:
                 self._serial_log(f"ERROR re-enable rewrite: read 0x{reg:02X} failed: {resp.error or resp.data}")
                 continue
-            wresp = self._write_recovered(dev, reg, current & 0xFF)
+            value_rw = current & mask  # drop RO bits (0x05 I2C_ADDR bits6-4)
+            wresp = self._write_recovered(dev, reg, value_rw)
             if wresp.ok:
-                self._serial_log(f"re-enable rewrite reg=0x{reg:02X} value=0x{current & 0xFF:02X}")
+                self._serial_log(f"re-enable rewrite reg=0x{reg:02X} value=0x{value_rw:02X} (read 0x{current & 0xFF:02X})")
             else:
                 self._serial_log(f"ERROR re-enable rewrite 0x{reg:02X}: {wresp.error}")
 
@@ -393,7 +407,7 @@ class AWP1922Page(BasePage):
         if not self._ensure_connected():
             return False
         dev = self._addr()
-        value, reenabled = self._prepare_ctrl_write(reg, value, allow_disable)
+        value, reenabled = self._prepare_ctrl_write(reg, value, allow_disable, dev)
         self._log_local(f"WRITE8 dev=0x{dev:02X} reg=0x{reg & 0xFF:02X} value=0x{value & 0xFF:02X}")
         resp = self._write_recovered(dev, reg, value)
         if resp.ok:
@@ -411,7 +425,7 @@ class AWP1922Page(BasePage):
             return
 
         dev = self._addr()
-        value, reenabled = self._prepare_ctrl_write(reg, value, False)
+        value, reenabled = self._prepare_ctrl_write(reg, value, False, dev)
         self._log_local(f"WRITE8 dev=0x{dev:02X} reg=0x{reg & 0xFF:02X} value=0x{value & 0xFF:02X}")
 
         def finish(ok: bool, data: str, error: str) -> None:
@@ -462,12 +476,16 @@ class AWP1922Page(BasePage):
         self._write8_async(0x00, self.current_ctrl_reg, on_success=lambda: self._set_button_selected("start_play", False))
 
     def wake(self) -> None:
-        self.current_ctrl_reg = self.current_ctrl_reg | 0x80
+        self._user_shutdown_addrs().discard(self._addr())
+        self.current_ctrl_reg = self.current_ctrl_reg | AWP1922_CTRL_ENABLE_BIT
         self._write8(0x00, self.current_ctrl_reg)
 
     def shutdown(self) -> None:
+        dev = self._addr()
+        self._user_shutdown_addrs().add(dev)
         self.current_ctrl_reg = self.current_ctrl_reg & ~AWP1922_CTRL_ENABLE_BIT
-        self._write8(0x00, self.current_ctrl_reg, allow_disable=True)
+        if not self._write8(0x00, self.current_ctrl_reg, allow_disable=True):
+            self._user_shutdown_addrs().discard(dev)
 
     def _write_selected_frequency(self, show_error: bool = False) -> bool:
         code = awp1922_frequency_code(self.freq_var.get(), self.FREQ_OPTIONS)

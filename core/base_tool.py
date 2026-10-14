@@ -793,6 +793,8 @@ class FirmwareError:
                 text += f" ({meaning})"
         elif self.detail:
             text += f" {self.detail}"
+        elif self.reason.upper() == "I2C":
+            text += " (firmware sent no error code)"
         return text
 
 
@@ -843,12 +845,50 @@ def is_i2c_address_nack(response: SerialResponse) -> bool:
     return _I2C_ADDRESS_NACK_PATTERN.search(text) is not None
 
 
-def _retry_8bit_address_nack(bits: int, operation: Callable[[], SerialResponse]) -> SerialResponse:
+def _retry_8bit_address_nack(
+    bits: int,
+    operation: Callable[[], SerialResponse],
+    *,
+    context: str | None = None,
+    log: Callable[[str], None] | None = None,
+) -> SerialResponse:
     response = operation()
-    if int(bits) != 8 or response.ok or not is_i2c_address_nack(response):
+    attempts = 1
+    if int(bits) == 8 and not response.ok and is_i2c_address_nack(response):
+        time.sleep(I2C_ADDRESS_NACK_RETRY_DELAY_S)
+        response = operation()
+        attempts = 2
+    return _with_request_context(response, context, attempts, log)
+
+
+def _with_request_context(
+    response: SerialResponse,
+    context: str | None,
+    attempts: int,
+    log: Callable[[str], None] | None,
+) -> SerialResponse:
+    """Prefix firmware-reported failures with the request that produced them.
+
+    Only failures that carry a firmware reply are decorated; transport-level
+    errors (not connected / busy) keep their exact text because callers
+    compare them.
+    """
+    if response.ok or context is None or not str(response.data or "").strip():
         return response
-    time.sleep(I2C_ADDRESS_NACK_RETRY_DELAY_S)
-    return operation()
+    detail = f"{context} attempts={attempts} reply=^{_normalized_frame(response.data)}~: {response.error}"
+    if log is not None:
+        log(f"ERROR {detail}")
+    return SerialResponse(False, data=response.data, error=detail)
+
+
+def _register_request_context(op: str, device_addr: int, reg_addr: int, bits: int, count: int) -> str | None:
+    try:
+        return (
+            f"{op} dev=0x{_device_address(device_addr):02X} reg=0x{u8(reg_addr, name='reg_addr'):02X} "
+            f"width={_register_data_width(bits)} count={int(count)}"
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def read_board_flag(transport: CommandTransport) -> SerialResponse:
@@ -989,7 +1029,14 @@ def write_register_values(
             count=len(data),
         )
 
-    return RegisterTransaction(_retry_8bit_address_nack(bits, once))
+    return RegisterTransaction(
+        _retry_8bit_address_nack(
+            bits,
+            once,
+            context=_register_request_context("WREGW", device_addr, reg_addr, bits, len(data)),
+            log=log,
+        )
+    )
 
 
 def read_register_values(
@@ -1024,7 +1071,14 @@ def read_register_values(
             response = _unexpected_response(response)
         return response
 
-    return RegisterTransaction(_retry_8bit_address_nack(bits, once))
+    return RegisterTransaction(
+        _retry_8bit_address_nack(
+            bits,
+            once,
+            context=_register_request_context("RREGW", device_addr, reg_addr, bits, count),
+            log=log,
+        )
+    )
 
 
 def write_register_value(
