@@ -60,6 +60,9 @@ class SerialPortInfo:
 
 
 BLUETOOTH_PORT_ERROR = "BLUETOOTH_PORT"
+CONNECT_CANCELLED_ERROR = "CONNECT_CANCELLED"
+# Handshake writes are a few bytes; never let one block the connect for long.
+CONNECT_WRITE_TIMEOUT_S = 0.3
 _BLUETOOTH_MARKERS = ("bluetooth", "\u84dd\u7259", "bthenum", "bthmodem", "rfcomm")
 # Ports seen as Bluetooth by the last enumeration.  Module level so every
 # SerialManager (the Router creates one per port) refuses them, not only the
@@ -109,6 +112,11 @@ class SerialManager:
     def __init__(self, timeout: float = 0.8) -> None:
         self._serial = None
         self._lock = threading.RLock()
+        # Set for the whole open+handshake.  While connecting the manager is
+        # NOT reported connected and other threads never wait on ``_lock``
+        # (which connect holds for up to CONNECT_READY_TIMEOUT).
+        self._connecting_thread: int | None = None
+        self._connect_cancel = threading.Event()
         self._command_lock = threading.RLock()
         self._transaction_state_lock = threading.Lock()
         self._transaction_owner: int | None = None
@@ -421,7 +429,21 @@ class SerialManager:
 
     @property
     def is_connected(self) -> bool:
+        if self._connecting_thread is not None:
+            return False
         return self._serial is not None and getattr(self._serial, "is_open", False)
+
+    @property
+    def is_connecting(self) -> bool:
+        return self._connecting_thread is not None
+
+    def cancel_connect(self) -> None:
+        """Ask an in-progress connect to stop.  Never blocks; safe from any thread.
+
+        The connecting thread notices within ~0.2 s (read timeout) and closes
+        the port itself.
+        """
+        self._connect_cancel.set()
 
     def list_ports(self) -> list[str]:
         return [info.device for info in self.list_port_info()]
@@ -506,9 +528,11 @@ class SerialManager:
         if is_known_bluetooth_port(port):
             return SerialResponse(False, error=f"{BLUETOOTH_PORT_ERROR} {port}")
 
+        self._connect_cancel.clear()
         with self._lock:
             try:
                 self.disconnect()
+                self._connecting_thread = threading.get_ident()
 
                 open_port = port
                 if sys.platform.startswith("win") and port.upper().startswith("COM"):
@@ -537,6 +561,8 @@ class SerialManager:
                 self._transport_error = ""
 
                 ready = self._complete_connect_handshake()
+                if ready.ok and self._connect_cancel.is_set():
+                    ready = SerialResponse(False, error=CONNECT_CANCELLED_ERROR)
                 if not ready.ok:
                     try:
                         self._serial.close()
@@ -549,6 +575,7 @@ class SerialManager:
                     return ready
 
                 self.connection_generation += 1
+                self._connecting_thread = None
                 self._start_monitor()
                 return SerialResponse(True, data=self.board_identity)
             except Exception as exc:
@@ -558,8 +585,16 @@ class SerialManager:
                 self.board_ready = False
                 self.last_error = str(exc)
                 return SerialResponse(False, error=str(exc))
+            finally:
+                self._connecting_thread = None
 
     def disconnect(self) -> None:
+        connecting = self._connecting_thread
+        if connecting is not None and connecting != threading.get_ident():
+            # Never wait for a connect in progress (it holds _lock while the
+            # board resets / sends READY).  Cancel it; it closes the port.
+            self._connect_cancel.set()
+            return
         self._monitor_stop.set()
         with self._lock:
             if self._serial is not None:
@@ -638,6 +673,8 @@ class SerialManager:
             while time.monotonic() < deadline:
                 if self.board_ready:
                     return True
+                if self._connect_cancel.is_set():
+                    return False
                 remaining = deadline - time.monotonic()
                 handle.timeout = min(0.2, max(0.01, remaining))
                 try:
@@ -667,11 +704,22 @@ class SerialManager:
         self.emit_log(f"TX {command}")
         saved_timeout = getattr(handle, "timeout", self.timeout)
         try:
-            handle.write(command.encode("ascii", errors="ignore"))
-            handle.flush()
+            saved_write_timeout = getattr(handle, "write_timeout", None)
+            try:
+                handle.write_timeout = CONNECT_WRITE_TIMEOUT_S
+            except Exception:
+                pass
+            try:
+                handle.write(command.encode("ascii", errors="ignore"))
+                handle.flush()
+            finally:
+                try:
+                    handle.write_timeout = saved_write_timeout
+                except Exception:
+                    pass
             deadline = time.monotonic() + self.timeout
             handle.timeout = min(0.2, self.timeout)
-            while time.monotonic() < deadline:
+            while time.monotonic() < deadline and not self._connect_cancel.is_set():
                 try:
                     data = handle.read(1)
                 except Exception as exc:
@@ -724,6 +772,8 @@ class SerialManager:
                     self.board_ready = True
                     self.board_identity = "CAP FLAG3"
                     return SerialResponse(True, data=self.board_identity)
+        if self._connect_cancel.is_set():
+            return SerialResponse(False, error=CONNECT_CANCELLED_ERROR)
         remaining = self.CONNECT_READY_TIMEOUT - self.CONNECT_READY_PROBE_S
         if remaining > 0 and self._wait_for_ready_notification(remaining):
             return SerialResponse(True, data=self.board_identity)
@@ -1505,6 +1555,16 @@ class SerialRouter:
         self.state.baudrate = int(baudrate)
         self.state.serial_connected = bool(self.connected_ports())
         return resp
+
+    def cancel_connect(self, port: str | None) -> None:
+        """Non-blocking: ask a connect in progress on ``port`` to stop."""
+        manager = self._managers.get(str(port or "").strip())
+        if manager is not None:
+            manager.cancel_connect()
+
+    def is_port_connecting(self, port: str | None) -> bool:
+        manager = self._managers.get(str(port or "").strip())
+        return manager is not None and manager.is_connecting
 
     def disconnect(self, port: str | None = None) -> None:
         selected = port or self.selected_port_for_page()
