@@ -56,6 +56,43 @@ def is_fatal_serial_exception(exc: BaseException) -> bool:
 class SerialPortInfo:
     device: str
     name: str
+    bluetooth: bool = False
+
+
+BLUETOOTH_PORT_ERROR = "BLUETOOTH_PORT"
+_BLUETOOTH_MARKERS = ("bluetooth", "\u84dd\u7259", "bthenum", "bthmodem", "rfcomm")
+# Ports seen as Bluetooth by the last enumeration.  Module level so every
+# SerialManager (the Router creates one per port) refuses them, not only the
+# scanner that listed them.
+_known_bluetooth_ports: set[str] = set()
+_known_bluetooth_lock = threading.Lock()
+
+
+def is_bluetooth_port_info(device: str, *texts: str) -> bool:
+    """True for Bluetooth SPP/RFCOMM serial ports (never the communication board)."""
+
+    device_text = str(device or "")
+    base = device_text.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if base.startswith("rfcomm"):
+        return True
+    joined = " ".join(str(t or "") for t in texts).lower()
+    return any(marker in joined for marker in _BLUETOOTH_MARKERS)
+
+
+def is_known_bluetooth_port(port: str | None) -> bool:
+    if not port:
+        return False
+    if is_bluetooth_port_info(port):
+        return True
+    key = str(port).upper()
+    with _known_bluetooth_lock:
+        return key in _known_bluetooth_ports
+
+
+def _remember_bluetooth_ports(ports: set[str]) -> None:
+    with _known_bluetooth_lock:
+        _known_bluetooth_ports.clear()
+        _known_bluetooth_ports.update(p.upper() for p in ports)
 
 
 class SerialManager:
@@ -396,20 +433,31 @@ class SerialManager:
             return []
 
         ports: dict[str, str] = {}
+        bluetooth: set[str] = set()
 
         try:
             for p in serial.tools.list_ports.comports():
                 if p.device and p.device not in ports:
                     ports[p.device] = self._port_display_name(p)
+                    if is_bluetooth_port_info(
+                        p.device,
+                        getattr(p, "description", "") or "",
+                        getattr(p, "hwid", "") or "",
+                        getattr(p, "manufacturer", "") or "",
+                        getattr(p, "name", "") or "",
+                    ):
+                        bluetooth.add(p.device)
         except Exception as exc:
             self.last_error = str(exc)
+        else:
+            _remember_bluetooth_ports(bluetooth)
 
         if sys.platform.startswith("win") and not ports and probe_missing:
             for port in self._scan_windows_com_ports():
                 ports[port] = port
 
         return [
-            SerialPortInfo(device=port, name=name)
+            SerialPortInfo(device=port, name=name, bluetooth=port in bluetooth or is_bluetooth_port_info(port))
             for port, name in sorted(ports.items(), key=lambda item: self._port_sort_key(item[0]))
         ]
 
@@ -433,6 +481,8 @@ class SerialManager:
 
         for i in range(1, 257):
             port = f"COM{i}"
+            if is_known_bluetooth_port(port):
+                continue  # opening a Bluetooth SPP port blocks for seconds
             try:
                 s = serial.Serial(port=port, baudrate=115200, timeout=0.05, write_timeout=0.05)
                 s.close()
@@ -453,6 +503,8 @@ class SerialManager:
     def connect(self, port: str, baudrate: int = 115200) -> SerialResponse:
         if serial is None:
             return SerialResponse(False, error="pyserial is not installed. Please run: pip install pyserial")
+        if is_known_bluetooth_port(port):
+            return SerialResponse(False, error=f"{BLUETOOTH_PORT_ERROR} {port}")
 
         with self._lock:
             try:

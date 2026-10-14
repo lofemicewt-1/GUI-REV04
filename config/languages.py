@@ -292,6 +292,10 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "enable": "\u5f00\u542f",
 
         "connect": "\u8fde\u63a5",
+        "cancel_connect": "取消连接",
+        "connecting": "正在连接…",
+        "connect_cancelled": "已取消连接",
+        "bluetooth_port_refused": "{port} 是蓝牙串口，不是通讯板，已跳过，不会尝试打开。请选择通讯板的 USB 串口。",
         "disconnect": "\u65ad\u5f00",
         "refresh_ports": "\u5237\u65b0\u4e32\u53e3",
         "serial_port": "\u4e32\u53e3",
@@ -998,6 +1002,10 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "enable": "Enable",
 
         "connect": "Connect",
+        "cancel_connect": "Cancel",
+        "connecting": "Connecting…",
+        "connect_cancelled": "Connection cancelled",
+        "bluetooth_port_refused": "{port} is a Bluetooth serial port, not the communication board; it was skipped and will not be opened. Please select the board's USB serial port.",
         "disconnect": "Disconnect",
         "refresh_ports": "Refresh Ports",
         "serial_port": "Serial Port",

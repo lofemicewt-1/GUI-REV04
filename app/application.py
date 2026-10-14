@@ -36,7 +36,7 @@ from core.continuous_register_read import (
     run_continuous_register_reads,
 )
 from core.local_i2c_bridge import LocalI2cBridge
-from core.serial_manager import SerialManager, SerialRouter
+from core.serial_manager import BLUETOOTH_PORT_ERROR, SerialManager, SerialRouter, is_known_bluetooth_port
 from pages.base_page import BasePage, VerticalScrollArea, fit_toplevel_to_screen
 from pages.awp1018_page import AWP1018Page
 from pages.awp1221_page import AWP1221Page
@@ -46,6 +46,14 @@ from styles.theme import apply_theme
 
 
 CONNECT_RESULT_POLL_MS = 25
+
+
+@dataclass
+class _ConnectAttempt:
+    port: str
+    cancelled: threading.Event = field(default_factory=threading.Event)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    result: SerialResponse | None = None
 
 
 @dataclass
@@ -1414,6 +1422,7 @@ class HomePage(BasePage):
 
     def _apply_port_info(self, port_info: Any) -> None:
         self.port_names = {info.device: info.name for info in port_info}
+        self._bluetooth_ports = {info.device for info in port_info if getattr(info, "bluetooth", False)}
         ports = [info.device for info in port_info]
         current = self.port_var.get().strip()
         is_port_connected = self._is_selected_port_connected(current)
@@ -1425,7 +1434,8 @@ class HomePage(BasePage):
             self.port_combo.configure(values=ports)
 
         if ports and (not current or (current not in ports and not is_port_connected)):
-            self.port_var.set(ports[0])
+            preferred = [p for p in ports if p not in self._bluetooth_ports]
+            self.port_var.set((preferred or ports)[0])
 
         operation = getattr(self, "_continuous_read_operation", None)
         selected_now = self.port_var.get().strip()
@@ -1567,6 +1577,9 @@ class HomePage(BasePage):
         self.refresh_language()
 
     def toggle_connection(self) -> None:
+        if getattr(self, "_connect_attempt", None) is not None:
+            self.cancel_connection()
+            return
         port = self.port_var.get().strip()
         self._cancel_continuous_read("connection_changed")
         if self._is_selected_port_connected(port):
@@ -1584,6 +1597,11 @@ class HomePage(BasePage):
         if not port:
             messagebox.showwarning(self.tr("error"), self.tr("no_ports_found"))
             return
+        if self._is_bluetooth_port(port):
+            # Never try to open a Bluetooth SPP port: Windows blocks for
+            # seconds reaching the paired device and it is never the board.
+            messagebox.showwarning(self.tr("error"), self.tr("bluetooth_port_refused", port=port))
+            return
 
         try:
             baudrate = int(self.baud_var.get())
@@ -1591,46 +1609,77 @@ class HomePage(BasePage):
             baudrate = self.ctx.state.baudrate
         self.ctx.state.baudrate = baudrate
 
-        # Opening a port can block for seconds (e.g. a Bluetooth SPP COM port
-        # tries to reach its paired device; the handshake then hits the write
-        # timeout).  Run it off the Tk thread so the window keeps repainting
-        # and resizing; the result is applied on the main thread below.
-        if getattr(self, "_connect_inflight", False):
-            return
-        self._connect_inflight = True
-        try:
-            self.connect_btn.state(["disabled"])
-        except tk.TclError:
-            pass
-        results: Queue[SerialResponse] = Queue(maxsize=1)
+        # Opening a port can block for seconds.  Run it off the Tk thread so
+        # the window keeps repainting; the user can cancel at any time, the
+        # UI returns immediately and a late result is discarded (and its port
+        # closed) by the worker itself.
+        attempt = _ConnectAttempt(port=port)
+        previous = getattr(self, "_connect_previous_thread", None)
+        self._connect_attempt = attempt
         serial_router = self.ctx.serial
 
         def connect_worker() -> None:
-            try:
-                response = serial_router.connect(port, baudrate)
-            except Exception as exc:  # never leave the button disabled
-                response = SerialResponse(False, error=str(exc))
-            results.put(response)
+            if previous is not None and previous.is_alive():
+                previous.join()  # a cancelled attempt must finish its cleanup first
+            response: SerialResponse
+            if attempt.cancelled.is_set():
+                response = SerialResponse(False, error="cancelled")
+            else:
+                try:
+                    response = serial_router.connect(port, baudrate)
+                except Exception as exc:  # never leave the UI waiting
+                    response = SerialResponse(False, error=str(exc))
+            with attempt.lock:
+                late = attempt.cancelled.is_set()
+                if not late:
+                    attempt.result = response
+            if late and response.ok:
+                try:
+                    serial_router.disconnect(port)
+                except Exception:
+                    pass
 
-        threading.Thread(target=connect_worker, daemon=True, name="serial-connect").start()
-        self.after(CONNECT_RESULT_POLL_MS, self._finish_connect_attempt, port, results)
+        thread = threading.Thread(target=connect_worker, daemon=True, name="serial-connect")
+        self._connect_previous_thread = thread
+        thread.start()
+        self.ctx.state.extra["connection_detail"] = f"{port}: {self.tr('connecting')}"
+        self.refresh_language()
+        self.after(CONNECT_RESULT_POLL_MS, self._finish_connect_attempt, attempt)
 
-    def _finish_connect_attempt(self, port: str, results: "Queue[SerialResponse]") -> None:
-        try:
-            resp = results.get_nowait()
-        except Empty:
+    def cancel_connection(self) -> None:
+        attempt = getattr(self, "_connect_attempt", None)
+        if attempt is None:
+            return
+        with attempt.lock:
+            attempt.cancelled.set()
+        self._connect_attempt = None
+        self.ctx.state.extra["connection_detail"] = f"{attempt.port}: {self.tr('connect_cancelled')}"
+        self.refresh_language()
+
+    def _is_bluetooth_port(self, port: str) -> bool:
+        if getattr(self, "_bluetooth_ports", set()) and port in self._bluetooth_ports:
+            return True
+        return is_known_bluetooth_port(port)
+
+    def _finish_connect_attempt(self, attempt: "_ConnectAttempt") -> None:
+        if attempt.cancelled.is_set() or getattr(self, "_connect_attempt", None) is not attempt:
+            return  # cancelled: the worker discards and closes on its own
+        with attempt.lock:
+            resp = attempt.result
+        if resp is None:
             try:
-                self.after(CONNECT_RESULT_POLL_MS, self._finish_connect_attempt, port, results)
+                self.after(CONNECT_RESULT_POLL_MS, self._finish_connect_attempt, attempt)
             except tk.TclError:
                 pass
             return
-        self._connect_inflight = False
+        self._connect_attempt = None
+        port = attempt.port
         try:
             if not self.winfo_exists():
                 return
-            self.connect_btn.state(["!disabled"])
         except tk.TclError:
             return
+        self.ctx.state.extra.pop("connection_detail", None)
         if resp.ok:
             self._serial_disconnect_error_by_port.pop(port, None)
             self.ctx.state.serial_connected = True
@@ -1638,6 +1687,8 @@ class HomePage(BasePage):
             self.ctx.state.extra["selected_port_name"] = self.port_names.get(port, port)
             self.ctx.state.extra["connection_detail"] = f"{port}: {resp.data}"
             self._finish_connection_when_ready(port)
+        elif str(resp.error).startswith(BLUETOOTH_PORT_ERROR):
+            messagebox.showwarning(self.tr("error"), self.tr("bluetooth_port_refused", port=port))
         else:
             messagebox.showerror(self.tr("error"), resp.error)
 
@@ -2402,7 +2453,13 @@ class HomePage(BasePage):
         self.i2c_btn.configure(text=t(lang, "apply_i2c_speed"))
         self.current_port_name_label.configure(text=f"{t(lang, 'current_serial_name')}:")
         self.refresh_btn.configure(text=t(lang, "refresh_ports"))
-        self.connect_btn.configure(text=t(lang, "disconnect") if self._is_selected_port_connected() else t(lang, "connect"))
+        if getattr(self, "_connect_attempt", None) is not None:
+            connect_text = t(lang, "cancel_connect")
+        elif self._is_selected_port_connected():
+            connect_text = t(lang, "disconnect")
+        else:
+            connect_text = t(lang, "connect")
+        self.connect_btn.configure(text=connect_text)
 
         self.device_addr_label.configure(text=t(lang, "device_addr"))
         self.reg_addr_label.configure(text=t(lang, "reg_addr"))
@@ -3369,6 +3426,9 @@ class PiezoApplication:
                 pass
             self._resize_after = None
         home_page = getattr(getattr(self, "navigation", None), "pages", {}).get("home")
+        cancel_connect = getattr(home_page, "cancel_connection", None)
+        if callable(cancel_connect):
+            cancel_connect()
         cancel_continuous_read = getattr(home_page, "cancel_continuous_read", None)
         if callable(cancel_continuous_read):
             cancel_continuous_read("application_closing")
