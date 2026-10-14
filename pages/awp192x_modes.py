@@ -4568,7 +4568,7 @@ class FullModePage(ButtonModePage):
         read_btn = ttk.Button(body, text=self.tr("adc_read_value"), style="Primary.TButton", command=self.read_adc_detect_value)
         read_btn.grid(row=2, column=0, columnspan=2, sticky="ew", padx=16, pady=(12, 8))
 
-        result_label = ttk.Label(body, textvariable=self._adc_detect_result_var, style="Panel.TLabel")
+        result_label = self.mark_digits(ttk.Label(body, textvariable=self._adc_detect_result_var, style="Panel.TLabel"))
         result_label.grid(row=3, column=0, columnspan=2, sticky="w", padx=16, pady=(8, 16))
 
         self.start_adc_detect_monitor(reset_records=True)

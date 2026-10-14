@@ -10,7 +10,10 @@ from typing import Any
 from config.app_info import APP_VERSION, USER_GUIDE_URL
 from config.languages import t
 from styles.fonts import sidebar_brand_font_spec
+import os
+
 from core import animation as anim
+from core.text_wrap import guard_orphans
 from styles.theme import BRAND_ENLARGE, logo_asset, scale_photoimage
 
 
@@ -248,6 +251,7 @@ class Navigation:
             return
 
         current_name = self.ctx.state.current_page
+        fading = current_name != name and self._begin_page_fade()
         if current_name != name:
             current_page = self.pages.get(current_name)
             if current_page is not None and hasattr(current_page, "on_hide"):
@@ -270,6 +274,99 @@ class Navigation:
             page.on_show()
         self._sync_mode_buttons(page)
         self._sync_content_window()
+        if not getattr(page, "_piezo_orphans_guarded", False):
+            page._piezo_orphans_guarded = True  # type: ignore[attr-defined]
+            guard_orphans(page)
+        if fading:
+            self._run_page_fade()
+
+    # -- page fade-in ------------------------------------------------------
+    # Tk cannot blend a widget, so a borderless toplevel in the background
+    # colour covers the content area (alpha 1) while the new page is laid
+    # out, then fades to alpha 0 (DUR_BASE, ease-out).  The overlay stays
+    # mapped but parked off-screen between fades: re-showing a toplevel can
+    # activate it on Windows, moving one cannot.  Needs a compositor for
+    # alpha: on by default on Windows/macOS; on X11 only with PIEZO_X11_FADE=1.
+    def _page_fade_capable(self) -> bool:
+        cached = getattr(self, "_fade_capable", None)
+        if cached is None:
+            try:
+                ws = str(self.root.tk.call("tk", "windowingsystem"))
+            except tk.TclError:
+                ws = ""
+            cached = ws in {"win32", "aqua"} or os.environ.get("PIEZO_X11_FADE") == "1"
+            self._fade_capable = cached
+        return cached
+
+    def _fade_overlay_window(self) -> tk.Toplevel | None:
+        overlay = getattr(self, "_fade_overlay", None)
+        if overlay is not None:
+            return overlay
+        try:
+            overlay = tk.Toplevel(self.root, bg=self.ctx.colors["bg"], bd=0, highlightthickness=0)
+            overlay.withdraw()
+            overlay.overrideredirect(True)
+            overlay.attributes("-alpha", 0.0)
+            overlay.geometry("1x1+-32000+-32000")
+            overlay.deiconify()
+        except tk.TclError:
+            self._fade_capable = False
+            return None
+        self._fade_overlay = overlay
+        return overlay
+
+    def _park_fade_overlay(self) -> None:
+        overlay = getattr(self, "_fade_overlay", None)
+        if overlay is None:
+            return
+        try:
+            overlay.attributes("-alpha", 0.0)
+            # Keep the size, only move it away: re-sizing every switch costs
+            # a full Configure/Expose of the overlay.
+            overlay.geometry("+-32000+-32000")
+        except tk.TclError:
+            pass
+
+    def _begin_page_fade(self) -> bool:
+        animator = anim.animator_for(self.root)
+        if animator is None or not animator.enabled or not self._page_fade_capable():
+            return False
+        try:
+            if not self.root.winfo_viewable():
+                return False
+            canvas = self.content_canvas
+            x, y = canvas.winfo_rootx(), canvas.winfo_rooty()
+            w, h = canvas.winfo_width(), canvas.winfo_height()
+        except tk.TclError:
+            return False
+        if w <= 1 or h <= 1:
+            return False
+        overlay = self._fade_overlay_window()
+        if overlay is None:
+            return False
+        try:
+            overlay.configure(bg=self.ctx.colors["bg"])
+            overlay.attributes("-alpha", 1.0)
+            if (overlay.winfo_width(), overlay.winfo_height()) != (w, h):
+                overlay.geometry(f"{w}x{h}+{x}+{y}")
+            else:
+                overlay.geometry(f"+{x}+{y}")
+            overlay.tk.call("raise", overlay._w, self.root._w)
+        except tk.TclError:
+            return False
+        return True
+
+    def _run_page_fade(self) -> None:
+        animator = anim.animator_for(self.root)
+        overlay = getattr(self, "_fade_overlay", None)
+        if animator is None or overlay is None:
+            self._park_fade_overlay()
+            return
+
+        def step(p: float) -> None:
+            overlay.attributes("-alpha", max(0.0, 1.0 - p))
+
+        animator.animate("page-fade", anim.DUR_BASE, step, ease=anim.EASE_OUT, done=self._park_fade_overlay)
 
     def _sync_content_window_immediately(self) -> None:
         if self._sync_after is not None:

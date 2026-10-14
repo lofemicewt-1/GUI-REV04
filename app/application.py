@@ -44,6 +44,7 @@ from pages.awp1018_page import AWP1018Page
 from pages.awp1221_page import AWP1221Page
 from pages.awp1922_page import AWP1922Page
 from pages.chip_pages import AWP1921AWP1923Page
+from styles.fonts import digits_font, page_title_weight
 from styles.theme import apply_theme
 
 
@@ -2685,6 +2686,14 @@ class ContinuousRegisterReadDialog(tk.Toplevel):
         self.close_button.grid(row=0, column=2)
 
         self.counts_label = ttk.Label(body, textvariable=self.counts_var, style="Panel.TLabel")
+        self.counts_label._piezo_digits = True  # type: ignore[attr-defined]
+        try:
+            _root = self.counts_label.winfo_toplevel()._root()
+            self.counts_label.configure(
+                font=digits_font(_root, "Microsoft YaHei UI", int(getattr(_root, "_piezo_body_font_size", 10)))
+            )
+        except tk.TclError:
+            pass
         self.counts_label.grid(row=11, column=0, columnspan=4, sticky="w", pady=(6, 2))
         self.status_label = ttk.Label(body, textvariable=self.status_var, style="Muted.TLabel")
         self.status_label.grid(row=12, column=0, columnspan=4, sticky="w", pady=(0, 6))
@@ -3415,6 +3424,8 @@ class PiezoApplication:
             flags_cache[key] = result
             return result
 
+        digits = digits_font(self.root, "Microsoft YaHei UI", body_size)
+
         def apply(widget: tk.Misc) -> None:
             try:
                 style_name = widget.cget("style") if isinstance(widget, ttk.Widget) else ""
@@ -3426,13 +3437,18 @@ class PiezoApplication:
 
             if isinstance(widget, tk.Text):
                 font = ("Consolas", mono_size)
+            elif isinstance(widget, (ttk.Entry, tk.Entry)) and not isinstance(widget, (ttk.Combobox, ttk.Spinbox)) or getattr(widget, "_piezo_digits", False):
+                # Numeric readouts/inputs: tabular digits so values don't jitter.
+                font = (digits[0], digits[1], *(("bold",) if bold else ()))
             elif isinstance(widget, ttk.Label):
                 if style_name in {"Wordmark.TLabel", "ChipTitle.TLabel"}:
                     font = None
                 elif style_name == "Prominent.TLabel":
                     prominent_size = int(getattr(self.root, "_piezo_prominent_title_font_size", title_size + 1))
-                    font = ("Microsoft YaHei UI", prominent_size, "bold", *(() if not underline else ("underline",)))
-                elif style_name in {"Title.TLabel", "PanelTitle.TLabel"}:
+                    font = ("Microsoft YaHei UI", prominent_size, page_title_weight(self.root), *(() if not underline else ("underline",)))
+                elif style_name == "Title.TLabel":
+                    font = ("Microsoft YaHei UI", title_size, page_title_weight(self.root), *(() if not underline else ("underline",)))
+                elif style_name == "PanelTitle.TLabel":
                     font = ("Microsoft YaHei UI", title_size, "bold", *(() if not underline else ("underline",)))
                 elif style_name == "SectionTitle.TLabel":
                     font = ("Microsoft YaHei UI", body_size, "bold", *(() if not underline else ("underline",)))

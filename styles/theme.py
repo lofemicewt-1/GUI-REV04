@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from styles.fonts import page_title_weight
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
@@ -746,6 +747,11 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
     对 ttk 和普通 Tk 组件应用统一主题。
     """
     colors = get_colors(theme)
+    try:
+        root.winfo_toplevel()._piezo_theme = theme  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    title_weight = page_title_weight(root)
     selected_bg = colors["primary_hover"]
     selected_edge = "#1E40AF" if theme != "dark" else "#1E3A8A"
     sidebar_selected_fill = selected_bg if theme != "dark" else "#2871FA"
@@ -829,20 +835,20 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
         "Title.TLabel",
         background=colors["bg"],
         foreground=colors["text"],
-        font=("Microsoft YaHei UI", title_size, "bold"),
+        font=("Microsoft YaHei UI", title_size, title_weight),
     )
     style.configure(
         "Prominent.TLabel",
         background=colors["bg"],
         foreground=colors["text"],
-        font=("Microsoft YaHei UI", prominent_size, "bold"),
+        font=("Microsoft YaHei UI", prominent_size, title_weight),
     )
     chip_title_size = int(getattr(root, "_piezo_chip_title_font_size", 0) or max(prominent_size, 28))
     style.configure(
         "ChipTitle.TLabel",
         background=colors["bg"],
         foreground=colors["text"],
-        font=("Microsoft YaHei UI", chip_title_size, "bold"),
+        font=("Microsoft YaHei UI", chip_title_size, title_weight),
     )
     style.configure(
         "Wordmark.TLabel",

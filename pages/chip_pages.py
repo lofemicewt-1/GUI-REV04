@@ -1183,7 +1183,7 @@ class AWP1744AWP1766PumpModePage(BasePage):
         actual_label.grid(row=1, column=2, sticky="w", padx=(18, 10), pady=8)
         self._labels["awp1744_awp1766_actual_voltage"] = actual_label
 
-        ttk.Label(panel, textvariable=self.actual_voltage_var, style="Panel.TLabel").grid(
+        self.mark_digits(ttk.Label(panel, textvariable=self.actual_voltage_var, style="Panel.TLabel")).grid(
             row=1,
             column=3,
             sticky="w",
@@ -1194,7 +1194,7 @@ class AWP1744AWP1766PumpModePage(BasePage):
         freq_label.grid(row=2, column=0, sticky="w", padx=(0, 10), pady=8)
         self._labels["chip_frequency"] = freq_label
 
-        ttk.Label(panel, textvariable=self.frequency_var, style="Panel.TLabel").grid(
+        self.mark_digits(ttk.Label(panel, textvariable=self.frequency_var, style="Panel.TLabel")).grid(
             row=2,
             column=1,
             sticky="w",

@@ -10,7 +10,7 @@ from typing import Any
 
 from config.app_info import CHIP_WEBSITE_URLS
 from config.languages import t
-from styles.fonts import sidebar_brand_font_spec
+from styles.fonts import digits_font, page_title_weight, sidebar_brand_font_spec
 from core.ui_dispatch import post_to_ui
 
 
@@ -682,7 +682,7 @@ class BasePage(ttk.Frame):
             self._make_linked_title_part(title_group, "AWP1921", "awp1921", 0, title_style)
             slash = ttk.Label(title_group, text="/", style=title_style)
             slash.grid(row=0, column=1, sticky="w")
-            slash.configure(font=("Microsoft YaHei UI", self._chip_title_size(), "bold"))
+            slash.configure(font=("Microsoft YaHei UI", self._chip_title_size(), page_title_weight(self)))
             self._chip_title_labels.append(slash)
             self._make_linked_title_part(title_group, "AWP1923", "awp1923", 2, title_style)
         else:
@@ -738,8 +738,19 @@ class BasePage(ttk.Frame):
         else:
             size_name = "_piezo_prominent_title_font_size" if style_name == "Prominent.TLabel" else "_piezo_title_font_size"
             size = int(getattr(self.winfo_toplevel(), size_name, 18))
-        title.configure(cursor="hand2", font=("Microsoft YaHei UI", size, "bold", "underline"))
+        title.configure(cursor="hand2", font=("Microsoft YaHei UI", size, page_title_weight(self), "underline"))
         title.bind("<Button-1>", lambda _event, link=url: webbrowser.open(link))
+
+    def mark_digits(self, widget: tk.Misc) -> tk.Misc:
+        """Show a numeric readout with tabular (monospace) digits."""
+        widget._piezo_digits = True  # type: ignore[attr-defined]
+        root = self.winfo_toplevel()
+        body = int(getattr(root, "_piezo_body_font_size", getattr(self.ctx.state, "font_size", 10)))
+        try:
+            widget.configure(font=digits_font(self, "Microsoft YaHei UI", body))
+        except tk.TclError:
+            pass
+        return widget
 
     def _set_button_selected(self, key: str, selected: bool) -> None:
         buttons = getattr(self, "_buttons", {})
@@ -779,7 +790,8 @@ class BasePage(ttk.Frame):
             try:
                 current = str(title.cget("font"))
                 underlined = "underline" in current
-                font: tuple[Any, ...] = ("Microsoft YaHei UI", size, "bold", "underline") if underlined else ("Microsoft YaHei UI", size, "bold")
+                weight = page_title_weight(self)
+                font: tuple[Any, ...] = ("Microsoft YaHei UI", size, weight, "underline") if underlined else ("Microsoft YaHei UI", size, weight)
                 title.configure(font=font)
             except tk.TclError:
                 continue
