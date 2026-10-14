@@ -13,9 +13,10 @@ from styles.fonts import sidebar_brand_font_spec
 import os
 import time
 
-# Stacked pages (default): see Navigation.show.  PIEZO_PAGE_STACK=0 restores
-# the old grid/grid_remove switching.
-_PAGE_STACK = os.environ.get("PIEZO_PAGE_STACK", "1") != "0"
+# Stacked pages (opt-in, PIEZO_PAGE_STACK=1): see Navigation.show.
+# Off by default: on Windows, mapped-but-covered pages made every layout
+# pass (update_idletasks) and text prep much slower (56fac66 field log).
+_PAGE_STACK = os.environ.get("PIEZO_PAGE_STACK", "0") == "1"
 
 from core import animation as anim
 from core.text_wrap import guard_orphans
@@ -332,15 +333,36 @@ class Navigation:
         """Run the size-dependent text steps synchronously for the page being
         shown (normally driven by <Configure> after it is visible): nested
         scroll-area widths, wrapping bars, orphan guard, header wordmark.
-        Only the shown page is touched; hidden pages catch up when shown."""
+        Only the shown page is touched; hidden pages catch up when shown.
+        Skipped entirely when nothing it depends on changed since the page
+        was last prepared (same canvas size, theme, language, font size)."""
+        state = self.ctx.state
+        try:
+            key = (
+                self.content_canvas.winfo_width(),
+                self.content_canvas.winfo_height(),
+                getattr(state, "theme", None),
+                getattr(state, "language", None),
+                getattr(state, "font_size", None),
+                getattr(state, "ui_scale", None),
+            )
+        except tk.TclError:
+            return
+        if getattr(page, "_piezo_prep_key", None) == key:
+            anim.debug_log("text prep: skipped (layout key unchanged)")
+            return
+        page._piezo_prep_key = key  # type: ignore[attr-defined]
+        p0 = time.perf_counter()
         try:
             self.root.update_idletasks()
         except tk.TclError:
             return
+        p1 = time.perf_counter()
         first = not getattr(page, "_piezo_orphans_guarded", False)
         if first:
             page._piezo_orphans_guarded = True  # type: ignore[attr-defined]
             guard_orphans(page)
+        p2 = time.perf_counter()
         synced = False
         stack: list[tk.Misc] = [page]
         while stack:
@@ -366,6 +388,7 @@ class Navigation:
                     reflow(max(1, widget.winfo_width()))
                 except tk.TclError:
                     pass
+        p3 = time.perf_counter()
         configure_logo = getattr(page, "_configure_header_logo", None)
         if callable(configure_logo):
             for logo in list(getattr(page, "_logo_widgets", []) or []):
@@ -373,11 +396,18 @@ class Navigation:
                     configure_logo(logo)
                 except tk.TclError:
                     pass
+        p4 = time.perf_counter()
         if synced:
             try:
                 page.update_idletasks()
             except tk.TclError:
                 pass
+        p5 = time.perf_counter()
+        anim.debug_log(
+            f"text prep spans: update_idletasks {(p1 - p0) * 1000:.1f}, orphan guard (first) {(p2 - p1) * 1000:.1f}, "
+            f"walk scroll/rewrap/reflow {(p3 - p2) * 1000:.1f}, header logo {(p4 - p3) * 1000:.1f}, "
+            f"update_idletasks {(p5 - p4) * 1000:.1f}"
+        )
 
     def _page_transition_mode(self) -> str:
         """slide (default, in-window, works everywhere) | fade (overlay

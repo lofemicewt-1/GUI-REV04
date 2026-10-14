@@ -3302,17 +3302,29 @@ class PiezoApplication:
             pass
 
     def _register_pages(self) -> None:
-        self.navigation.add_page("home", "home", HomePage(self.navigation.content, self.ctx))
-        self.navigation.add_page("awp1921_1923", "awp1921_1923", AWP1921AWP1923Page(self.navigation.content, self.ctx))
-        self.navigation.add_page("awp1922", "awp1922", AWP1922Page(self.navigation.content, self.ctx))
-        self.navigation.add_page("awp1018", "awp1018", AWP1018Page(self.navigation.content, self.ctx))
-        self.navigation.add_page("awp1221", "awp1221", AWP1221Page(self.navigation.content, self.ctx))
-        self.navigation.add_page(
-            "settings",
-            "settings",
-            SettingsPage(self.navigation.content, self.ctx),
-            sidebar_button=False,
-        )
+        from core import animation as _anim
+        spans: list[str] = []
+
+        def build(name: str, cls: Any, **kw: Any) -> None:
+            t0 = time.perf_counter()
+            page = cls(self.navigation.content, self.ctx)
+            t1 = time.perf_counter()
+            self.navigation.add_page(name, name, page, **kw)
+            if _anim.DEBUG:
+                count, stack = 0, [page]
+                while stack:
+                    w = stack.pop()
+                    count += 1
+                    stack.extend(w.winfo_children())
+                spans.append(f"{name} {(t1 - t0) * 1000:.0f}ms/{count} widgets (+add {(time.perf_counter() - t1) * 1000:.0f})")
+
+        build("home", HomePage)
+        build("awp1921_1923", AWP1921AWP1923Page)
+        build("awp1922", AWP1922Page)
+        build("awp1018", AWP1018Page)
+        build("awp1221", AWP1221Page)
+        build("settings", SettingsPage, sidebar_button=False)
+        _anim.debug_log("build pages: " + ", ".join(spans))
 
     def set_language(self, language: str) -> None:
         if language not in {"zh", "en"}:
