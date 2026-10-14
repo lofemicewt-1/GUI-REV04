@@ -1644,18 +1644,45 @@ class HomePage(BasePage):
         self._connect_previous_thread = thread
         thread.start()
         self.ctx.state.extra["connection_detail"] = f"{port}: {self.tr('connecting')}"
-        self.refresh_language()
+        self._refresh_connect_controls()
         self.after(CONNECT_RESULT_POLL_MS, self._finish_connect_attempt, attempt)
 
     def cancel_connection(self) -> None:
         attempt = getattr(self, "_connect_attempt", None)
         if attempt is None:
             return
+        # Main thread: flags only.  No serial object, no thread join, no lock
+        # that the connecting thread can hold (attempt.lock is only ever held
+        # for a field swap).  The worker closes the port when it returns.
         with attempt.lock:
             attempt.cancelled.set()
+        canceller = getattr(self.ctx.serial, "cancel_connect", None)
+        if callable(canceller):
+            try:
+                canceller(attempt.port)  # sets an Event; never blocks
+            except Exception:
+                pass
         self._connect_attempt = None
         self.ctx.state.extra["connection_detail"] = f"{attempt.port}: {self.tr('connect_cancelled')}"
-        self.refresh_language()
+        self._refresh_connect_controls()
+
+    def _refresh_connect_controls(self) -> None:
+        """Cheap update of the connect button and status line only."""
+        lang = self.language
+        if getattr(self, "_connect_attempt", None) is not None:
+            text = t(lang, "cancel_connect")
+        elif self._is_selected_port_connected():
+            text = t(lang, "disconnect")
+        else:
+            text = t(lang, "connect")
+        status = t(lang, "connected") if self.ctx.serial.is_connected else t(lang, "disconnected")
+        detail = self.ctx.state.extra.get("connection_detail", "")
+        suffix = f" | {detail}" if detail else ""
+        try:
+            self.connect_btn.configure(text=text)
+            self.status_label.configure(text=f"{t(lang, 'status')}: {status}{suffix}")
+        except tk.TclError:
+            pass
 
     def _is_bluetooth_port(self, port: str) -> bool:
         if getattr(self, "_bluetooth_ports", set()) and port in self._bluetooth_ports:

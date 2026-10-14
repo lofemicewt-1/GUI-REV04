@@ -76,3 +76,4 @@
 - Linux 实测（2560×1440，1.5× 缩放）：最大化重排 master 126–151 ms，audit-fixes 68–103 ms，无多秒卡顿。
 - 蓝牙串口：枚举时按描述/hwid/厂商含 “Bluetooth”/“蓝牙”/BTHENUM/BTHMODEM，或设备名 rfcomm* 识别为蓝牙口。`SerialManager.connect()` 直接拒绝（不打开），首页连接弹出明确提示；Windows COM 兜底扫描跳过已知蓝牙口；默认选中第一个非蓝牙口。
 - 连接可取消：连接中按钮变为“取消连接”，点击立即恢复界面并丢弃迟到结果；后台线程返回后若已打开则自动关闭端口；再次连接会等前一次后台清理完成后再打开（在后台线程中等待，不阻塞界面）。握手阶段无法中途打断，只能等其超时后关闭。
+- 取消连接卡死（cde9015 的问题）：握手期间（CH340 打开 → Nano 复位 → 等 READY，最长 30 s）`SerialManager.connect()` 持有 `_lock`，而 `is_connected` 已为真 → 按钮刷新成“断开”；点“断开”/后续操作在主线程 `disconnect()` 等 `_lock` → 未响应。修复：连接期间 `is_connected=False`（新增 `is_connecting`）；`cancel_connect()` 只置 Event；其他线程调用 `disconnect()` 遇到连接中只发取消、立即返回；握手各等待循环每 ≤0.2 s 检查取消，由连接线程自己关闭端口；握手写超时 0.3 s；连接/取消点击只刷新按钮与状态行。
