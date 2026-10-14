@@ -73,7 +73,7 @@ def _pixels(widget: tk.Misc, value: Any) -> int:
         return 0
 
 
-_FONT_CACHE: dict[tuple[str, str], tkfont.Font] = {}
+_FONT_CACHE: dict[tuple[str, str, str], Callable[[str], int]] = {}
 
 
 def _measurer(label: tk.Misc) -> Callable[[str], int]:
@@ -81,11 +81,30 @@ def _measurer(label: tk.Misc) -> Callable[[str], int]:
     if not spec:
         style = str(label.cget("style") or "TLabel")
         spec = str(label.tk.call("ttk::style", "lookup", style, "-font") or "TkDefaultFont")
-    key = (str(label.tk), spec)
-    font = _FONT_CACHE.get(key)
-    if font is None:
-        font = _FONT_CACHE[key] = tkfont.Font(root=label, font=spec)
-    return font.measure
+    try:
+        scaling = str(label.tk.call("tk", "scaling"))
+    except tk.TclError:
+        scaling = ""
+    key = (str(label.tk), spec, scaling)
+    measure = _FONT_CACHE.get(key)
+    if measure is None:
+        font = tkfont.Font(root=label, font=spec)
+        glyphs: dict[str, int] = {}
+
+        def measure(text: str, _font: tkfont.Font = font, _g: dict[str, int] = glyphs) -> int:
+            # Sum of cached per-character advances: each glyph is measured
+            # once per font (labels have no kerning-sensitive Latin runs at
+            # wrap points that matter), so wrapping a page costs ~no Tk calls.
+            total = 0
+            for ch in text:
+                w = _g.get(ch)
+                if w is None:
+                    w = _g[ch] = _font.measure(ch)
+                total += w
+            return total
+
+        _FONT_CACHE[key] = measure
+    return measure
 
 
 class OrphanGuard:
@@ -93,6 +112,7 @@ class OrphanGuard:
         self.label = label
         self.source = str(label.cget("text"))
         self.applied: str | None = None
+        self._key: tuple[Any, ...] | None = None
         self._configure = label.configure
         label.configure = self.configure  # type: ignore[method-assign]
         label.config = self.configure  # type: ignore[method-assign]
@@ -117,12 +137,37 @@ class OrphanGuard:
         label = self.label
         try:
             width = _pixels(label, label.cget("wraplength"))
-            text = orphan_safe(self.source, _measurer(label), width)
+            measure = _measurer(label)
+            key = (self.source, width, id(measure))
+            if key == self._key:
+                return
+            text = orphan_safe(self.source, measure, width)
+            self._key = key
             if text != str(label.cget("text")):
                 self._configure(text=text)
             self.applied = text
         except tk.TclError:
             pass
+
+
+def widget_wraps(widget: tk.Misc) -> bool:
+    try:
+        return isinstance(widget, ttk.Label) and _pixels(widget, widget.cget("wraplength")) > 0
+    except tk.TclError:
+        return False
+
+
+def warm_glyphs(label: tk.Misc, deadline: float) -> bool:
+    """Measure the label's not-yet-cached glyphs until ``deadline``
+    (perf_counter).  True when every glyph is cached."""
+    import time
+
+    measure = _measurer(label)
+    for ch in set(str(label.cget("text"))):
+        measure(ch)
+        if time.perf_counter() >= deadline:
+            return False
+    return True
 
 
 def guard_orphans(root: tk.Misc, *, styles: tuple[str, ...] = ("Muted.TLabel", "Panel.TLabel", "TLabel")) -> int:

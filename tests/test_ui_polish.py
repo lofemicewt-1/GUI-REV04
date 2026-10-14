@@ -128,7 +128,7 @@ class AppPolishTests(unittest.TestCase):
 
             overlay.attributes = spy
             nav.show("home")
-            pump(self.app.root, 0.5)
+            pump(self.app.root, 1.0)
             self.assertEqual(alphas[0], 1.0)
             self.assertEqual(alphas[-1], 0.0)
             self.assertEqual(alphas, sorted(alphas, reverse=True))
@@ -183,3 +183,42 @@ def _walk(widget):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PageShowFinalFontsTests(unittest.TestCase):
+    def test_no_font_or_layout_change_after_page_is_revealed(self) -> None:
+        import tkinter.font as tf
+        from app.application import PiezoApplication
+        app = PiezoApplication()
+        try:
+            r = app.root
+            nav = app.navigation
+            r.geometry("1000x680+0+0"); pump(r, 0.3)
+            r.geometry("1700x1000+0+0"); pump(r, 0.3)
+            calls = {"families": 0}
+            orig = tf.families
+            def fam(*a, **k):
+                calls["families"] += 1
+                return orig(*a, **k)
+            with mock.patch.object(tf, "families", fam):
+                for name in nav.pages:
+                    if name == app.state.current_page:
+                        continue
+                    nav.show(name)
+                    r.update_idletasks()
+                    def snap(w, out):
+                        for c in w.winfo_children():
+                            keys = c.keys()
+                            out[str(c)] = (str(c.cget("font")) if "font" in keys else "",
+                                           str(c.cget("text")) if "text" in keys else "",
+                                           c.winfo_width(), c.winfo_height(), c.winfo_x(), c.winfo_y())
+                            snap(c, out)
+                        return out
+                    before = snap(nav.pages[name], {})
+                    pump(r, 0.4)
+                    after = snap(nav.pages[name], {})
+                    self.assertEqual(before, after, name)
+                    self.assertIsNone(nav._layout_cover.place_info().get("in"))
+            self.assertEqual(calls["families"], 0)
+        finally:
+            app.close()

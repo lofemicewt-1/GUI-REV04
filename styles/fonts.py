@@ -38,9 +38,22 @@ def register_bundled_fonts() -> None:
     _registered = True
 
 
+_FAMILIES_CACHE: dict[str, frozenset[str]] = {}
+
+
+def font_families(root: Any) -> frozenset[str]:
+    """``tkfont.families`` enumerates every installed font (slow on Windows);
+    the set does not change while the app runs, so read it once per root."""
+    key = str(getattr(root, "_w", root))
+    families = _FAMILIES_CACHE.get(key)
+    if families is None:
+        families = _FAMILIES_CACHE[key] = frozenset(tkfont.families(root))
+    return families
+
+
 def sidebar_brand_font_spec(root: Any) -> tuple[str, str]:
     register_bundled_fonts()
-    families = set(tkfont.families(root))
+    families = font_families(root)
     if "JetBrains Mono ExtraBold" in families:
         return ("JetBrains Mono ExtraBold", "normal")
     if "JetBrains Mono" in families:
@@ -83,7 +96,7 @@ def digits_font(root: Any, body_family: str, body_size: int) -> tuple[str, int]:
     cached = _digits_cache.get(key)
     if cached is not None:
         return cached
-    families = {name.lower(): name for name in tkfont.families(root)}
+    families = {name.lower(): name for name in font_families(root)}
     family = next((families[f.lower()] for f in _DIGIT_FAMILIES if f.lower() in families), "TkFixedFont")
     if family == "TkFixedFont":
         result = (family, int(body_size))

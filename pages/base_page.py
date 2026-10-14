@@ -440,6 +440,22 @@ _CHIP_TITLE_KEYS = {"awp1921_1923", "awp1921", "awp1923", "awp1922", "awp1018", 
 
 
 _FONT_SIZE_FOR_HEIGHT_CACHE: dict[tuple[Any, ...], int] = {}
+_WORDMARK_WIDTH_CACHE: dict[tuple[Any, ...], int] = {}
+
+
+def _wordmark_width(root: tk.Misc, family: str, size: int, weight: str) -> int:
+    """Width of the wordmark; memoized so no Font (Windows: GDI font) is
+    created per page switch / resize."""
+    try:
+        scaling = str(root.tk.call("tk", "scaling"))
+    except tk.TclError:
+        scaling = ""
+    key = (str(root), scaling, family, size, weight)
+    width = _WORDMARK_WIDTH_CACHE.get(key)
+    if width is None:
+        width = tkfont.Font(root=root, family=family, size=size, weight=weight).measure("PIEZO CONTROL")
+        _WORDMARK_WIDTH_CACHE[key] = width
+    return width
 
 
 def _font_size_for_pixel_height(root: tk.Misc, family: str, weight: str, target_px: int) -> int:
@@ -833,12 +849,10 @@ class BasePage(ttk.Frame):
         own_row = False
         if available > 0:
             while size > 16:
-                probe = tkfont.Font(root=self.winfo_toplevel(), family=family, size=size, weight=weight)
-                if probe.measure("PIEZO CONTROL") <= available:
+                if _wordmark_width(self.winfo_toplevel(), family, size, weight) <= available:
                     break
                 size -= 1
-            probe = tkfont.Font(root=self.winfo_toplevel(), family=family, size=size, weight=weight)
-            own_row = probe.measure("PIEZO CONTROL") > available
+            own_row = _wordmark_width(self.winfo_toplevel(), family, size, weight) > available
         text_color = self.ctx.colors.get("text", "#111827")
         key = ("wordmark", height, theme, text_color, size, own_row)
         if getattr(label, "_logo_key", None) == key:

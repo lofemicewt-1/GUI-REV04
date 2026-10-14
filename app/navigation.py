@@ -11,9 +11,10 @@ from config.app_info import APP_VERSION, USER_GUIDE_URL
 from config.languages import t
 from styles.fonts import sidebar_brand_font_spec
 import os
+import time
 
 from core import animation as anim
-from core.text_wrap import guard_orphans
+from core.text_wrap import guard_orphans, warm_glyphs, widget_wraps
 from styles.theme import BRAND_ENLARGE, logo_asset, scale_photoimage
 
 
@@ -262,6 +263,10 @@ class Navigation:
             page.grid_remove()
 
         page = self.pages[name]
+        t0 = time.perf_counter()
+        # Keep the page off screen while it is sized and its fonts/texts are
+        # finalised; reveal it in one paint (no visible font/re-layout pass).
+        covered = self._cover_content()
         page.grid()
         self.ctx.state.current_page = name
         self._refresh_button_styles()
@@ -274,14 +279,122 @@ class Navigation:
         if hasattr(page, "on_show"):
             page.on_show()
         self._sync_mode_buttons(page)
-        self._sync_content_window()
-        if not getattr(page, "_piezo_orphans_guarded", False):
-            page._piezo_orphans_guarded = True  # type: ignore[attr-defined]
-            guard_orphans(page)
+        t1 = time.perf_counter()
+        self.prepare_page_fonts(page)
+        t2 = time.perf_counter()
+        self._sync_content_window_immediately()
+        if covered:
+            self._uncover_content()
+        anim.debug_log(
+            f"show {name}: layout+on_show {(t1 - t0) * 1000:.1f} ms, font/text prep {(t2 - t1) * 1000:.1f} ms, "
+            f"final layout {(time.perf_counter() - t2) * 1000:.1f} ms (page covered until done)"
+        )
         if fading:
             self._run_page_fade()
         elif mode == "slide":
             self._run_page_slide()
+
+    def _cover_content(self) -> bool:
+        """Cover the content canvas with a plain background frame while the
+        page is laid out underneath (a hidden canvas item would not be sized)."""
+        try:
+            cover = getattr(self, "_layout_cover", None)
+            if cover is None:
+                cover = self._layout_cover = tk.Frame(self.content_canvas.master, bd=0, highlightthickness=0)
+            cover.configure(bg=self.ctx.colors.get("bg", "#FFFFFF"))
+            cover.place(in_=self.content_canvas, x=0, y=0, relwidth=1, relheight=1)
+            cover.lift(self.content_canvas)
+            return True
+        except tk.TclError:
+            return False
+
+    def _uncover_content(self) -> None:
+        cover = getattr(self, "_layout_cover", None)
+        if cover is not None:
+            try:
+                cover.place_forget()
+            except tk.TclError:
+                pass
+
+    def prepare_page_fonts(self, page: tk.Misc) -> None:
+        """Run every size-dependent font/text step synchronously (normally
+        driven by <Configure> after the page is visible): header wordmark
+        font, wrapping bars, orphan guard."""
+        if not getattr(page, "_piezo_orphans_guarded", False):
+            page._piezo_orphans_guarded = True  # type: ignore[attr-defined]
+            guard_orphans(page)
+        # Nested scroll areas take their width from their canvas <Configure>,
+        # which may be delivered only after the page is on screen; sync them
+        # now (outer first) so the reveal paints the final layout.
+        try:
+            page.update_idletasks()
+            queue: list[tk.Misc] = [page]
+            while queue:
+                widget = queue.pop(0)
+                sync = getattr(widget, "_sync_scroll_region", None)
+                if callable(sync) and hasattr(widget, "window_id"):
+                    sync()
+                    widget.update_idletasks()
+                queue.extend(widget.winfo_children())
+        except tk.TclError:
+            return
+        stack: list[tk.Misc] = [page]
+        while stack:
+            widget = stack.pop()
+            try:
+                stack.extend(widget.winfo_children())
+            except tk.TclError:
+                continue
+            guard = getattr(widget, "_piezo_orphan_guard", None)
+            if guard is not None:
+                guard.apply()
+            reflow = getattr(widget, "reflow", None)
+            if callable(reflow) and hasattr(widget, "_signature"):
+                try:
+                    reflow(max(1, widget.winfo_width()))
+                except tk.TclError:
+                    pass
+        configure_logo = getattr(page, "_configure_header_logo", None)
+        if callable(configure_logo):
+            for logo in list(getattr(page, "_logo_widgets", []) or []):
+                try:
+                    configure_logo(logo)
+                except tk.TclError:
+                    pass
+
+    def prewarm_pages(self, pending: list[tk.Misc] | None = None, started: float | None = None) -> None:
+        """Measure wrapped texts (orphan guard) of all pages ahead of time in
+        idle slices of <= 8 ms, so later page shows only reveal final text."""
+        if started is None:
+            started = time.perf_counter()
+        if pending is None:
+            pending = []
+            for page in self.pages.values():
+                stack = [page]
+                while stack:
+                    widget = stack.pop()
+                    stack.extend(widget.winfo_children())
+                    if isinstance(widget, ttk.Label):
+                        pending.append(widget)
+        deadline = time.perf_counter() + 0.008
+        while pending and time.perf_counter() < deadline:
+            widget = pending[-1]
+            try:
+                if widget_wraps(widget) and not warm_glyphs(widget, deadline):
+                    break  # out of budget mid-label; continue next slice
+                pending.pop()
+                guard_orphans(widget)
+            except tk.TclError:
+                pending.pop()
+        if pending:
+            try:
+                self.root.after(16, self.prewarm_pages, pending, started)
+            except tk.TclError:
+                pass
+        else:
+            for page in self.pages.values():
+                page._piezo_orphans_guarded = True  # type: ignore[attr-defined]
+            anim.debug_log(f"prewarm wrapped texts done in {(time.perf_counter() - started) * 1000:.0f} ms (sliced)")
 
     def _page_transition_mode(self) -> str:
         """slide (default, in-window, works everywhere) | fade (overlay

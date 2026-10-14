@@ -91,3 +91,8 @@
 - Animator 每帧进度最多推进约 2 个标称帧：页面切换后首帧被重绘占用时动画变慢而不是直接跳到终点。
 - 页面过渡默认改为窗口内「上滑入场」（仅移动 canvas 窗口项 18px→0，不依赖 alpha 叠加窗口）；`PIEZO_PAGE_TRANSITION=fade|slide|none` 可切换，fade 叠加窗口改为 -topmost 并避免 Windows 的 -32000 最小化坐标。
 - 调试：`PIEZO_ANIM_DEBUG=1` 打印并写入 `%TEMP%/piezo_anim_debug.log`（每个动画的开始、结束耗时、帧数、首帧延迟）。
+
+### 切页「字体重排」修正（Windows 反馈）
+- 原因：每次切页都会走一遍依赖尺寸、在页面显示之后才执行的字体/文字处理：页头字标每次 `<Configure>` 都调 `tkfont.families()`（枚举全部系统字体，Windows 上慢）并新建 `Font()` 试测；CJK 防孤字的 guard 在页面已经画出来之后才挂上、才重新折行；嵌套滚动区的宽度要等之后的 `<Configure>` 才同步。
+- 修正：`font_families()` 缓存；字标宽度 memo；防孤字改为逐字形宽度缓存 + 结果 memo，并在启动后分片（每片 ≤8ms）预计算所有页面；`show()` 时用背景色遮罩盖住内容区，同步完成布局、嵌套滚动区、字标、折行、防孤字后再一次性揭开。
+- `PIEZO_ANIM_DEBUG=1` 时每次切页输出：布局+on_show / 字体文字准备 / 最终布局 耗时。
