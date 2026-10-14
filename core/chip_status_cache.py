@@ -619,16 +619,6 @@ def build_monitor_body(slot: int, enabled: bool) -> str:
     return f"MON {slot} {'ON' if enabled else 'OFF'}"
 
 
-def build_stat_query() -> str:
-    """Return the read-only snapshot request; this function performs no I/O."""
-
-    return "^STAT?~"
-
-
-def build_stat_body() -> str:
-    return "STAT?"
-
-
 def build_session_command(session_id: int) -> str:
     if not (1 <= int(session_id) <= MAX_U32):
         raise ProtocolError("session must be a non-zero uint32")
@@ -1121,8 +1111,6 @@ __all__ = [
     "build_monitor_command",
     "build_session_body",
     "build_session_command",
-    "build_stat_body",
-    "build_stat_query",
     "build_tgt_body",
     "build_tgt_clear_body",
     "build_tgt_command",

@@ -17,6 +17,7 @@
 | 8 | `core/base_tool.py`、`pages/awp1922_page.py` | 地址 NACK 重试按错误码判断：带码时仅 `I2C 2` 重试；不带码的 `ERR WREGW I2C`（现固件）保持原重试；`WREGW STOP` 等不重试 | 向前兼容将来带码固件，避免对数据口重复写 |
 | 9 | `pages/awp1922_page.py` | AWP1922 0x00 写入新逻辑（见第二节） | 用户确认的需求 |
 | 10 | `tests/test_audit_awp1922_err.py` | AWP1922 逻辑（含关断状态、RO 位屏蔽）、ERR 解析/重试/上下文、AWP1221 0x50–0x57 回归测试 | — |
+| 12 | `app/application.py`、`core/serial_manager.py`、`core/chip_status_cache.py` | 删除全部 `STAT?` 使用及 FLAG 轮询死代码（`_start_flag_poll`/`_stop_flag_poll` 等 20 个方法、`_D2ScanRequest`、`read_status_snapshot`、`read_board_flag_for_poll`、`build_stat_*`、`d2_snapshot`/`snapshot` 结果分支、`not d2_scan` 分支、相关常量与状态字段，约 660 行） | 均不可达；保留 CAP FLAG3 + EVSTAT 路径与旧固件"需要 FLAG3 EVSTAT 固件"提示；`FLAG?` 手动接口 `read_board_flag` 保留 |
 | 11 | `core/base_tool.py` | 寄存器读写失败信息包含：命令、dev/reg/width/count、尝试次数、完整原始应答、原因、错误码及含义；同时写入串口日志 | 便于定位；"未连接/忙"等传输层错误文本保持不变（调用方按文本比较） |
 
 性能（1400×900，Xvfb）：首次进入芯片页 150–200 ms → 30–130 ms；之后切页 15–50 ms；主题切换 ~5 s → ~0.3 s；语言切换 ~250–380 ms（未改）。
@@ -45,16 +46,12 @@
 - RREGW 失败 `^ERR RREGW I2C <code>~`，code：1 过长、2 地址 NACK、3 数据 NACK、4 其他、5 超时、6 读不足、7 长度非法。WREGW 失败目前**不带码**（`^ERR WREGW I2C~`，也覆盖"停止 192x runtime 失败"）。
 - CFG：记录 128/256 字节，CRC16-CCITT-FALSE（init 0xFFFF）；Type-4 必须 256 字节；EEPROM 槽地址 256 + slot×256（共 3 槽，至 1024 字节）。
 - 就绪：`^READY REV04~`；状态：`CAP?`→`^CAP FLAG3~`，`SESSION/TGT/TGTCLR/MON/FLAG?/INTACK`，D2 事件推送 `^EVSTAT FLAG3 …~`。
-- `STAT?` 固件已删除（回 `^ERR UNKNOWN CMD~`）；GUI 中相关路径均不可达（见第四节）。
+- `STAT?` 固件已删除（回 `^ERR UNKNOWN CMD~`）；GUI 已移除全部调用，状态只来自 EVSTAT 推送（2026-10-14）。旧固件（无 CAP FLAG3）仅显示"需要 FLAG3 EVSTAT 固件"提示，不轮询。
 - `docs/specs/02-SETTLED.md` 列出的 PING/PONG、GPIO、GPIOU、FLAG 写、GPIOCFG 脉冲在固件中不存在，GUI 也未使用；文档待更新。
 
 ## 四、待处理事项
 
-1. **STAT? 路径移除**（评估完成，未删除）：三处调用均不可达——
-   - `_configure_status_target_worker` 中 `not capabilities.d2_scan` 分支：`parse_cap_frame` 恒置 `d2_scan=True`，CAP 失败时 capabilities 为 None，均不会进入；
-   - `_read_d2_status_snapshot_worker`：仅由 FLAG 轮询触发，而 `_start_flag_poll` 无任何调用方；
-   - `_read_status_snapshot_worker`：经 `_poll_status_snapshot`，而 `_status_poll_start` 是空函数。
-   旧固件（无 CAP FLAG3）当前已只显示"需要 FLAG3 EVSTAT 固件"提示、不轮询，删除后行为不变。可连同 FLAG 轮询死代码一并删除，待确认。
+1. ~~STAT? 路径移除~~：**已完成**（见第一节 #12）。
 2. **后台线程改队列：已决定暂缓，不改代码。** 现状：29 处线程、约 16 处在线程内 `after(0)` 回主线程，串口日志监听也经 `after(0)`；未发现线程内直接操作控件。风险：关窗时可能出现 "main thread is not in main loop"（只捕获了 TclError）、高频日志时事件堆积。方案：主线程 15–30 ms 定时取队列 + 统一 `post_to_ui()`；预计 1–1.5 天（含关窗/高频日志压力测试）。
 3. **测试**：`tests/validate_type4_avr.js` 依赖 `outputs/type4_20260930/`（测试入口 .ino、hex、符号、用例、avr8js），仓库中缺失，暂无法运行。4 个测试仅能在 Windows 上通过（windll、Windows 路径、截图）。
 4. 文档 `02-SETTLED.md` 需与固件现状同步（见第三节）。
@@ -66,8 +63,8 @@
 | 1 | `setup()` 中 `wdt_enable` 前清空串口接收缓冲（启动期间收到的字节原本会在 READY 后被执行） | **已在本地副本修改** |
 | 2 | WREGW 失败带 Wire 错误码、区分 `STOP` | **否决**（Flash 不足）；GUI 已向前兼容 |
 | 3 | `applyAwp1221Payload` 先读 0x05/0x15，读成功后再写 0x1F=000C、0x02=0010 | **已在本地副本修改**（见下方风险） |
-| 4 | `flagStatusInterruptSequence()` 未使用 | **保留不删**；仅为原子读取 `interruptSequence` 的辅助函数，固件与 GUI 中均无调用 |
+| 4 | 删除未使用的 `flagStatusInterruptSequence()`（原子读取 `interruptSequence` 的辅助函数，固件与 GUI 均无调用） | **已在本地副本删除**（编译器原已剔除，Flash 不变） |
 
 固件第 3 项说明：未"挪到最后"——函数末尾写 `0x02=0x0001`（启动），若把 `0x02=0x0010` 放到其后会把刚启动的芯片又停掉，且描述符会在芯片运行时写入。现顺序为：读 0x05 → 读 0x15 →（任一失败直接返回，芯片未被改动）→ 写 0x1F → 写 0x02=0010 → 写 0x05 → 其余不变。风险：若 `0x02=0x0010` 会改变 0x05/0x15 的内容，则现在保存的是停止前的值，需对照芯片手册确认。
 
-固件编译（arduino-cli，arduino:avr:nano，avr core 1.8.8）：修改后 Flash 30,414 / 30,720（99%），RAM 1,212 / 2,048。
+固件编译（arduino-cli，arduino:avr:nano，avr core 1.8.8）：修改后 Flash 30,414 / 30,720（99%），RAM 1,212 / 2,048。补丁：`/workspace/firmware-audit.patch`。

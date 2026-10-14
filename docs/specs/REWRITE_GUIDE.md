@@ -281,7 +281,7 @@ I2C：`write_single` / `read_single_safe` 克隆。CRC 克隆。
 
 1. 连接：等 `^READY REV04~` 30s；删 PING/BOOTING/`debug_flag` 处理
 2. `CAP?` 认 `^CAP FLAG3~`
-3. 删 `STAT?` 路径；只吃 EVSTAT
+3. 删 `STAT?` 路径；只吃 EVSTAT（已完成 2026-10-14）
 4. `FLAG?` 新语法；删 `FLAG 0|1`
 5. `INTACK STALE` 无 SEQ
 6. TGT 不发 ANY

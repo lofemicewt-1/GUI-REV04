@@ -941,10 +941,6 @@ class SerialManager:
             self._publish_captured_logs(captured)
         return response
 
-    def read_board_flag_for_poll(self) -> SerialResponse:
-        """Read FLAG for Home polling and mute only a successfully idle reply."""
-        return self.read_board_flag(suppress_idle=True)
-
     @staticmethod
     def _status_frame(response: SerialResponse) -> str:
         if not response.ok:
@@ -1041,11 +1037,6 @@ class SerialManager:
         ):
             return SerialResponse(False, data=response.data, error=response.data or "MON reply mismatch")
         return response
-
-    def read_status_snapshot(self) -> SerialResponse:
-        return self._validated_status_command(
-            chip_status_cache.build_stat_body(), chip_status_cache.parse_stat_frame
-        )
 
     def acknowledge_interrupt(self, sequence: int) -> SerialResponse:
         return base_tool.acknowledge_interrupt(self.send_command, sequence)
@@ -1715,14 +1706,12 @@ class SerialRouter:
         if self._current_manager() is None and name in {
             "send_command",
             "read_board_flag",
-            "read_board_flag_for_poll",
             "acknowledge_interrupt",
             "read_status_capabilities",
             "set_status_session",
             "configure_status_target",
             "clear_status_target",
             "set_status_monitor",
-            "read_status_snapshot",
             "read_gpio",
             "configure_gpio",
             "read_adc",

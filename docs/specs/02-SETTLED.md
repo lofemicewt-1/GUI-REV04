@@ -12,7 +12,7 @@
 
 ## GUI 实际用到的线协议（事实，不必再问）
 
-必须保持：`PING`/`PONG REV04 READY|BOOTING`、`^READY REV04~`、BOOTING 锁、`CAP?`、`SESSION`、`TGT`、`TGTCLR`、`MON`、`STAT?`、`FLAG?`、`FLAG`、`INTACK`、`I2CSPD?`、`I2CSPD`、全部 `CFG*`、`RREGW`/`^RDATAW`、`WREGW`/`^OK WREGW`、`GPIOCFG`（含脉冲）、`GPIO`、`GPIOR`、`GPIOU`、`^EVSTAT FLAG3`、`^GPIOEV`。
+必须保持：`PING`/`PONG REV04 READY|BOOTING`、`^READY REV04~`、BOOTING 锁、`CAP?`、`SESSION`、`TGT`、`TGTCLR`、`MON`、`FLAG?`、`FLAG`、`INTACK`、`I2CSPD?`、`I2CSPD`、全部 `CFG*`、`RREGW`/`^RDATAW`、`WREGW`/`^OK WREGW`、`GPIOCFG`（含脉冲）、`GPIO`、`GPIOR`、`GPIOU`、`^EVSTAT FLAG3`、`^GPIOEV`。
 
 GUI 不解析、可清候选：`debug_flag`、sidecar `E …`/`I …`、`INT I2C`、`I Detection watchdog`、`I Release timeout R`、`EEPROM_PRESET_*` 散行。
 
@@ -30,7 +30,7 @@ GUI 不解析、可清候选：`debug_flag`、sidecar `E …`/`I …`、`INT I2C
 | CAP? | 回包改为 `^CAP FLAG3~`，GUI 认 FLAG3 即启用 EVSTAT |
 | FLAG? | **B**：`^FLAG INTF=<0\|1> SEQ=<8hex>~`，无软件位；改 GUI |
 | INTACK | **B**：成功仍 `^OK INTACK <seq>~`；STALE 改为 `^ERR INTACK STALE~` 不带 SEQ；改 GUI |
-| STAT? | **B**：删除；只靠 EVSTAT；改 GUI |
+| STAT? | **B**：删除；只靠 EVSTAT；改 GUI（**已完成 2026-10-14**：固件已删除，GUI 已移除 STAT? 与 FLAG 轮询死代码） |
 | EVSTAT | **A**：帧与 INTACK-hold 规则克隆 |
 | TGT/TGTCLR/MON | **B**：成功帧与规则克隆，但删除 `ANY`；槽号必须 0–2 |
 | I2CSPD | **A**：只允许 100000/400000 |

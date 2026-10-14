@@ -59,7 +59,7 @@ payload type：3=192x button runtime，4=1221 runtime（定义了但 apply 走 U
 | TGT | `TGT <slot\|ANY> <192\|1221> <2hex addr> <4hex gen>` gen≠0 | `^TGT OK` / `SAME` | FORMAT / UNSUPPORTED / SLOT / ADDR / GEN_ZERO / FULL / DUP / GEN_OLD / GEN_SAME |
 | TGTCLR | `TGTCLR <slot> <4hex gen>` | `^TGTCLR OK` | FORMAT / SLOT / GEN_FORMAT / UNCONFIGURED / GEN_STALE |
 | MON | `MON <slot> ON\|OFF` | `^MON OK <slot> <type> ON\|OFF~`；OFF 清 sample | FORMAT / SLOT / UNCONFIGURED / STATE |
-| STAT? | `STAT?` | `^STAT <session8> <irq8> <3 records>~` | FORMAT |
+| ~~STAT?~~ | ~~`STAT?`~~ | 已删除（固件 REV04 回 `^ERR UNKNOWN CMD~`；GUI 已于 2026-10-14 移除调用，只用 EVSTAT） | — |
 
 记录格式：未配置 `U<slot>`；已配置 `D<slot>,<type>,<addr2>,<gen4>,<flags2>,<status4>,<sample8>,<irq8>,<last_good8>,<age8>,<err2>,<src2>`。age≥1000ms 标 STALE。
 

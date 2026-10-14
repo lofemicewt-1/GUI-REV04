@@ -23,7 +23,6 @@ from core.base_tool import (
     SerialResponse,
     is_serial_contention_error,
     parse_adc_read_response,
-    parse_board_flag_response,
     parse_freq_response,
     parse_gpio_read_response,
 )
@@ -90,25 +89,11 @@ class _ContinuousReadOperation:
     cancel_reason: str = ""
 
 
-@dataclass(frozen=True)
-class _D2ScanRequest:
-    """One FLAG2 event waiting for a complete status-cache snapshot."""
-
-    port: str
-    session: int
-    flag_generation: int
-    sequence: int
-    targets: tuple[chip_status_cache.TargetIdentity, ...]
-
-
 class HomePage(BasePage):
     page_name = "home"
     BAUDRATES = (9600, 57600, 115200, 230400, 460800, 921600)
     I2C_SPEEDS = (100000, 400000)
     REGISTER_WIDTHS = (8, 16)
-    FLAG_POLL_INTERVAL_MS = 250
-    FLAG_RESULT_CHECK_INTERVAL_MS = 25
-    STATUS_POLL_INTERVAL_MS = 300
     PORT_LIST_POLL_INTERVAL_MS = 30000
     STATUS_RESULT_CHECK_INTERVAL_MS = 25
     PUSH_EVENT_POLL_INTERVAL_MS = 25
@@ -116,9 +101,6 @@ class HomePage(BasePage):
     CONTINUOUS_READ_RESULT_QUEUE_SIZE = 256
     CONTINUOUS_READ_MAX_DISPLAY_ROWS = 500
     PUSH_EVENT_DEFER_TIMEOUT_S = 5.0
-    D2_SCAN_STAT_ATTEMPTS = 8
-    D2_SCAN_STAT_RETRY_MS = 25
-    D2_SCAN_RETRY_COOLDOWN_MS = 750
     STATUS_MAX_TARGETS = chip_status_cache.SLOT_COUNT
     STATUS_TYPE_VALUES = (chip_status_cache.CHIP_TYPE_192, chip_status_cache.CHIP_TYPE_1221, "1018")
     STATUS_ADDRESS_VALUES = {
@@ -130,15 +112,6 @@ class HomePage(BasePage):
     def __init__(self, parent: tk.Misc, ctx: ApplicationContext) -> None:
         super().__init__(parent, ctx)
         self.port_names: dict[str, str] = {}
-        self._flag_poll_after_id: str | None = None
-        self._flag_poll_generation = 0
-        self._flag_poll_inflight = False
-        self._flag_poll_port: str | None = None
-        self._flag_poll_results: Queue[tuple[Any, ...]] = Queue()
-        self._d2_scan_request: _D2ScanRequest | None = None
-        self._d2_last_scanned_by_port: dict[str, int] = {}
-        self._d2_failed_by_port: dict[str, int] = {}
-        self._d2_failed_at_by_port: dict[str, float] = {}
         self._status_after_id: str | None = None
         self._status_after_port: str | None = None
         self._status_generation = 0
@@ -169,10 +142,8 @@ class HomePage(BasePage):
         self._continuous_read_operation: _ContinuousReadOperation | None = None
         self._continuous_read_after_id: str | None = None
         self._continuous_read_next_token = 0
-        # Legacy fixture pages may still call the manual status scheduler.  A
-        # real Home page leaves automatic STAT scheduling disabled; users can
-        # still invoke the explicit read API and the old FLAG helpers.
-        self._status_auto_poll_enabled = False
+        # Status updates are event-owned (CAP FLAG3 + EVSTAT push); there is
+        # no STAT?/FLAG polling path.
         self._serial_disconnect_error_by_port: dict[str, str] = {}
         self._port_list_poll_after_id: str | None = None
         self._port_scan_results: Queue[tuple[Any, str]] | None = None
@@ -548,7 +519,6 @@ class HomePage(BasePage):
         operation = getattr(self, "_continuous_read_operation", None)
         if operation is not None and operation.port != current:
             self._cancel_continuous_read("connection_changed", port=operation.port)
-        self._stop_flag_poll()
         self._stop_status_monitor()
         self._status_display_port = None
         if current and self._is_selected_port_connected(current):
@@ -621,13 +591,6 @@ class HomePage(BasePage):
         self._status_legacy_by_port = getattr(self, "_status_legacy_by_port", {})
         self._status_errors_by_port = getattr(self, "_status_errors_by_port", {})
         self._status_pending = getattr(self, "_status_pending", {})
-        self._d2_scan_request = None
-        self._d2_last_scanned_by_port = getattr(self, "_d2_last_scanned_by_port", {})
-        self._d2_failed_by_port = getattr(self, "_d2_failed_by_port", {})
-        self._d2_failed_at_by_port = getattr(self, "_d2_failed_at_by_port", {})
-        self._d2_last_scanned_by_port.pop(port, None)
-        self._d2_failed_by_port.pop(port, None)
-        self._d2_failed_at_by_port.pop(port, None)
         session = (time.monotonic_ns() ^ id(self) ^ sum(map(ord, str(port)))) & chip_status_cache.MAX_U32
         if session == 0:
             session = 1
@@ -673,15 +636,6 @@ class HomePage(BasePage):
         self._push_event_pending_since_by_port.pop(port, None)
         self._status_legacy_by_port.pop(port, None)
         self._status_errors_by_port.pop(port, None)
-        self._d2_last_scanned_by_port = getattr(self, "_d2_last_scanned_by_port", {})
-        self._d2_failed_by_port = getattr(self, "_d2_failed_by_port", {})
-        self._d2_failed_at_by_port = getattr(self, "_d2_failed_at_by_port", {})
-        self._d2_last_scanned_by_port.pop(port, None)
-        self._d2_failed_by_port.pop(port, None)
-        self._d2_failed_at_by_port.pop(port, None)
-        request = getattr(self, "_d2_scan_request", None)
-        if request is not None and getattr(request, "port", None) == port:
-            self._d2_scan_request = None
         self._status_pending = {
             slot: binding
             for slot, binding in self._status_pending.items()
@@ -1015,17 +969,6 @@ class HomePage(BasePage):
                     )
                     if not monitor_response.ok:
                         error = monitor_response.error or monitor_response.data or "status monitor enable failed"
-                if not error and not capabilities.d2_scan:
-                    self._status_check_cancel(operation)
-                    response = self._status_call_with_retry(
-                        serial,
-                        "read_status_snapshot",
-                        cancel_event=operation.cancel_event,
-                    )
-                    if response.ok:
-                        snapshot = self._status_parse(response, chip_status_cache.parse_stat_frame)
-                    else:
-                        error = response.error or response.data or "status snapshot failed"
         except _StatusOperationCancelled:
             cancelled = True
         except Exception as exc:
@@ -1100,185 +1043,6 @@ class HomePage(BasePage):
         )
         operation.done_event.set()
 
-    def _status_poll_start(self, port: str, session: int) -> None:
-        # Status snapshots are now event-owned.  ``read_status_snapshot``
-        # remains an explicit/manual API; Home never starts a periodic STAT
-        # callback for either old or FLAG3 firmware.
-        return
-
-    def _poll_status_snapshot(self, port: str, session: int) -> None:
-        self._status_after_id = None
-        self._status_after_port = None
-        selected_port = getattr(getattr(self, "port_var", None), "get", lambda: "")().strip()
-        if (
-            selected_port != port
-            or self._status_session_by_port.get(port) != session
-            or not self._is_selected_port_connected(port)
-        ):
-            return
-        active = getattr(self, "_status_operation", None)
-        if active is not None:
-            if not active.done_event.is_set():
-                self._status_poll_start(port, session)
-                return
-            # The result checker should normally consume a completed operation
-            # first.  Keep its private result available if a poll callback wins
-            # a Tk scheduling race.
-            self._status_start_result_check(port, session, active.token, active)
-            return
-        if self._status_inflight:
-            self._status_poll_start(port, session)
-            return
-        if not self._status_targets_by_port.get(port):
-            return
-        self._status_inflight = True
-        token = self._status_generation
-        operation = _StatusOperation("snapshot", port, session, token)
-        self._status_operation = operation
-        threading.Thread(
-            target=self._read_status_snapshot_worker,
-            args=(port, session, token, operation),
-            daemon=True,
-        ).start()
-        self._status_start_result_check(port, session, token, operation)
-
-    def _read_status_snapshot_worker(
-        self,
-        port: str,
-        session: int,
-        token: int,
-        operation: _StatusOperation | None = None,
-    ) -> None:
-        supplied_operation = operation
-        operation = operation or _StatusOperation("snapshot", port, session, token)
-        snapshot: chip_status_cache.Snapshot | None = None
-        response: SerialResponse | None = None
-        error = ""
-        cancelled = False
-        try:
-            serial = self._serial_for_port(port)
-            if serial is None:
-                raise RuntimeError("Selected serial port is not connected")
-            self._status_check_cancel(operation)
-            response = self._status_call_with_retry(
-                serial,
-                "read_status_snapshot",
-                cancel_event=operation.cancel_event,
-            )
-            if response.ok:
-                self._status_check_cancel(operation)
-                snapshot = self._status_parse(response, chip_status_cache.parse_stat_frame)
-            else:
-                error = response.error or response.data or "status snapshot failed"
-        except _StatusOperationCancelled:
-            cancelled = True
-        except Exception as exc:
-            error = str(exc)
-        self._status_queue_result(
-            ("snapshot", port, session, token, snapshot, response, error, cancelled),
-            supplied_operation,
-        )
-        operation.done_event.set()
-
-    def _d2_targets_for_port(self, port: str) -> tuple[chip_status_cache.TargetIdentity, ...]:
-        """Return the enabled target identities captured for one D2 event."""
-
-        targets = getattr(self, "_status_targets_by_port", {}).get(port, {})
-        state = getattr(self, "_status_state_by_port", {}).get(port)
-        if state is None:
-            return ()
-        return tuple(
-            target
-            for slot, target in sorted(targets.items())
-            if state.monitor_enabled(slot) is True
-        )
-
-    @staticmethod
-    def _d2_snapshot_matches(
-        snapshot: chip_status_cache.Snapshot,
-        session: int,
-        sequence: int,
-        targets: tuple[chip_status_cache.TargetIdentity, ...],
-    ) -> bool:
-        """Require one complete FLAG2 record for every event target."""
-
-        if snapshot.session_id != session or snapshot.irq_seq != sequence:
-            return False
-        by_slot = {record.slot: record for record in snapshot.records}
-        for target in targets:
-            record = by_slot.get(target.slot)
-            if record is None or record.identity != target:
-                return False
-            if record.source != chip_status_cache.SOURCE_D2_SCAN:
-                return False
-            if record.irq_seq != sequence:
-                return False
-            if not (record.valid or record.failed):
-                return False
-        return True
-
-    def _read_d2_status_snapshot_worker(
-        self,
-        port: str,
-        session: int,
-        token: int,
-        sequence: int,
-        targets: tuple[chip_status_cache.TargetIdentity, ...],
-        operation: _StatusOperation,
-    ) -> None:
-        """Wait for a complete same-event STAT snapshot without touching Tk."""
-
-        snapshot: chip_status_cache.Snapshot | None = None
-        response: SerialResponse | None = None
-        error = ""
-        cancelled = False
-        try:
-            serial = self._serial_for_port(port)
-            if serial is None:
-                raise RuntimeError("Selected serial port is not connected")
-            for attempt in range(self.D2_SCAN_STAT_ATTEMPTS):
-                self._status_check_cancel(operation)
-                response = self._status_call_with_retry(
-                    serial,
-                    "read_status_snapshot",
-                    cancel_event=operation.cancel_event,
-                )
-                if not response.ok:
-                    error = response.error or response.data or "D2 status snapshot failed"
-                    break
-                try:
-                    candidate = self._status_parse(response, chip_status_cache.parse_stat_frame)
-                except Exception as exc:
-                    error = str(exc)
-                    break
-                if self._d2_snapshot_matches(candidate, session, sequence, targets):
-                    snapshot = candidate
-                    error = ""
-                    break
-                error = f"D2 STAT is incomplete or stale for seq={sequence:08X}"
-                if attempt + 1 < self.D2_SCAN_STAT_ATTEMPTS:
-                    if operation.cancel_event.wait(self.D2_SCAN_STAT_RETRY_MS / 1000.0):
-                        raise _StatusOperationCancelled
-        except _StatusOperationCancelled:
-            cancelled = True
-        except Exception as exc:
-            error = str(exc)
-        self._status_queue_result(
-            (
-                "d2_snapshot",
-                port,
-                session,
-                token,
-                sequence,
-                snapshot,
-                response,
-                error,
-                cancelled,
-            ),
-            operation,
-        )
-        operation.done_event.set()
-
     def _consume_status_results(
         self,
         port: str,
@@ -1333,90 +1097,6 @@ class HomePage(BasePage):
             return
 
         kind = result[0]
-        if kind == "d2_snapshot":
-            (
-                _kind,
-                _port,
-                _session,
-                _token,
-                sequence,
-                snapshot,
-                response,
-                error,
-                cancelled,
-            ) = result[:9]
-            request = getattr(self, "_d2_scan_request", None)
-            flag_generation = (
-                request.flag_generation
-                if request is not None
-                else getattr(self, "_flag_poll_generation", 0)
-            )
-            self._status_finish_operation(active)
-            if cancelled:
-                if request is not None and request.sequence == sequence:
-                    self._d2_scan_request = None
-                return
-
-            accepted = False
-            if (
-                request is not None
-                and request.port == port
-                and request.session == session
-                and request.sequence == sequence
-                and snapshot is not None
-                and self._d2_snapshot_matches(snapshot, session, sequence, request.targets)
-            ):
-                accepted = self._apply_status_snapshot(port, snapshot)
-
-            if accepted:
-                self._d2_last_scanned_by_port = getattr(self, "_d2_last_scanned_by_port", {})
-                self._d2_failed_by_port = getattr(self, "_d2_failed_by_port", {})
-                self._d2_failed_at_by_port = getattr(self, "_d2_failed_at_by_port", {})
-                self._d2_last_scanned_by_port[port] = sequence
-                self._d2_failed_by_port.pop(port, None)
-                self._d2_failed_at_by_port.pop(port, None)
-                self._d2_scan_request = None
-                # The event is acknowledged only after every expected target
-                # has been applied from the matching FLAG2 snapshot.
-                self._start_interrupt_ack_worker(port, flag_generation, sequence)
-                self._flag_poll_after_id = self.after(
-                    self.FLAG_RESULT_CHECK_INTERVAL_MS,
-                    self._consume_flag_poll_results,
-                    port,
-                    flag_generation,
-                )
-            else:
-                if request is not None and request.sequence == sequence:
-                    self._d2_failed_by_port = getattr(self, "_d2_failed_by_port", {})
-                    self._d2_failed_at_by_port = getattr(self, "_d2_failed_at_by_port", {})
-                    self._d2_failed_by_port[port] = sequence
-                    self._d2_failed_at_by_port[port] = time.monotonic()
-                    self._d2_scan_request = None
-                detail = error or f"D2 STAT is incomplete for seq={sequence:08X}"
-                self._set_status_error(port, f"D2 seq={sequence:08X}: {detail}")
-                # Leave the mailbox unacknowledged.  A later FLAG with a newer
-                # sequence can still advance after this bounded attempt.
-                if self._flag_poll_is_current(port, flag_generation):
-                    self._finish_flag_poll(port, flag_generation)
-            return
-
-        if kind == "snapshot":
-            if len(result) >= 8:
-                _kind, _port, _session, _token, snapshot, response, error, cancelled = result[:8]
-            else:
-                _kind, _port, _session, _token, snapshot, response, error = result
-                cancelled = False
-            if cancelled:
-                self._status_finish_operation(active)
-                return
-            self._status_finish_operation(active)
-            if snapshot is not None:
-                self._apply_status_snapshot(port, snapshot)
-            elif error:
-                self._set_status_error(port, error)
-            self._status_poll_start(port, session)
-            return
-
         if kind == "configure":
             if len(result) >= 12:
                 (
@@ -1498,7 +1178,6 @@ class HomePage(BasePage):
                     if snapshot is None and not error:
                         self._status_errors_by_port.pop(port, None)
                     self._refresh_status_row(slot)
-            self._status_poll_start(port, session)
             return
 
         if kind == "clear":
@@ -1557,7 +1236,6 @@ class HomePage(BasePage):
                     row["committed_type"] = str(row["type"].get()).strip()
                     row["committed_address"] = str(row["address"].get()).strip()
                 self._set_status_row_text(slot, "--")
-            self._status_poll_start(port, session)
 
     def _apply_status_snapshot(self, port: str, snapshot: chip_status_cache.Snapshot) -> bool:
         state = self._status_state_by_port.get(port)
@@ -1841,23 +1519,12 @@ class HomePage(BasePage):
         home_is_lost = home_port == lost_port or (
             not home_port and getattr(self.ctx.state, "selected_port", None) == lost_port
         )
-        flag_port = getattr(self, "_flag_poll_port", None)
-        flag_belongs_to_lost = flag_port == lost_port or (
-            flag_port is None
-            and home_is_lost
-            and (
-                bool(getattr(self, "_flag_poll_inflight", False))
-                or getattr(self, "_flag_poll_after_id", None) is not None
-            )
-        )
         operation = getattr(self, "_status_operation", None)
         operation_port = getattr(operation, "port", None)
         status_after_port = getattr(self, "_status_after_port", None)
-        d2_request = getattr(self, "_d2_scan_request", None)
         status_belongs_to_lost = (
             operation_port == lost_port
             or status_after_port == lost_port
-            or getattr(d2_request, "port", None) == lost_port
         )
         if (
             not status_belongs_to_lost
@@ -1872,8 +1539,6 @@ class HomePage(BasePage):
         ):
             status_belongs_to_lost = True
 
-        if flag_belongs_to_lost:
-            self._stop_flag_poll()
         self._status_invalidate_port(lost_port, stop_monitor=status_belongs_to_lost)
         connected_ports = getattr(self.ctx.serial, "connected_ports", None)
         self.ctx.state.serial_connected = bool(connected_ports()) if callable(connected_ports) else False
@@ -1902,7 +1567,6 @@ class HomePage(BasePage):
         port = self.port_var.get().strip()
         self._cancel_continuous_read("connection_changed")
         if self._is_selected_port_connected(port):
-            self._stop_flag_poll()
             self._status_invalidate_port(port)
             self.ctx.serial.disconnect(port)
             self.ctx.state.serial_connected = False
@@ -2217,169 +1881,6 @@ class HomePage(BasePage):
 
         del port, snapshot, reason
 
-    def _start_flag_poll(self, port: str) -> None:
-        """Poll the FLAG mailbox without running serial I/O on Tk's event loop."""
-        self._stop_flag_poll()
-        self._flag_poll_port = port
-        generation = self._flag_poll_generation
-        self._schedule_flag_poll(port, generation, delay_ms=0)
-
-    def _stop_flag_poll(self) -> None:
-        self._flag_poll_generation = getattr(self, "_flag_poll_generation", 0) + 1
-        self._d2_scan_request = None
-        self._d2_last_scanned_by_port = {}
-        self._d2_failed_by_port = {}
-        self._d2_failed_at_by_port = {}
-        after_id = getattr(self, "_flag_poll_after_id", None)
-        if after_id is not None:
-            try:
-                self.after_cancel(after_id)
-            except (tk.TclError, AttributeError):
-                pass
-        self._flag_poll_after_id = None
-        self._flag_poll_inflight = False
-        self._flag_poll_port = None
-
-    def _flag_poll_is_current(self, port: str, generation: int) -> bool:
-        selected_port = getattr(getattr(self, "port_var", None), "get", lambda: "")().strip()
-        return (
-            generation == getattr(self, "_flag_poll_generation", 0)
-            and selected_port == port
-            and self._is_selected_port_connected(port)
-        )
-
-    def _schedule_flag_poll(self, port: str, generation: int, *, delay_ms: int | None = None) -> None:
-        if not self._flag_poll_is_current(port, generation):
-            return
-        delay = self.FLAG_POLL_INTERVAL_MS if delay_ms is None else delay_ms
-        self._flag_poll_after_id = self.after(delay, self._poll_board_flag, port, generation)
-
-    def _poll_board_flag(self, port: str, generation: int) -> None:
-        self._flag_poll_after_id = None
-        if not self._flag_poll_is_current(port, generation):
-            return
-        if self._flag_poll_inflight:
-            self._schedule_flag_poll(port, generation)
-            return
-        self._flag_poll_inflight = True
-        threading.Thread(
-            target=self._read_flag_and_discover,
-            args=(port, generation),
-            daemon=True,
-        ).start()
-        self._flag_poll_after_id = self.after(
-            self.FLAG_RESULT_CHECK_INTERVAL_MS,
-            self._consume_flag_poll_results,
-            port,
-            generation,
-        )
-
-    def _schedule_d2_scan(self, request: _D2ScanRequest, *, delay_ms: int = 0) -> None:
-        if not self._flag_poll_is_current(request.port, request.flag_generation):
-            return
-        self._flag_poll_after_id = self.after(
-            delay_ms,
-            self._start_d2_scan_when_ready,
-            request,
-        )
-
-    def _start_d2_scan_when_ready(self, request: _D2ScanRequest) -> None:
-        """Start one STAT transaction after any prior status operation exits."""
-
-        self._flag_poll_after_id = None
-        if getattr(self, "_d2_scan_request", None) != request:
-            return
-        if (
-            not self._flag_poll_is_current(request.port, request.flag_generation)
-            or self._status_session_by_port.get(request.port) != request.session
-        ):
-            self._d2_scan_request = None
-            return
-        if getattr(self, "_status_operation", None) is not None or self._status_inflight:
-            self._schedule_d2_scan(request, delay_ms=self.STATUS_RESULT_CHECK_INTERVAL_MS)
-            return
-
-        token = self._status_generation
-        operation = _StatusOperation("d2_snapshot", request.port, request.session, token)
-        self._status_operation = operation
-        self._status_inflight = True
-        threading.Thread(
-            target=self._read_d2_status_snapshot_worker,
-            args=(
-                request.port,
-                request.session,
-                token,
-                request.sequence,
-                request.targets,
-                operation,
-            ),
-            daemon=True,
-        ).start()
-        self._status_start_result_check(request.port, request.session, token, operation)
-        for target in request.targets:
-            self._set_status_row_text(target.slot, self.tr("status_cache_d2_scanning"))
-
-    def _read_flag_and_discover(self, port: str, generation: int) -> None:
-        """Worker-only serial work. It must not touch Tk variables or widgets."""
-        response = None
-        status = None
-        try:
-            serial = self._serial_for_port(port)
-            if serial is None:
-                raise RuntimeError("Selected serial port is not connected")
-            poll_reader = getattr(serial, "read_board_flag_for_poll", None)
-            if callable(poll_reader):
-                response = poll_reader()
-            else:
-                response = serial.read_board_flag()
-            if not response.ok:
-                result = (response, None, None, response.error or response.data or "FLAG poll failed")
-            else:
-                try:
-                    status = parse_board_flag_response(response.data)
-                except ValueError as exc:
-                    result = (response, None, None, str(exc))
-                else:
-                    # FLAG is an event mailbox.  A non-zero sequence is
-                    # acknowledged against the same sequence; it must not
-                    # trigger another all-address discovery pass.  Connection
-                    # time discovery remains in _finish_connection_when_ready.
-                    result = (response, status, None, "")
-        except Exception as exc:
-            result = (response, status, None, str(exc))
-        self._flag_poll_results.put(("poll", generation, port, result))
-
-    def _start_interrupt_ack_worker(self, port: str, generation: int, sequence: int) -> None:
-        threading.Thread(
-            target=self._acknowledge_interrupt_worker,
-            args=(port, generation, sequence),
-            daemon=True,
-        ).start()
-
-    def _acknowledge_interrupt_worker(self, port: str, generation: int, sequence: int) -> None:
-        """Worker-only ACK after the main thread has applied the discovery state."""
-        try:
-            serial = self._serial_for_port(port)
-            if serial is None:
-                raise RuntimeError("Selected serial port is not connected")
-            response = serial.acknowledge_interrupt(sequence)
-        except Exception as exc:
-            response = None
-            error = str(exc)
-        else:
-            error = response.error if not response.ok else ""
-        self._flag_poll_results.put(("ack", generation, port, (sequence, response, error)))
-
-    def _record_flag_poll_error(self, port: str, error: str) -> None:
-        detail = str(error).strip() or "unknown error"
-        message = f"{port}: FLAG poll failed: {detail}"
-        self.ctx.state.extra["connection_detail"] = message
-        serial = self._serial_for_port(port)
-        logger = getattr(serial, "emit_log", None)
-        if callable(logger):
-            logger(f"ERROR {message}")
-        self.refresh_language()
-
     def destroy(self) -> None:
         self._port_scan_closed = True
         if self._port_scan_after_id is not None:
@@ -2411,143 +1912,6 @@ class HomePage(BasePage):
             remove_connection_listener(listener)
             self._serial_connection_listener = None
         super().destroy()
-
-    def _record_flag_poll_notice(self, port: str, message: str) -> None:
-        detail = str(message).strip() or "status notice"
-        formatted = f"{port}: {detail}"
-        self.ctx.state.extra["connection_detail"] = formatted
-        serial = self._serial_for_port(port)
-        logger = getattr(serial, "emit_log", None)
-        if callable(logger):
-            logger(f"INFO {formatted}")
-        self.refresh_language()
-
-    def _consume_flag_poll_results(self, port: str, generation: int) -> None:
-        self._flag_poll_after_id = None
-        if not self._flag_poll_is_current(port, generation):
-            return
-
-        result: tuple[Any, ...] | None = None
-        while True:
-            try:
-                candidate = self._flag_poll_results.get_nowait()
-            except Empty:
-                break
-            if candidate[1] == generation and candidate[2] == port:
-                result = candidate
-                break
-
-        if result is None:
-            if self._flag_poll_inflight:
-                self._flag_poll_after_id = self.after(
-                    self.FLAG_RESULT_CHECK_INTERVAL_MS,
-                    self._consume_flag_poll_results,
-                    port,
-                    generation,
-                )
-            return
-
-        kind, _result_generation, _result_port, payload = result
-        if kind == "ack":
-            if len(payload) == 3:
-                sequence, response, error = payload
-            else:
-                sequence = None
-                response, error = payload
-            if response is None or not response.ok:
-                sequence_text = f" seq={int(sequence):08X}" if sequence is not None else ""
-                self._record_flag_poll_error(
-                    port,
-                    f"INTACK{sequence_text}: {error or getattr(response, 'data', '') or 'no response'}",
-                )
-            self._finish_flag_poll(port, generation)
-            return
-
-        response, status, found, error = payload
-        if response is None:
-            self._record_flag_poll_error(port, error or "no response")
-            self._finish_flag_poll(port, generation)
-            return
-        if not response.ok:
-            detail = error or response.error or response.data or "FLAG failed"
-            if is_serial_contention_error(detail):
-                self._finish_flag_poll(port, generation)
-                return
-            self._record_flag_poll_error(port, detail)
-            self._finish_flag_poll(port, generation)
-            return
-        if status is None:
-            self._record_flag_poll_error(port, error or "invalid FLAG response")
-            self._finish_flag_poll(port, generation)
-            return
-        if status.sequence == 0:
-            self._finish_flag_poll(port, generation)
-            return
-
-        capabilities = getattr(self, "_status_capabilities_by_port", {}).get(port)
-        targets = self._d2_targets_for_port(port)
-        if not targets or capabilities is None or not getattr(capabilities, "d2_scan", False):
-            # No configured FLAG2 target keeps the established mailbox path.
-            # A FLAG1 cache is never presented as a D2-complete sample.
-            if targets and capabilities is not None and not getattr(capabilities, "d2_scan", False):
-                self._record_flag_poll_notice(port, "D2 scan requires FLAG2 firmware; legacy event ACK used")
-            self._start_interrupt_ack_worker(port, generation, status.sequence)
-            self._flag_poll_after_id = self.after(
-                self.FLAG_RESULT_CHECK_INTERVAL_MS,
-                self._consume_flag_poll_results,
-                port,
-                generation,
-            )
-            return
-
-        last_scanned = getattr(self, "_d2_last_scanned_by_port", {}).get(port)
-        if last_scanned == status.sequence:
-            # A previous complete scan only needs an ACK retry; never re-read
-            # the same event and overwrite the firmware's held first result.
-            self._start_interrupt_ack_worker(port, generation, status.sequence)
-            self._flag_poll_after_id = self.after(
-                self.FLAG_RESULT_CHECK_INTERVAL_MS,
-                self._consume_flag_poll_results,
-                port,
-                generation,
-            )
-            return
-
-        failed = getattr(self, "_d2_failed_by_port", {}).get(port)
-        if failed == status.sequence:
-            failed_at = getattr(self, "_d2_failed_at_by_port", {}).get(port)
-            cooldown_ms = getattr(self, "D2_SCAN_RETRY_COOLDOWN_MS", 750)
-            if failed_at is not None and (time.monotonic() - failed_at) * 1000 < cooldown_ms:
-                # Do not spin on one failed event, but keep polling so a newer
-                # mailbox sequence can advance during the cooldown.
-                self._finish_flag_poll(port, generation)
-                return
-            # The bounded attempt is eligible for one same-sequence retry after
-            # the cooldown.  It remains unacknowledged until a complete STAT.
-        for previous in (last_scanned, failed):
-            if previous is not None and status.sequence != previous:
-                try:
-                    if not chip_status_cache.is_newer_u32(status.sequence, previous):
-                        self._finish_flag_poll(port, generation)
-                        return
-                except chip_status_cache.StateError:
-                    self._finish_flag_poll(port, generation)
-                    return
-
-        session = self._status_session_by_port.get(port)
-        if session is None:
-            self._record_flag_poll_error(port, "FLAG2 event has no active status session")
-            self._finish_flag_poll(port, generation)
-            return
-        request = _D2ScanRequest(port, session, generation, status.sequence, targets)
-        self._d2_scan_request = request
-        # Keep FLAG inflight while the status operation waits for the serial
-        # gate and until a complete same-sequence STAT is applied.
-        self._schedule_d2_scan(request)
-
-    def _finish_flag_poll(self, port: str, generation: int) -> None:
-        self._flag_poll_inflight = False
-        self._schedule_flag_poll(port, generation)
 
     def _board_gpio_modes_for_pin(self, pin: str) -> tuple[str, ...]:
         if pin in GPIO_DETECT_PINS:
