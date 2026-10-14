@@ -10,6 +10,7 @@ from typing import Any
 from config.app_info import APP_VERSION, USER_GUIDE_URL
 from config.languages import t
 from styles.fonts import sidebar_brand_font_spec
+from core import animation as anim
 from styles.theme import BRAND_ENLARGE, logo_asset, scale_photoimage
 
 
@@ -72,6 +73,16 @@ class Navigation:
             anchor="nw",
         )
         self.sidebar.bind("<Configure>", self._sync_sidebar_scroll_region)
+        self.sidebar.bind("<Configure>", self._on_sidebar_configure_indicator, add="+")
+        # Thin accent bar left of the selected page button; it slides (eased,
+        # small settle overshoot) when the page changes.  Placed, so it never
+        # takes part in the grid layout.
+        self._nav_indicator = tk.Frame(self.sidebar, bd=0, highlightthickness=0, bg=self.ctx.colors["primary"])
+        self._nav_indicator_y: float | None = None
+        self._nav_indicator_job: str | None = None
+        self._nav_hover_bar = tk.Frame(self.sidebar, bd=0, highlightthickness=0, bg=self.ctx.colors["panel_alt"])
+        self._nav_hover_color: str | None = None
+        self._nav_hover_name: str | None = None
         self.sidebar_canvas.bind("<Configure>", self._sync_sidebar_content_width)
         self.sidebar_canvas.bind_all("<MouseWheel>", self._on_sidebar_mousewheel, add="+")
         self._sidebar_scrollbar_visible = False
@@ -221,6 +232,8 @@ class Navigation:
                 command=lambda n=name: self.show(n),
             )
             btn.grid(row=row, column=0, sticky="ew", pady=(0, 3) if row == 1 else 3)
+            btn.bind("<Enter>", lambda _e, n=name: self._nav_hover(n, True), add="+")
+            btn.bind("<Leave>", lambda _e, n=name: self._nav_hover(n, False), add="+")
             self.buttons[name] = btn
             self.label_keys[name] = label_key
 
@@ -292,6 +305,7 @@ class Navigation:
                 page.refresh_language()
 
     def refresh_theme(self) -> None:
+        self._reset_nav_hover()
         self.refresh_layout()
         self._settings_images.clear()
         self._refresh_settings_button()
@@ -444,6 +458,119 @@ class Navigation:
         for name, btn in self.buttons.items():
             btn.configure(style="SidebarSelected.TButton" if name == current_page else "Sidebar.TButton")
         self._refresh_settings_button()
+        if self._nav_hover_name == current_page:
+            self._nav_hover(current_page, False)
+        self._schedule_nav_indicator(animate=True)
+
+    # -- nav animation ---------------------------------------------------
+    def _animator(self) -> "anim.Animator | None":
+        return anim.animator_for(self.root)
+
+    def _nav_hover(self, name: str, entering: bool) -> None:
+        """Fade a faint preview bar in/out beside the hovered page button.
+
+        (Tweening the button's own colours would need ``ttk.Style.configure``
+        per frame, which restyles every ttk widget: ~65 ms/frame measured.)
+        """
+        bar = self._nav_hover_bar
+        animator = self._animator()
+        btn = self.buttons.get(name)
+        if btn is None:
+            return
+        if entering and name == self.ctx.state.current_page:
+            entering = False
+        rest = self.ctx.colors["panel_alt"]
+        peak = anim.lerp_color(rest, self.ctx.colors["primary"], 0.45)
+        if entering:
+            try:
+                bh = btn.winfo_height()
+                height = max(6, round(bh * 0.5))
+                width = max(2, self._scaled(3))
+                x = max(0, btn.winfo_x() - width - max(1, self._scaled(3)))
+                y = btn.winfo_y() + (bh - height) / 2
+                bar.place(x=x, y=round(y), width=width, height=height, bordermode="outside")
+                bar.lift()
+                self._nav_indicator.lift()
+            except tk.TclError:
+                return
+            self._nav_hover_name = name
+        elif self._nav_hover_name != name:
+            return
+        start = self._nav_hover_color or rest
+        target = peak if entering else rest
+
+        def step(p: float) -> None:
+            color = anim.lerp_color(start, target, p)
+            self._nav_hover_color = color
+            bar.configure(bg=color)
+
+        def done() -> None:
+            if not entering:
+                bar.place_forget()
+                self._nav_hover_color = None
+                self._nav_hover_name = None
+
+        if animator is None:
+            step(1.0)
+            done()
+            return
+        animator.animate("nav-hover", anim.HOVER_MS, step, ease=anim.EASE_OUT, done=done)
+
+    def _reset_nav_hover(self) -> None:
+        animator = self._animator()
+        if animator is not None:
+            animator.cancel("nav-hover")
+        self._nav_hover_bar.place_forget()
+        self._nav_hover_color = None
+        self._nav_hover_name = None
+
+    def _on_sidebar_configure_indicator(self, _event: tk.Event | None = None) -> None:
+        self._schedule_nav_indicator(animate=False)
+
+    def _schedule_nav_indicator(self, *, animate: bool) -> None:
+        if self._nav_indicator_job is not None:
+            try:
+                self.root.after_cancel(self._nav_indicator_job)
+            except tk.TclError:
+                pass
+        try:
+            self._nav_indicator_job = self.root.after_idle(self._place_nav_indicator, animate)
+        except tk.TclError:
+            self._nav_indicator_job = None
+
+    def _place_nav_indicator(self, animate: bool) -> None:
+        self._nav_indicator_job = None
+        indicator = self._nav_indicator
+        btn = self.buttons.get(self.ctx.state.current_page)
+        try:
+            if btn is None or not btn.winfo_ismapped():
+                indicator.place_forget()
+                self._nav_indicator_y = None
+                return
+            bh = btn.winfo_height()
+            if bh <= 1:
+                return
+            height = max(6, round(bh * 0.5))
+            width = max(2, self._scaled(3))
+            x = max(0, btn.winfo_x() - width - max(1, self._scaled(3)))
+            target = btn.winfo_y() + (bh - height) / 2
+            indicator.configure(bg=self.ctx.colors["primary"])
+        except tk.TclError:
+            return
+        start = self._nav_indicator_y
+        animator = self._animator()
+
+        def step(p: float) -> None:
+            y = target if start is None else start + (target - start) * p
+            self._nav_indicator_y = y
+            indicator.place(x=x, y=round(y), width=width, height=height, bordermode="outside")
+
+        if animator is None or not animate or start is None or abs(start - target) < 1:
+            if animator is not None:
+                animator.cancel("nav-indicator")
+            step(1.0)
+            return
+        animator.animate("nav-indicator", anim.NAV_SLIDE_MS, step, ease=anim.EASE_SETTLE)
 
     def _mode_keys_for(self, page: Any) -> list[str]:
         mode_pages = getattr(page, "mode_pages", None)

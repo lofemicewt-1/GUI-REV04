@@ -292,6 +292,8 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "enable": "\u5f00\u542f",
 
         "connect": "\u8fde\u63a5",
+        "animations_setting": "动画效果",
+        "animations_enabled": "启用过渡动画",
         "cancel_connect": "取消连接",
         "connecting": "正在连接…",
         "connect_cancelled": "已取消连接",
@@ -1002,6 +1004,8 @@ LANGUAGES: dict[str, dict[str, str]] = {
         "enable": "Enable",
 
         "connect": "Connect",
+        "animations_setting": "Animations",
+        "animations_enabled": "Enable transitions",
         "cancel_connect": "Cancel",
         "connecting": "Connecting…",
         "connect_cancelled": "Connection cancelled",

@@ -30,6 +30,7 @@ from core.chip_discovery import AWP192X_PROBE
 from core.waveform_storage import WaveformStorage
 from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
 from pages.waveform_generator import WAVEFORM_DEFAULT_POINTS_PER_WRITE, WaveformGeneratorPage
+from core.animation import FADE_MS, animator_for, lerp_color
 from core.ui_dispatch import post_to_ui
 
 
@@ -2801,8 +2802,15 @@ class ButtonModePage(BasePage):
         return self.write_reg(0x0F, current & ~self.ADC_DETECT_ENABLE, show_error=show_error)
 
     def _set_sense_status_color(self, color: str) -> None:
+        animator = animator_for(self) if hasattr(self, "tk") else None
+        if animator is not None:
+            animator.cancel(("sense-status", id(self)))
+        self._apply_sense_status_color(color)
+
+    def _apply_sense_status_color(self, color: str) -> None:
         if getattr(self, "_sense_status_block", None) is None:
             return
+        self._sense_status_color = color
         self._sense_status_block.configure(bg=color, highlightbackground=self.colors["border"])
 
     def _set_sense_ready(self) -> None:
@@ -3084,7 +3092,17 @@ class ButtonModePage(BasePage):
     def _restore_sense_ready_after_blink(self) -> None:
         self._sense_blink_job = None
         if self._sense_status_active and not self._sense_timeout_mode:
-            self._set_sense_status_color(self.STATUS_READY_COLOR)
+            animator = animator_for(self) if hasattr(self, "tk") else None
+            start = getattr(self, "_sense_status_color", None)
+            if animator is None or not start:
+                self._set_sense_status_color(self.STATUS_READY_COLOR)
+                return
+            target = self.STATUS_READY_COLOR
+            animator.animate(
+                ("sense-status", id(self)),
+                FADE_MS,
+                lambda p: self._apply_sense_status_color(lerp_color(start, target, p)),
+            )
 
     def _set_sense_timeout(self) -> None:
         self._sense_status_active = False

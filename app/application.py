@@ -26,6 +26,7 @@ from core.base_tool import (
     parse_freq_response,
     parse_gpio_read_response,
 )
+from core.animation import Animator
 from core.ui_dispatch import UiDispatcher, post_to_ui
 from core import chip_status_cache
 from core.chip_discovery import ChipDiscovery, ChipProbe, discover_first
@@ -3116,6 +3117,7 @@ class SettingsPage(BasePage):
         preference = str(self.ctx.state.extra.get("theme_preference", self.ctx.state.theme))
         self.theme_var = tk.StringVar(value=self._theme_labels.get(preference, "light（浅色）"))
         self.font_size_var = tk.IntVar(value=self.ctx.state.font_size)
+        self.animations_var = tk.BooleanVar(value=bool(self.ctx.state.extra.get("animations_enabled", True)))
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -3156,12 +3158,29 @@ class SettingsPage(BasePage):
             width=8,
         ).grid(row=2, column=1, sticky="w", pady=8)
 
+        self.animations_label = ttk.Label(panel, style="Panel.TLabel")
+        self.animations_label.grid(row=3, column=0, sticky="w", padx=(0, 10), pady=8)
+        self.animations_check = ttk.Checkbutton(
+            panel,
+            variable=self.animations_var,
+            command=self._apply_animations_toggle,
+        )
+        self.animations_check.grid(row=3, column=1, sticky="w", pady=8)
+
         self.apply_btn = ttk.Button(panel, style="Primary.TButton", command=self.apply_settings)
-        self.apply_btn.grid(row=3, column=0, columnspan=2, sticky="w", pady=(14, 0))
+        self.apply_btn.grid(row=4, column=0, columnspan=2, sticky="w", pady=(14, 0))
 
         self.refresh_language()
 
+    def _apply_animations_toggle(self) -> None:
+        enabled = bool(self.animations_var.get())
+        self.ctx.state.extra["animations_enabled"] = enabled
+        animator = getattr(self.ctx.app, "animator", None)
+        if animator is not None:
+            animator.set_enabled(enabled)
+
     def apply_settings(self) -> None:
+        self._apply_animations_toggle()
         language = self._language_choices.get(self.language_var.get(), "en")
         theme = self._theme_choices.get(self.theme_var.get(), "light")
         self.ctx.app.apply_settings(language, theme, self.font_size_var.get())
@@ -3178,6 +3197,8 @@ class SettingsPage(BasePage):
         self.lang_label.configure(text="Language")
         self.theme_label.configure(text="Theme")
         self.font_size_label.configure(text="Font Size 字体大小")
+        self.animations_label.configure(text=self.tr("animations_setting"))
+        self.animations_check.configure(text=self.tr("animations_enabled"))
         self.apply_btn.configure(text="Apply")
 
 
@@ -3202,6 +3223,8 @@ class PiezoApplication:
         self.root = tk.Tk()
         # Worker threads hand results to Tk only through this FIFO dispatcher.
         self.ui_dispatcher = UiDispatcher(self.root).start()
+        self.animator = Animator(self.root, enabled=True)
+        self.root._piezo_animator = self.animator  # type: ignore[attr-defined]
         self.root.bind("<Destroy>", self._on_root_destroy, add="+")
         # Let scroll containers handle the wheel without changing a hovered combobox value.
         self.root.bind_class("TCombobox", "<MouseWheel>", lambda _event: None)
@@ -3457,6 +3480,7 @@ class PiezoApplication:
         # Stop accepting worker callbacks first; nothing may touch Tk after
         # the window is gone ("main thread is not in main loop").
         self.ui_dispatcher.close()
+        self.animator.stop()
         if self._resize_after is not None:
             try:
                 self.root.after_cancel(self._resize_after)
