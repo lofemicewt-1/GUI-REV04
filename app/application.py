@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Empty, Full, Queue
+import os
 import tempfile
 import threading
 import time
@@ -3309,7 +3310,14 @@ class PiezoApplication:
         _span("fonts")
         self.navigation.show("home")
         _span("show home")
-        self._build_remaining_at_startup(_span)
+        if self._start_withdrawn or os.environ.get("PIEZO_EAGER_BUILD") == "1":
+            self._build_remaining_at_startup(_span)
+        else:
+            # Show the window now; remaining pages/modes are built one per
+            # idle slice after the first paint (get_page still builds on demand).
+            self._bg_build_job: str | None = None
+            if os.environ.get("PIEZO_BG_BUILD", "1") != "0":
+                self._bg_build_job = self.root.after(400, self._start_background_build)
         from core import animation as _anim
         _anim.debug_log("startup spans (ms): " + ", ".join(_spans))
         self._startup_done = True
@@ -3379,6 +3387,71 @@ class PiezoApplication:
             self.navigation._sync_content_window_immediately()
         except Exception:
             pass
+
+    def _start_background_build(self) -> None:
+        """Queue every unbuilt page, then each page's unbuilt modes, and build
+        one item per Tk idle slice so input and the serial handshake keep
+        running.  Items the user already opened on demand are skipped."""
+        self._bg_build_job = None
+        self._bg_work: list[tuple[str, str, str | None]] = [
+            ("page", n, None) for n in self.navigation.pending_page_names()
+        ]
+        self._bg_t0 = time.perf_counter()
+        self._schedule_background_slice(1)
+
+    def _schedule_background_slice(self, delay_ms: int = 30) -> None:
+        try:
+            self._bg_build_job = self.root.after(
+                delay_ms, lambda: self.root.after_idle(self._background_build_slice)
+            )
+        except tk.TclError:
+            self._bg_build_job = None
+
+    def _background_build_slice(self) -> None:
+        from core import animation as _anim
+
+        self._bg_build_job = None
+        work = getattr(self, "_bg_work", None)
+        if not work:
+            _anim.debug_log(
+                f"background build done: {(time.perf_counter() - self._bg_t0) * 1000:.0f} ms"
+            )
+            return
+        # Don't compete with a running transition or a pending user event.
+        if getattr(self.animator, "_tweens", None):
+            self._schedule_background_slice(60)
+            return
+        nav = self.navigation
+        kind, name, mode = work.pop(0)
+        t0 = time.perf_counter()
+        try:
+            if kind == "page":
+                page = nav.get_page(name)
+                if page is not None:
+                    try:
+                        page.update_idletasks()
+                        nav.prepare_page_fonts(page)
+                    except tk.TclError:
+                        pass
+                    modes = getattr(page, "mode_pages", None)
+                    if modes is not None and hasattr(modes, "pending_keys"):
+                        work.extend(("mode", name, m) for m in modes.pending_keys())
+            else:
+                page = nav.get_page(name, build=False)
+                modes = getattr(page, "mode_pages", None) if page is not None else None
+                if modes is not None and mode is not None and not modes.is_built(mode):
+                    modes.ensure_built(mode)
+                    try:
+                        modes[mode].update_idletasks()
+                    except Exception:
+                        pass
+        except Exception as exc:  # never let a background build kill the UI
+            _anim.debug_log(f"background build {kind} {name}/{mode} failed: {exc!r}")
+        _anim.debug_log(
+            f"background build {kind} {name}{'' if mode is None else '/' + mode}: "
+            f"{(time.perf_counter() - t0) * 1000:.0f} ms"
+        )
+        self._schedule_background_slice(30)
 
     def _build_remaining_at_startup(self, _span) -> None:
         """Build every remaining page and mode sub-page before the UI is shown.
@@ -3689,6 +3762,14 @@ class PiezoApplication:
         # the window is gone ("main thread is not in main loop").
         self.ui_dispatcher.close()
         self.animator.stop()
+        job = getattr(self, "_bg_build_job", None)
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except tk.TclError:
+                pass
+            self._bg_build_job = None
+        self._bg_work = []
         if self._resize_after is not None:
             try:
                 self.root.after_cancel(self._resize_after)

@@ -65,7 +65,7 @@ def _report_startup_failure(exc: BaseException) -> None:
 
 def main() -> None:
     splash = None
-    if os.environ.get("PIEZO_SPLASH", "1") != "0":
+    if os.environ.get("PIEZO_SPLASH", "0") == "1":
         try:
             from app.splash import StartupSplash
 

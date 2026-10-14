@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+import os
 import time
 import unittest
 from unittest import mock
@@ -60,7 +61,10 @@ class BlockingCancelTests(unittest.TestCase):
         gc.collect()
         _FakeCH340.instances = []
         _FakeCH340.open_s = open_s
-        app = PiezoApplication()
+        # Measures connect/cancel stalls only; background page builds are
+        # covered elsewhere and would add their own (expected) slices.
+        with mock.patch.dict(os.environ, {"PIEZO_BG_BUILD": "0"}):
+            app = PiezoApplication()
         home = app.navigation.pages["home"]
         root = app.root
         home.port_var.set("COM14")

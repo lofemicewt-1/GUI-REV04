@@ -188,8 +188,12 @@ if __name__ == "__main__":
 class PageShowFinalFontsTests(unittest.TestCase):
     def test_no_font_or_layout_change_after_page_is_revealed(self) -> None:
         import tkinter.font as tf
+        import os
         from app.application import PiezoApplication
-        app = PiezoApplication()
+        # Checks reveal stability of on-demand builds; background mode builds
+        # would add (unmapped) children between the two snapshots.
+        with mock.patch.dict(os.environ, {"PIEZO_BG_BUILD": "0"}):
+            app = PiezoApplication()
         try:
             r = app.root
             nav = app.navigation
