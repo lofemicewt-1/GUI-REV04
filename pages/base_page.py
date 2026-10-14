@@ -5,11 +5,12 @@ import re
 import tkinter as tk
 import threading
 import webbrowser
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 from typing import Any
 
 from config.app_info import CHIP_WEBSITE_URLS
 from config.languages import t
+from styles.fonts import sidebar_brand_font_spec
 
 
 def fit_toplevel_to_screen(
@@ -151,12 +152,14 @@ class VerticalScrollArea(ttk.Frame):
         horizontal: bool = True,
         min_content_width: int = 0,
         propagate_width: bool = False,
+        propagate_height: bool = False,
     ) -> None:
         super().__init__(parent, style="App.TFrame")
         self.ctx = ctx
         self.horizontal = horizontal
         self.min_content_width = max(0, min_content_width)
         self.propagate_width = bool(propagate_width)
+        self.propagate_height = bool(propagate_height)
         self._scrollbar_visible = False
         self._horizontal_scrollbar_visible = False
 
@@ -192,41 +195,40 @@ class VerticalScrollArea(ttk.Frame):
             pass
         return event.widget
 
-    def _content_scroll_size(self) -> tuple[int, int]:
-        bbox = self.canvas.bbox("all")
-        height = max(1, self.content.winfo_reqheight(), self.content.winfo_height())
-        if bbox is not None:
-            height = max(height, int(bbox[3]))
-        if self.horizontal:
-            width = max(1, self.content.winfo_reqwidth(), self.content.winfo_width())
-            if bbox is not None:
-                width = max(width, int(bbox[2]))
-        else:
-            width = max(1, self.canvas.winfo_width(), self.content.winfo_width())
-        return width, height + 16
+    def _natural_content_size(self) -> tuple[int, int]:
+        return (
+            max(1, self.min_content_width, self.content.winfo_reqwidth()),
+            max(1, self.content.winfo_reqheight()),
+        )
+
+    def _window_item_span(self, option: str) -> int:
+        try:
+            return int(float(self.canvas.itemcget(self.window_id, option)))
+        except (tk.TclError, TypeError, ValueError):
+            return 0
 
     def _sync_scroll_region(self, _event: tk.Event | None = None) -> None:
         try:
-            width, height = self._content_scroll_size()
+            natural_width, natural_height = self._natural_content_size()
+            canvas_width = max(1, self.canvas.winfo_width())
+            canvas_height = max(1, self.canvas.winfo_height())
             if self.horizontal:
-                # A child can grow after the canvas has already received its
-                # first Configure event.  Keep the embedded window at least
-                # as wide as its natural request so wide labels and controls
-                # remain reachable through the horizontal scrollbar.
-                current_width = 0
-                try:
-                    current_width = int(float(self.canvas.itemcget(self.window_id, "width")))
-                except (tk.TclError, TypeError, ValueError):
-                    pass
-                requested_width = max(width, self.min_content_width, self.canvas.winfo_width())
-                if current_width != requested_width:
-                    self.canvas.itemconfigure(self.window_id, width=requested_width)
-                    width = requested_width
+                width = max(natural_width, canvas_width)
+            else:
+                width = canvas_width
+            if self._window_item_span("width") != width:
+                self.canvas.itemconfigure(self.window_id, width=width)
+            height = natural_height + 16
+            if self.propagate_height:
+                requested_height = max(natural_height, canvas_height - 16)
+                if self._window_item_span("height") != requested_height:
+                    self.canvas.itemconfigure(self.window_id, height=requested_height)
+                height = max(height, requested_height)
+                if natural_height + 16 <= canvas_height:
+                    height = min(height, canvas_height)
             self.canvas.configure(scrollregion=(0, 0, width, height))
-            needs_scrollbar = height > max(1, self.canvas.winfo_height())
-            needs_horizontal_scrollbar = (
-                self.horizontal and width > max(1, self.canvas.winfo_width())
-            )
+            needs_scrollbar = height > canvas_height
+            needs_horizontal_scrollbar = self.horizontal and width > canvas_width
             if needs_scrollbar and not self._scrollbar_visible:
                 self.scrollbar.grid(row=0, column=1, sticky="ns")
                 self._scrollbar_visible = True
@@ -247,7 +249,7 @@ class VerticalScrollArea(ttk.Frame):
         return max(1, self.min_content_width, self.content.winfo_reqwidth())
 
     def _propagate_canvas_width(self) -> None:
-        if self.horizontal or not self.propagate_width:
+        if not self.propagate_width:
             return
         req = self._requested_content_width()
         if self.canvas.winfo_reqwidth() != req:
@@ -298,6 +300,162 @@ class VerticalScrollArea(ttk.Frame):
         self.canvas.configure(bg=self.ctx.colors["bg"])
 
 
+class WrappingGroupBar(ttk.Frame):
+    def __init__(self, parent: tk.Misc, *, style: str = "Panel.TFrame") -> None:
+        super().__init__(parent, style=style)
+        self._groups: list[ttk.Frame] = []
+        self._hidden: set[int] = set()
+        self._signature: tuple[Any, ...] | None = None
+        self._gap = 8
+        self._in_reflow = False
+        self.bind("<Configure>", self._on_configure, add="+")
+
+    def add_group(self) -> ttk.Frame:
+        group = ttk.Frame(self, style="Panel.TFrame")
+        self._groups.append(group)
+        group.grid(row=0, column=len(self._groups) - 1, sticky="w", padx=(0, self._gap))
+        return group
+
+    def set_group_visible(self, group: ttk.Frame, visible: bool) -> None:
+        if visible:
+            self._hidden.discard(id(group))
+        else:
+            self._hidden.add(id(group))
+            group.grid_remove()
+        self._signature = None
+        width = self.winfo_width()
+        if width > 1:
+            self.reflow(width)
+
+    def visible_groups(self) -> list[ttk.Frame]:
+        return [group for group in self._groups if id(group) not in self._hidden]
+
+    def natural_width(self) -> int:
+        groups = self.visible_groups()
+        if not groups:
+            return 1
+        total = 0
+        for group in groups:
+            total += max(1, int(group.winfo_reqwidth())) + self._gap
+        return max(1, total)
+
+    def _rows_for(self, available: int) -> list[list[ttk.Frame]]:
+        rows: list[list[ttk.Frame]] = []
+        current: list[ttk.Frame] = []
+        used = 0
+        limit = max(1, available)
+        for group in self.visible_groups():
+            width = max(1, int(group.winfo_reqwidth()))
+            if current and used + self._gap + width > limit:
+                rows.append(current)
+                current = [group]
+                used = width
+            else:
+                if current:
+                    used += self._gap
+                current.append(group)
+                used += width
+        if current:
+            rows.append(current)
+        return rows
+
+    def reflow(self, available: int) -> None:
+        if available <= 1 or self._in_reflow:
+            return
+        rows = self._rows_for(available)
+        signature = tuple(tuple(id(group) for group in row) for row in rows)
+        if signature == self._signature:
+            return
+        self._in_reflow = True
+        self._signature = signature
+        try:
+            for group in self._groups:
+                group.grid_remove()
+            for row_index, row in enumerate(rows):
+                for column, group in enumerate(row):
+                    group.grid(
+                        row=row_index,
+                        column=column,
+                        sticky="w",
+                        padx=(0, self._gap),
+                        pady=(0, 4),
+                    )
+        finally:
+            self._in_reflow = False
+
+    def _on_configure(self, event: tk.Event) -> None:
+        if event.widget is not self:
+            return
+        self.reflow(int(event.width))
+
+
+class FooterSplit(ttk.Frame):
+    def __init__(self, parent: tk.Misc) -> None:
+        super().__init__(parent, style="Panel.TFrame")
+        self.columnconfigure(0, weight=1)
+        self.registers = WrappingGroupBar(self)
+        self.identity = WrappingGroupBar(self)
+        self.registers.grid(row=0, column=0, sticky="ew")
+        self.identity.grid(row=0, column=1, sticky="e")
+        self._signature: tuple[Any, ...] | None = None
+        self._in_reflow = False
+        self.bind("<Configure>", self._on_configure, add="+")
+
+    def reflow(self, available: int) -> None:
+        if available <= 1 or self._in_reflow:
+            return
+        gap = 16
+        reg_w = self.registers.natural_width()
+        id_w = self.identity.natural_width()
+        side_by_side = reg_w + gap + id_w <= available
+        signature = (available // 8, side_by_side)
+        if signature == self._signature:
+            return
+        self._in_reflow = True
+        self._signature = signature
+        try:
+            if side_by_side:
+                self.columnconfigure(1, weight=1)
+                self.registers.grid(row=0, column=0, columnspan=1, sticky="w", pady=0)
+                self.identity.grid(row=0, column=1, columnspan=1, sticky="e", padx=(gap, 0), pady=0)
+                self.registers.reflow(max(1, reg_w))
+                self.identity.reflow(max(1, id_w))
+            else:
+                self.columnconfigure(1, weight=0)
+                self.registers.grid(row=0, column=0, columnspan=2, sticky="ew", padx=0, pady=0)
+                self.identity.grid(row=1, column=0, columnspan=2, sticky="ew", padx=0, pady=(4, 0))
+                self.registers.reflow(available)
+                self.identity.reflow(available)
+        finally:
+            self._in_reflow = False
+
+    def _on_configure(self, event: tk.Event) -> None:
+        if event.widget is not self:
+            return
+        self.reflow(int(event.width))
+
+
+_CHIP_TITLE_KEYS = {"awp1921_1923", "awp1921", "awp1923", "awp1922", "awp1018", "awp1221"}
+
+
+def _font_size_for_pixel_height(root: tk.Misc, family: str, weight: str, target_px: int) -> int:
+    target = max(12, int(target_px))
+    chosen = 12
+    for size in range(12, 73):
+        probe = tkfont.Font(root=root, family=family, size=size, weight=weight)
+        if probe.metrics("linespace") <= target:
+            chosen = size
+            continue
+        break
+    return chosen
+
+
+def _prominent_title(title_key: str) -> bool:
+    if title_key in {"awp1921_1923", "awp1921", "awp1923", "awp1922", "awp1018", "awp1221", "awp1744_awp1766"}:
+        return True
+    return title_key.endswith("_mode")
+
+
 class BasePage(ttk.Frame):
     """
     \u6240\u6709\u9875\u9762\u7684\u57fa\u7c7b\u3002
@@ -317,6 +475,7 @@ class BasePage(ttk.Frame):
         self.ctx = ctx
         self._text_widgets: list[tuple[Any, str]] = []
         self._logo_widgets: list[ttk.Label] = []
+        self._chip_title_labels: list[ttk.Label] = []
         self._logo_images: list[tk.PhotoImage] = []
         self._chrome_headers: list[ttk.Frame] = []
         self._serial_log_text: tk.Text | None = None
@@ -450,19 +609,18 @@ class BasePage(ttk.Frame):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-    def make_merged_footer(self) -> tuple[ttk.Frame, ttk.Frame, ttk.Frame, ttk.Frame]:
+    def make_merged_footer(self) -> tuple[ttk.Frame, ttk.Frame, WrappingGroupBar, WrappingGroupBar]:
         footer = ttk.Frame(self, style="Panel.TFrame", padding=(12, 10))
         footer.columnconfigure(0, weight=1)
         actions = ttk.Frame(footer, style="Panel.TFrame")
         actions.grid(row=0, column=0, sticky="ew")
-        bottom = ttk.Frame(footer, style="Panel.TFrame")
-        bottom.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        bottom.columnconfigure(0, weight=1)
-        registers = ttk.Frame(bottom, style="Panel.TFrame")
-        registers.grid(row=0, column=0, sticky="w")
-        identity = ttk.Frame(bottom, style="Panel.TFrame")
-        identity.grid(row=0, column=1, sticky="e")
-        return footer, actions, registers, identity
+        split = FooterSplit(footer)
+        split.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        try:
+            self.after_idle(lambda: split.reflow(max(1, split.winfo_width())))
+        except tk.TclError:
+            pass
+        return footer, actions, split.registers, split.identity
 
     def make_vertical_scroll_area(
         self,
@@ -471,6 +629,7 @@ class BasePage(ttk.Frame):
         horizontal: bool = True,
         min_content_width: int = 0,
         propagate_width: bool = False,
+        propagate_height: bool = False,
     ) -> tuple[VerticalScrollArea, ttk.Frame]:
         area = VerticalScrollArea(
             parent,
@@ -478,6 +637,7 @@ class BasePage(ttk.Frame):
             horizontal=horizontal,
             min_content_width=min_content_width,
             propagate_width=propagate_width,
+            propagate_height=propagate_height,
         )
         self._vertical_scroll_areas.append(area)
         return area, area.content
@@ -493,17 +653,25 @@ class BasePage(ttk.Frame):
         header = ttk.Frame(parent, style="App.TFrame")
         header.columnconfigure(0, weight=1)
 
+        title_style = "ChipTitle.TLabel" if title_key in _CHIP_TITLE_KEYS else (
+            "Prominent.TLabel" if _prominent_title(title_key) else "Title.TLabel"
+        )
         if title_key == "awp1921_1923":
             title_group = ttk.Frame(header, style="App.TFrame")
             title_group.grid(row=0, column=0, sticky="w")
-            self._make_linked_title_part(title_group, "AWP1921", "awp1921", 0)
-            ttk.Label(title_group, text="/", style="Title.TLabel").grid(row=0, column=1, sticky="w")
-            self._make_linked_title_part(title_group, "AWP1923", "awp1923", 2)
+            self._make_linked_title_part(title_group, "AWP1921", "awp1921", 0, title_style)
+            slash = ttk.Label(title_group, text="/", style=title_style)
+            slash.grid(row=0, column=1, sticky="w")
+            slash.configure(font=("Microsoft YaHei UI", self._chip_title_size(), "bold"))
+            self._chip_title_labels.append(slash)
+            self._make_linked_title_part(title_group, "AWP1923", "awp1923", 2, title_style)
         else:
-            title = ttk.Label(header, style="Title.TLabel")
+            title = ttk.Label(header, style=title_style)
             title.grid(row=0, column=0, sticky="w")
             self.bind_text(title, title_key)
             self._configure_title_link(title, title_key)
+            if title_style == "ChipTitle.TLabel":
+                self._chip_title_labels.append(title)
 
         if subtitle:
             sub = ttk.Label(header, style="Subtitle.TLabel")
@@ -516,6 +684,7 @@ class BasePage(ttk.Frame):
         if show_logo:
             logo = self._make_header_logo(header)
             logo.grid(row=0, column=1, rowspan=2, sticky="e", padx=(16, 0))
+            header.bind("<Configure>", lambda _event, label=logo: self._configure_header_logo(label), add="+")
             self._chrome_headers.append(header)
             self._sync_header_chrome_widget(header)
 
@@ -543,7 +712,12 @@ class BasePage(ttk.Frame):
         if not url:
             return
 
-        size = int(getattr(self.winfo_toplevel(), "_piezo_title_font_size", 18))
+        style_name = str(title.cget("style"))
+        if style_name == "ChipTitle.TLabel":
+            size = self._chip_title_size()
+        else:
+            size_name = "_piezo_prominent_title_font_size" if style_name == "Prominent.TLabel" else "_piezo_title_font_size"
+            size = int(getattr(self.winfo_toplevel(), size_name, 18))
         title.configure(cursor="hand2", font=("Microsoft YaHei UI", size, "bold", "underline"))
         title.bind("<Button-1>", lambda _event, link=url: webbrowser.open(link))
 
@@ -553,39 +727,97 @@ class BasePage(ttk.Frame):
         if button is not None:
             button.configure(style="Selected.TButton" if selected else "Secondary.TButton")
 
-    def _make_linked_title_part(self, parent: tk.Misc, text: str, title_key: str, column: int) -> None:
-        title = ttk.Label(parent, text=text, style="Title.TLabel")
+    def _make_linked_title_part(
+        self,
+        parent: tk.Misc,
+        text: str,
+        title_key: str,
+        column: int,
+        style: str = "Title.TLabel",
+    ) -> None:
+        title = ttk.Label(parent, text=text, style=style)
         title.grid(row=0, column=column, sticky="w")
         self._configure_title_link(title, title_key)
+        if style == "ChipTitle.TLabel":
+            self._chip_title_labels.append(title)
 
     def _make_header_logo(self, parent: tk.Misc) -> ttk.Label:
-        label = ttk.Label(parent, style="Title.TLabel")
+        label = ttk.Label(parent, style="Wordmark.TLabel")
         self._logo_widgets.append(label)
         self._configure_header_logo(label)
         return label
 
+    def _chip_title_size(self) -> int:
+        height = int(getattr(self.winfo_toplevel(), "_piezo_top_chrome_height", 0)) or 42
+        size = _font_size_for_pixel_height(self.winfo_toplevel(), "Microsoft YaHei UI", "bold", height)
+        setattr(self.winfo_toplevel(), "_piezo_chip_title_font_size", size)
+        return size
+
+    def _refresh_chip_titles(self) -> None:
+        size = self._chip_title_size()
+        for title in self._chip_title_labels:
+            try:
+                current = str(title.cget("font"))
+                underlined = "underline" in current
+                font: tuple[Any, ...] = ("Microsoft YaHei UI", size, "bold", "underline") if underlined else ("Microsoft YaHei UI", size, "bold")
+                title.configure(font=font)
+            except tk.TclError:
+                continue
+
     def _refresh_header_logos(self) -> None:
+        self._refresh_chip_titles()
         for label in self._logo_widgets:
             try:
                 self._configure_header_logo(label)
             except Exception:
                 pass
 
+    def _wordmark_slot(self, header: ttk.Frame, label: ttk.Label) -> int:
+        try:
+            width = int(header.winfo_width())
+        except tk.TclError:
+            return 0
+        if width <= 1:
+            return 0
+        title_width = 0
+        sizer = getattr(header, "_chrome_sizer", None)
+        for child in header.winfo_children():
+            if child is label or child is sizer:
+                continue
+            try:
+                title_width = max(title_width, int(child.winfo_reqwidth()))
+            except tk.TclError:
+                continue
+        return max(0, width - title_width - 24)
+
     def _configure_header_logo(self, label: ttk.Label) -> None:
-        path = self._logo_path_for_theme()
-        if path is None:
-            label.configure(image="", text="PIEZO\nGUI", justify="center")
-            setattr(label, "_logo_key", None)
-            return
-        max_h = int(getattr(self.winfo_toplevel(), "_piezo_top_chrome_height", 0)) or 42
-        key = (str(path), max_h)
+        height = int(getattr(self.winfo_toplevel(), "_piezo_top_chrome_height", 0)) or 42
+        theme = str(getattr(self.ctx.state, "theme", "light"))
+        header = label.master
+        family, weight = sidebar_brand_font_spec(self.winfo_toplevel())
+        preferred = _font_size_for_pixel_height(self.winfo_toplevel(), family, weight, height)
+        available = self._wordmark_slot(header, label) if isinstance(header, tk.Misc) else 0
+        size = preferred
+        own_row = False
+        if available > 0:
+            while size > 16:
+                probe = tkfont.Font(root=self.winfo_toplevel(), family=family, size=size, weight=weight)
+                if probe.measure("PIEZO CONTROL") <= available:
+                    break
+                size -= 1
+            probe = tkfont.Font(root=self.winfo_toplevel(), family=family, size=size, weight=weight)
+            own_row = probe.measure("PIEZO CONTROL") > available
+        text_color = self.ctx.colors.get("text", "#111827")
+        key = ("wordmark", height, theme, text_color, size, own_row)
         if getattr(label, "_logo_key", None) == key:
             return
-        image = self._header_logo_image(path, max_h)
-        label.configure(image=image, text="")
+        font: tuple[Any, ...] = (family, size) if weight == "normal" else (family, size, weight)
+        label.configure(image="", text="PIEZO CONTROL", font=font, foreground=text_color)
+        if own_row:
+            label.grid(row=2, column=0, columnspan=2, rowspan=1, sticky="e", padx=(16, 0), pady=(4, 0))
+        else:
+            label.grid(row=0, column=1, columnspan=1, rowspan=2, sticky="e", padx=(16, 0), pady=0)
         setattr(label, "_logo_key", key)
-        if image not in self._logo_images:
-            self._logo_images.append(image)
 
     def _header_logo_image(self, path: Path, max_h: int) -> tk.PhotoImage:
         root = self.winfo_toplevel()
@@ -615,32 +847,37 @@ class BasePage(ttk.Frame):
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(1, weight=1)
 
-        title = ttk.Label(frame, style="SectionTitle.TLabel")
-        title.grid(row=0, column=0, sticky="w", pady=(0, 6))
+        toolbar = WrappingGroupBar(frame)
+        toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        title_group = toolbar.add_group()
+        title = ttk.Label(title_group, style="SectionTitle.TLabel")
+        title.grid(row=0, column=0, sticky="w")
         self.bind_text(title, "serial_log")
 
-        clear_btn = ttk.Button(frame, style="Secondary.TButton", command=self.clear_serial_log)
-        clear_btn.grid(row=0, column=1, sticky="e", pady=(0, 6), padx=(8, 0))
+        clear_group = toolbar.add_group()
+        clear_btn = ttk.Button(clear_group, style="Secondary.TButton", command=self.clear_serial_log)
+        clear_btn.grid(row=0, column=0, sticky="w")
         self.bind_text(clear_btn, "clear_serial_log")
 
-        export_btn = ttk.Button(frame, style="Secondary.TButton", command=self.export_serial_log)
-        export_btn.grid(row=0, column=2, sticky="e", pady=(0, 6), padx=(8, 0))
+        export_group = toolbar.add_group()
+        export_btn = ttk.Button(export_group, style="Secondary.TButton", command=self.export_serial_log)
+        export_btn.grid(row=0, column=0, sticky="w")
         self.bind_text(export_btn, "export_serial_log")
 
-        text_options: dict[str, Any] = {}
-        if width is not None:
-            text_options["width"] = width
+        text_width = 8 if width is None else width
         text = tk.Text(
             frame,
             height=height,
+            width=text_width,
             wrap="none",
             relief="flat",
             highlightthickness=1,
             font=("Consolas", int(getattr(self.winfo_toplevel(), "_piezo_mono_font_size", 9))),
-            **text_options,
         )
-        text.grid(row=1, column=0, columnspan=3, sticky="nsew")
-        text.configure(state="disabled")
+        text.grid(row=1, column=0, sticky="nsew")
+        xscroll = ttk.Scrollbar(frame, orient="horizontal", command=text.xview)
+        xscroll.grid(row=2, column=0, sticky="ew")
+        text.configure(xscrollcommand=xscroll.set, state="disabled")
         self._serial_log_text = text
         self._refresh_serial_log_theme()
 

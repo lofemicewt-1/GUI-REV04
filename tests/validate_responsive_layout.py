@@ -398,7 +398,7 @@ class ResponsiveLayoutValidator:
         canvas_height = int(canvas.winfo_height())
         page_widget = self.nav.pages[page]
         pin = bool(getattr(page_widget, "pin_window_footer", False))
-        need_h = required_width > canvas_width + 1
+        need_h = (not pin) and required_width > canvas_width + 1
         need_v = (not pin) and required_height > canvas_height + 1
         got_h = _mapped(self.nav.h_scrollbar)
         got_v = _mapped(self.nav.v_scrollbar)
@@ -1346,7 +1346,7 @@ class ResponsiveLayoutValidator:
             ),
             encoding="utf-8",
         )
-        report_path = ROOT / "RESPONSIVE_LAYOUT_VALIDATION.md"
+        report_path = ROOT / "docs" / "specs" / "RESPONSIVE_LAYOUT_VALIDATION.md"
         errors = [item for item in self.issues if item.severity == "error"]
         warnings = [item for item in self.issues if item.severity == "warning"]
         lines = [

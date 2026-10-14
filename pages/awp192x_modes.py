@@ -4881,12 +4881,12 @@ class PumpModePage(BasePage):
         title_group = ttk.Frame(header, style="App.TFrame")
         title_group.grid(row=0, column=0, sticky="w")
 
-        title = ttk.Label(title_group, style="Title.TLabel")
+        title = ttk.Label(title_group, style="Prominent.TLabel")
         title.grid(row=0, column=0, sticky="w")
         self.bind_text(title, "pump_mode")
 
         for index, text in enumerate(self.PUMP_ROM_TITLE_PARTS, start=1):
-            label = ttk.Label(title_group, text=text, style="Title.TLabel")
+            label = ttk.Label(title_group, text=text, style="Prominent.TLabel")
             label.grid(row=0, column=index, sticky="w")
             if text == "ROM":
                 label.configure(cursor="question_arrow")

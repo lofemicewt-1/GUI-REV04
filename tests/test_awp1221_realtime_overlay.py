@@ -9,12 +9,15 @@ from types import SimpleNamespace
 from pages.awp1221_page import AWP1221ModePage
 from pages.awp1221_realtime_sram import (
     ADCVoltageWindow,
+    AWP1221RealtimeMixin,
     VIBRATION_BAND_COLOR,
     awp1221_adc_counts_to_mv,
     awp1221_plot_ceiling,
     awp1221_threshold_adc_counts,
     awp1221_vibration_band_seconds,
+    awp1221_vibration_falling_edge,
     awp1221_visible_band,
+    awp1221_zero_time_seconds,
 )
 
 
@@ -27,6 +30,12 @@ class Awp1221RealtimeHelperTests(unittest.TestCase):
 
     def test_invalid_code_is_masked_to_12_bits(self) -> None:
         self.assertEqual(awp1221_threshold_adc_counts(0x1400, False), 0x400)
+
+    def test_negative_code_sign_extends(self) -> None:
+        self.assertEqual(awp1221_threshold_adc_counts(0xFFF, False), -1)
+
+    def test_negative_code_precision_shifts_signed(self) -> None:
+        self.assertEqual(awp1221_threshold_adc_counts(0xFFF, True), -16)
 
     def test_mv_conversion_matches_live_curve_formula(self) -> None:
         self.assertAlmostEqual(awp1221_adc_counts_to_mv(400, 4.0, 40.0, 2.0), 32.0)
@@ -46,11 +55,33 @@ class Awp1221RealtimeHelperTests(unittest.TestCase):
     def test_negative_period_and_debounce_clamp_to_zero(self) -> None:
         self.assertEqual(awp1221_vibration_band_seconds(-1.0, 1, -50), 0.0)
 
+    def test_debounce_skipped_when_disabled(self) -> None:
+        self.assertAlmostEqual(
+            awp1221_vibration_band_seconds(0.010, 1, 100, debounce_enabled=False, zero_time_s=0.032),
+            0.042,
+        )
+
+    def test_zero_time_label_to_seconds(self) -> None:
+        self.assertAlmostEqual(awp1221_zero_time_seconds("32 ms"), 0.032)
+        self.assertAlmostEqual(awp1221_zero_time_seconds("1 ms"), 0.001)
+
     def test_visible_band_clips_to_window(self) -> None:
         self.assertEqual(awp1221_visible_band(8.0, 4.0, 10.0, 5.0), (8.0, 10.0))
 
     def test_visible_band_none_when_outside_span(self) -> None:
         self.assertIsNone(awp1221_visible_band(0.0, 1.0, 10.0, 5.0))
+
+    def test_visible_band_just_started_paints_into_the_past(self) -> None:
+        left, right = awp1221_visible_band(10.0, 0.032, 10.0, 10.0, min_width_s=0.1)
+        self.assertAlmostEqual(left, 9.9)
+        self.assertAlmostEqual(right, 10.0)
+
+    def test_vibration_falling_edge_only_high_to_low(self) -> None:
+        self.assertTrue(awp1221_vibration_falling_edge(1, 0))
+        self.assertTrue(awp1221_vibration_falling_edge(None, 0))
+        self.assertFalse(awp1221_vibration_falling_edge(0, 0))
+        self.assertFalse(awp1221_vibration_falling_edge(1, 1))
+        self.assertFalse(awp1221_vibration_falling_edge(0, 1))
 
 
 class Awp1221RealtimeWindowTests(unittest.TestCase):
@@ -89,7 +120,7 @@ class Awp1221RealtimeWindowTests(unittest.TestCase):
         self.assertTrue(before <= start <= after)
         self.assertAlmostEqual(duration, 0.12)
 
-    def test_redraw_creates_threshold_and_band_items(self) -> None:
+    def test_redraw_creates_threshold_items_but_hides_band_items(self) -> None:
         self.window.update_idletasks()
         self.window.canvas.config(width=400, height=300)
         self.window.update_idletasks()
@@ -100,7 +131,8 @@ class Awp1221RealtimeWindowTests(unittest.TestCase):
         fills = [self.window.canvas.itemcget(item, "fill") for item in self.window.canvas.find_all()]
         self.assertIn("#2563EB", fills)
         self.assertIn("#9333EA", fills)
-        self.assertIn(VIBRATION_BAND_COLOR, fills)
+        self.assertNotIn(VIBRATION_BAND_COLOR, fills)
+        self.assertEqual(len(self.window.vibration_bands), 1)
 
 
 def _var(value: object) -> SimpleNamespace:
@@ -163,14 +195,50 @@ class Awp1221RealtimePageLogicTests(unittest.TestCase):
         ]
         self.assertEqual(page._realtime_threshold_counts(), (None, 100))
 
+    def test_out_of_range_threshold_omits_that_line(self) -> None:
+        page = object.__new__(AWP1221ModePage)
+        page.mode_key = "button_mode"
+        page._button_stage_vars = [
+            {
+                "event_mode": _var("press"),
+                "threshold": _var("4095"),
+                "use_high_12_bits": _var(False),
+                "repeat": _var("0"),
+            },
+            {
+                "event_mode": _var("release"),
+                "threshold": _var("-1"),
+                "use_high_12_bits": _var(False),
+                "repeat": _var("0"),
+            },
+        ]
+        self.assertEqual(page._realtime_threshold_counts(), (None, -1))
+
     def test_vibration_duration_combines_period_repeat_debounce(self) -> None:
         page = object.__new__(AWP1221ModePage)
+        page.mode_key = "button_mode"
+        page._button_stage_vars = [
+            {"event_mode": _var("press"), "debounce": _var(True)},
+        ]
         page._realtime_waveform_period_s = lambda: 0.01
         page._realtime_press_repeat = lambda: 2
         page.debounce_time_var = _var("100")
-        self.assertAlmostEqual(page._realtime_vibration_duration_s(), 0.12)
+        page.zero_time_var = _var("32 ms")
+        self.assertAlmostEqual(page._realtime_vibration_duration_s(), 0.152)
 
-    def test_process_p_starts_band_without_trigger_read(self) -> None:
+    def test_vibration_duration_skips_debounce_when_unchecked(self) -> None:
+        page = object.__new__(AWP1221ModePage)
+        page.mode_key = "button_mode"
+        page._button_stage_vars = [
+            {"event_mode": _var("press"), "debounce": _var(False)},
+        ]
+        page._realtime_waveform_period_s = lambda: 0.01
+        page._realtime_press_repeat = lambda: 1
+        page.debounce_time_var = _var("100")
+        page.zero_time_var = _var("32 ms")
+        self.assertAlmostEqual(page._realtime_vibration_duration_s(), 0.042)
+
+    def test_process_p_does_not_start_band_without_d2_low(self) -> None:
         bands: list[float] = []
         page = object.__new__(AWP1221ModePage)
         page._adc_realtime_active = True
@@ -184,7 +252,23 @@ class Awp1221RealtimePageLogicTests(unittest.TestCase):
         page._realtime_vibration_duration_s = lambda: 0.12
         page._request_adc_value_read = lambda **kwargs: None
         AWP1221ModePage._process_adc_trigger_log(page, "MCU_TEXT P")
-        self.assertEqual(bands, [0.12])
+        self.assertEqual(bands, [])
+
+    def test_d2_falling_edge_starts_one_band(self) -> None:
+        bands: list[float] = []
+        page = object.__new__(AWP1221RealtimeMixin)
+        page._vibration_gpio_level = 1
+        page._adc_realtime_active = True
+        page._adc_voltage_window = SimpleNamespace(
+            winfo_exists=lambda: True,
+            add_vibration_band=lambda duration: bands.append(duration),
+        )
+        page._realtime_vibration_duration_s = lambda: 0.12
+        page._note_vibration_gpio_level(0)
+        page._note_vibration_gpio_level(0)
+        page._note_vibration_gpio_level(1)
+        page._note_vibration_gpio_level(0)
+        self.assertEqual(bands, [0.12, 0.12])
 
 
 if __name__ == "__main__":

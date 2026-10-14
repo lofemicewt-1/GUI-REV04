@@ -1,6 +1,7 @@
 """Manual smoke check: launch a command, verify its GUI, and close only that GUI.
 
 Usage: py -3 build_support/check_windows_launch.py path/to/program.exe
+       py -3 build_support/check_windows_launch.py --resize path/to/program.exe
        py -3 build_support/check_windows_launch.py cmd /d /c path/to/run_gui.bat
 Uses Win32 process ancestry so an already-running user GUI is never closed.
 """
@@ -51,6 +52,12 @@ def descendants(pid: int) -> set[int]:
 
 
 def main() -> None:
+    command = sys.argv[1:]
+    exercise_resize = bool(command and command[0] == "--resize")
+    if exercise_resize:
+        command = command[1:]
+    if not command:
+        raise SystemExit("Supply a program to launch")
     user = c.WinDLL("user32", use_last_error=True)
     callback_type = c.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
     user.EnumWindows.argtypes = [callback_type, w.LPARAM]
@@ -61,14 +68,16 @@ def main() -> None:
                                        w.UINT, w.UINT, c.POINTER(c.c_size_t)]
     user.SendMessageTimeoutW.restype = c.c_ssize_t
     user.PostMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
+    user.ShowWindowAsync.argtypes = [w.HWND, c.c_int]
+    user.SetWindowPos.argtypes = [w.HWND, w.HWND, c.c_int, c.c_int, c.c_int, c.c_int, w.UINT]
     env = os.environ.copy()
     # EXE must not depend on a Python installation or inherited Tcl paths.
-    if Path(sys.argv[1]).suffix.lower() == ".exe":
+    if Path(command[0]).suffix.lower() == ".exe":
         env["PATH"] = str(Path(os.environ["SystemRoot"]) / "System32")
         for key in ("PYTHONHOME", "PYTHONPATH", "TCL_LIBRARY", "TK_LIBRARY"):
             env[key] = str(Path(tempfile.gettempdir()) / "nonexistent-python-runtime")
     with tempfile.TemporaryDirectory(prefix="gui-cwd-", ignore_cleanup_errors=True) as cwd, tempfile.TemporaryFile() as log:
-        process = subprocess.Popen(sys.argv[1:], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+        process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                    stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW)
         try:
             deadline = time.monotonic() + 30
@@ -97,6 +106,26 @@ def main() -> None:
             result = c.c_size_t()
             if not user.SendMessageTimeoutW(matches[0], 0, 0, 0, 2, 3000, c.byref(result)):
                 raise RuntimeError("Main window does not respond")
+            if exercise_resize:
+                hwnd = matches[0]
+                for label, state, size in (
+                    ("maximize", 3, None),
+                    ("restore", 9, (1000, 700)),
+                    ("small", 9, (640, 480)),
+                    ("large", 9, (1600, 900)),
+                    ("minimize", 6, None),
+                    ("restore-again", 9, (1200, 800)),
+                ):
+                    user.ShowWindowAsync(hwnd, state)
+                    if size:
+                        # Async, no activation, and no Z-order change; only
+                        # the test-owned window is resized.
+                        user.SetWindowPos(hwnd, None, 20, 20, *size, 0x4014)
+                    for _ in range(6):
+                        time.sleep(0.1)
+                        if not user.SendMessageTimeoutW(hwnd, 0, 0, 0, 2, 500, c.byref(result)):
+                            raise RuntimeError(f"Main window stalled during {label}")
+                print("PASS: maximize/restore/resize/minimize, 36 response checks within 500 ms")
             user.PostMessageW(matches[0], 0x10, 0, 0)
             code = process.wait(timeout=15)
             if code:

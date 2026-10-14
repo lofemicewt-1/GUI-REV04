@@ -8,6 +8,28 @@ from typing import Any
 from pages.base_page import BasePage
 
 
+def awp1922_amplitude_code(label: str) -> int | None:
+    labels = [f"{(i + 1) * 2.8:.2f} V" for i in range(0x20)]
+    if label not in labels:
+        return None
+    return labels.index(label) & 0x1F
+
+
+def awp1922_frequency_code(label: str, options: list[int]) -> int | None:
+    text = label.replace("Hz", "").strip()
+    try:
+        freq = int(text)
+    except ValueError:
+        return None
+    if freq not in options:
+        return None
+    return options.index(freq) & 0xFF
+
+
+def awp1922_play_value(current: int) -> int:
+    return (int(current) | 0x40) & 0xFF
+
+
 class AWP1922Page(BasePage):
     """
     AWP1922 \u72ec\u7acb\u82af\u7247\u9875\u9762\u3002
@@ -56,76 +78,63 @@ class AWP1922Page(BasePage):
         footer.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         actions.grid_remove()
 
-        addr_label = ttk.Label(identity, style="Panel.TLabel")
-        self.make_serial_selector(identity, page_name=self.page_name, row=0, column=0)
-        addr_label.grid(row=0, column=2, sticky="w", padx=(0, 8))
+        serial_group = identity.add_group()
+        self.make_serial_selector(serial_group, page_name=self.page_name, row=0, column=0)
+        addr_group = identity.add_group()
+        addr_label = ttk.Label(addr_group, style="Panel.TLabel")
+        addr_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels["awp1922_addr"] = addr_label
-
         ttk.Combobox(
-            identity,
+            addr_group,
             textvariable=self.addr_var,
             values=[f"0x{x:02X}" for x in range(0x58, 0x60)],
             state="readonly",
             width=10,
-        ).grid(row=0, column=3, sticky="w", padx=(0, 12))
+        ).grid(row=0, column=1, sticky="w")
 
-        detect_btn = ttk.Button(identity, style="Primary.TButton", command=self.detect_chip)
-        detect_btn.grid(row=0, column=4, sticky="w", padx=(0, 16))
+        detect_group = identity.add_group()
+        detect_btn = ttk.Button(detect_group, style="Primary.TButton", command=self.detect_chip)
+        detect_btn.grid(row=0, column=0, sticky="w")
         self._buttons["detect_chip"] = detect_btn
 
-        ttk.Label(identity, textvariable=self.status_var, style="Muted.TLabel").grid(
-            row=0, column=5, sticky="e"
-        )
+        status_group = identity.add_group()
+        ttk.Label(status_group, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
 
-        reg_panel.columnconfigure(9, weight=1)
-
-        reg_title = ttk.Label(reg_panel, style="Panel.TLabel")
-        reg_title.grid(row=0, column=0, sticky="w", padx=(0, 12))
+        title_group = reg_panel.add_group()
+        reg_title = ttk.Label(title_group, style="Panel.TLabel")
+        reg_title.grid(row=0, column=0, sticky="w")
         self._labels["register_tools"] = reg_title
+        self._add_footer_field(reg_panel, "reg_addr", self.reg_addr_var, 8)
+        self._add_footer_field(reg_panel, "write_value", self.write_value_var, 10)
+        self._add_footer_field(reg_panel, "read_value", self.read_value_var, 12, readonly=True)
 
-        reg_addr_label = ttk.Label(reg_panel, style="Panel.TLabel")
-        reg_addr_label.grid(row=0, column=1, sticky="w", padx=(0, 6))
-        self._labels["reg_addr"] = reg_addr_label
-        ttk.Entry(reg_panel, textvariable=self.reg_addr_var, width=8).grid(
-            row=0, column=2, sticky="w", padx=(0, 12)
-        )
-
-        write_value_label = ttk.Label(reg_panel, style="Panel.TLabel")
-        write_value_label.grid(row=0, column=3, sticky="w", padx=(0, 6))
-        self._labels["write_value"] = write_value_label
-        ttk.Entry(reg_panel, textvariable=self.write_value_var, width=10).grid(
-            row=0, column=4, sticky="w", padx=(0, 12)
-        )
-
-        read_value_label = ttk.Label(reg_panel, style="Panel.TLabel")
-        read_value_label.grid(row=0, column=5, sticky="w", padx=(0, 6))
-        self._labels["read_value"] = read_value_label
-        ttk.Entry(reg_panel, textvariable=self.read_value_var, width=12, state="readonly").grid(
-            row=0, column=6, sticky="w", padx=(0, 12)
-        )
-
-        rr_btn = ttk.Button(reg_panel, style="Secondary.TButton", command=self.read_register)
-        rr_btn.grid(row=0, column=7, sticky="w", padx=(0, 6))
+        button_group = reg_panel.add_group()
+        rr_btn = ttk.Button(button_group, style="Secondary.TButton", command=self.read_register)
+        rr_btn.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._buttons["rr"] = rr_btn
-
-        rw_btn = ttk.Button(reg_panel, style="Primary.TButton", command=self.write_register)
-        rw_btn.grid(row=0, column=8, sticky="w")
+        rw_btn = ttk.Button(button_group, style="Primary.TButton", command=self.write_register)
+        rw_btn.grid(row=0, column=1, sticky="w")
         self._buttons["rw"] = rw_btn
 
-        scroll_area, body = self.make_vertical_scroll_area(self)
+        scroll_area, body = self.make_vertical_scroll_area(self, propagate_height=True)
         scroll_area.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=1)
-        body.columnconfigure(1, weight=1)
+        body.columnconfigure(0, weight=1, uniform="awp1922_pair")
+        body.columnconfigure(1, weight=1, uniform="awp1922_pair")
         body.rowconfigure(0, weight=1)
+        self._body = body
+        self._body_scroll = scroll_area
 
         left = ttk.Frame(body, style="Panel.TFrame", padding=18)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         left.columnconfigure(1, weight=1)
+        self._left = left
 
         right = ttk.Frame(body, style="Panel.TFrame", padding=18)
-        right.grid(row=0, column=1, sticky="nsew")
-        right.columnconfigure(1, weight=1)
+        right.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=1)
+        self._right = right
+        scroll_area.canvas.bind("<Configure>", self._reflow_columns, add="+")
 
         row = 0
         self._add_combo(left, row, "amplitude", self.amp_var, self._amp_labels())
@@ -164,12 +173,65 @@ class AWP1922Page(BasePage):
         self.hint_label.grid(row=row + 1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
 
         log_frame = self.make_serial_log(right, height=12, subscribe=True)
-        log_frame.grid(row=0, column=0, columnspan=2, sticky="nsew")
+        log_frame.grid(row=0, column=0, sticky="nsew")
 
         self.amp_var.trace_add("write", lambda *_: self._on_amp_changed())
         self.freq_var.trace_add("write", lambda *_: self._on_freq_changed())
 
         self.refresh_language()
+
+    def _add_footer_field(
+        self,
+        bar: Any,
+        key: str,
+        variable: tk.StringVar,
+        width: int,
+        *,
+        readonly: bool = False,
+    ) -> None:
+        group = bar.add_group()
+        label = ttk.Label(group, style="Panel.TLabel")
+        label.grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self._labels[key] = label
+        entry = ttk.Entry(group, textvariable=variable, width=width)
+        if readonly:
+            entry.configure(state="readonly")
+        entry.grid(row=0, column=1, sticky="w")
+
+    def _reflow_columns(self, event: tk.Event | None = None) -> None:
+        if getattr(self, "_reflowing_columns", False):
+            return
+        canvas = self._body_scroll.canvas
+        try:
+            width = int(canvas.winfo_width())
+        except tk.TclError:
+            return
+        if width <= 1:
+            return
+        left_w = max(1, int(self._left.winfo_reqwidth()))
+        right_w = max(1, int(self._right.winfo_reqwidth()))
+        stack = width < left_w + right_w + 24
+        if stack == getattr(self, "_columns_stacked", None):
+            self.hint_label.configure(wraplength=max(140, int(self._left.winfo_width()) - 36))
+            return
+        self._reflowing_columns = True
+        try:
+            self._columns_stacked = stack
+            if stack:
+                self._body.columnconfigure(0, weight=1, uniform="")
+                self._body.columnconfigure(1, weight=0, uniform="")
+                self._body.rowconfigure(1, weight=1)
+                self._left.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=0, pady=(0, 12))
+                self._right.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=0, pady=0)
+            else:
+                self._body.columnconfigure(0, weight=1, uniform="awp1922_pair")
+                self._body.columnconfigure(1, weight=1, uniform="awp1922_pair")
+                self._body.rowconfigure(1, weight=0)
+                self._left.grid(row=0, column=0, columnspan=1, sticky="nsew", padx=(0, 6), pady=0)
+                self._right.grid(row=0, column=1, columnspan=1, sticky="nsew", padx=(6, 0), pady=0)
+            self.hint_label.configure(wraplength=max(140, (width if stack else width // 2) - 48))
+        finally:
+            self._reflowing_columns = False
 
     def _amp_labels(self) -> list[str]:
         return [f"{(i + 1) * 2.8:.2f} V" for i in range(0x20)]
@@ -215,6 +277,28 @@ class AWP1922Page(BasePage):
     def _log_local(self, message: str) -> None:
         return
 
+    def _i2c_failed(self, response: Any) -> bool:
+        text = f"{getattr(response, 'error', '')} {getattr(response, 'data', '')}".upper()
+        return "I2C" in text
+
+    def _clear_status(self, dev: int | None = None) -> None:
+        if getattr(self, "_clearing_status", False):
+            return
+        self._clearing_status = True
+        try:
+            if not self.ctx.serial.is_connected:
+                return
+            self.ctx.serial.read_register_value(self._addr() if dev is None else dev, 0x01, bits=8)
+        finally:
+            self._clearing_status = False
+
+    def _write_recovered(self, dev: int, reg: int, value: int) -> Any:
+        resp = self.ctx.serial.write_register_value(dev, reg, value, bits=8)
+        if resp.ok or not self._i2c_failed(resp):
+            return resp
+        self._clear_status(dev)
+        return self.ctx.serial.write_register_value(dev, reg, value, bits=8)
+
     def detect_chip(self) -> None:
         if not self._ensure_connected():
             return
@@ -242,12 +326,16 @@ class AWP1922Page(BasePage):
         else:
             show = "None" if value is None else f"0x{value:02X}"
             self.status_var.set(self.tr("chip_detect_failed") + f" 0x00={show}")
+        self._clear_status(addr)
 
     def _write8(self, reg: int, value: int, show_error: bool = True) -> bool:
         if not self._ensure_connected():
             return False
-        self._log_local(f"WRITE8 dev=0x{self._addr():02X} reg=0x{reg & 0xFF:02X} value=0x{value & 0xFF:02X}")
-        resp = self.ctx.serial.write_register_value(self._addr(), reg, value, bits=8)
+        dev = self._addr()
+        self._log_local(f"WRITE8 dev=0x{dev:02X} reg=0x{reg & 0xFF:02X} value=0x{value & 0xFF:02X}")
+        resp = self._write_recovered(dev, reg, value)
+        if resp.ok and (reg & 0xFF) == 0x00 and (value & 0x40):
+            self._clear_status(dev)
         if not resp.ok:
             self._log_local(f"ERROR {resp.error}")
             if show_error:
@@ -273,7 +361,9 @@ class AWP1922Page(BasePage):
                 on_success()
 
         def worker() -> None:
-            resp = self.ctx.serial.write_register_value(dev, reg, value, bits=8)
+            resp = self._write_recovered(dev, reg, value)
+            if resp.ok and (reg & 0xFF) == 0x00 and (value & 0x40):
+                self._clear_status(dev)
             try:
                 self.after(0, finish, resp.ok, resp.data, resp.error)
             except tk.TclError:
@@ -301,7 +391,7 @@ class AWP1922Page(BasePage):
         return self.current_ctrl_reg
 
     def start_play(self) -> None:
-        self.current_ctrl_reg = self.current_ctrl_reg | 0x40
+        self.current_ctrl_reg = awp1922_play_value(self.current_ctrl_reg)
         self._write8_async(0x00, self.current_ctrl_reg, on_success=lambda: self._set_button_selected("start_play", True))
 
     def stop_play(self) -> None:
@@ -309,31 +399,30 @@ class AWP1922Page(BasePage):
         self._write8_async(0x00, self.current_ctrl_reg, on_success=lambda: self._set_button_selected("start_play", False))
 
     def wake(self) -> None:
-        reg = self._read_control_reg()
-        self.current_ctrl_reg = reg | 0x80
+        self.current_ctrl_reg = self.current_ctrl_reg | 0x80
         self._write8(0x00, self.current_ctrl_reg)
 
     def shutdown(self) -> None:
-        reg = self._read_control_reg()
-        self.current_ctrl_reg = reg & ~0x80
+        self.current_ctrl_reg = self.current_ctrl_reg & ~0x80
         self._write8(0x00, self.current_ctrl_reg)
 
+    def _write_selected_frequency(self, show_error: bool = False) -> bool:
+        code = awp1922_frequency_code(self.freq_var.get(), self.FREQ_OPTIONS)
+        if code is None:
+            return True
+        return self._write8(0x05, code, show_error=show_error)
+
+    def _write_selected_amplitude(self, show_error: bool = False) -> bool:
+        code = awp1922_amplitude_code(self.amp_var.get())
+        if code is None:
+            return True
+        return self._write8(0x06, code, show_error=show_error)
+
     def _on_amp_changed(self) -> None:
-        label = self.amp_var.get()
-        labels = self._amp_labels()
-        if label in labels:
-            value = labels.index(label) & 0x1F
-            self._write8(0x06, value, show_error=False)
+        self._write_selected_amplitude(show_error=False)
 
     def _on_freq_changed(self) -> None:
-        label = self.freq_var.get().replace("Hz", "").strip()
-        try:
-            freq = int(label)
-            if freq in self.FREQ_OPTIONS:
-                code = self.FREQ_OPTIONS.index(freq) & 0xFF
-                self._write8(0x05, code, show_error=False)
-        except Exception:
-            pass
+        self._write_selected_frequency(show_error=False)
 
     def read_register(self) -> None:
         if not self._ensure_connected():
@@ -354,6 +443,8 @@ class AWP1922Page(BasePage):
                 self.read_value_var.set(resp.data if value is None else f"0x{value & 0xFF:02X}")
                 if value is not None:
                     self._log_local(f"READ8_DATA reg=0x{reg & 0xFF:02X} value=0x{value & 0xFF:02X}")
+                if (reg & 0xFF) != 0x01:
+                    self._clear_status(addr)
             else:
                 self._log_local(f"ERROR {resp.error}")
                 messagebox.showerror(self.tr("error"), resp.error)

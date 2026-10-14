@@ -10,7 +10,7 @@ AWP1221_SINC_HALF_Q_VOLTS = AWP1221_SINC_Q_VOLTS / 2
 AWP1221_SINC_MIN_OFFSET_STEPS = -63
 AWP1221_SINC_MAX_OFFSET_STEPS = 64
 AWP1221_SINC_MAX_K = 128
-AWP1221_SINC_WRITABLE_SERIALS = frozenset({"serial1", "serial2"})
+AWP1221_SINC_WRITABLE_SERIALS = frozenset({"serial1", "serial2", "serial3", "serial4"})
 AWP1221_SINC_DEPTH_POINTS = {
     "512": 512,
     "256": 256,
@@ -23,8 +23,8 @@ AWP1221_SINC_SLICE_WINDOWS = {
     "serial0": (),
     "serial1": ((0x12, 0x14),),
     "serial2": ((0x15, 0x17),),
-    "serial3": ((0x18, 0x1A), (0x19, 0x1B)),
-    "serial4": ((0x1C, 0x1E), (0x1D, 0x1F)),
+    "serial3": ((0x18, 0x1B),),
+    "serial4": ((0x1C, 0x1F),),
 }
 AWP1221_SINC_HALF_CYCLE_CODES = (0b01, 0b10, 0b01)
 
@@ -33,8 +33,9 @@ AWP1221_SINC_HALF_CYCLE_CODES = (0b01, 0b10, 0b01)
 class Awp1221SincParams:
     peak_target: float
     trough_target: float
-    times_us: tuple[int, int, int]
+    times_us: tuple[int, ...]
     depth_points: int
+    sin_repeat_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -162,10 +163,16 @@ def awp1221_sinc_parse_params(
     time2_text: str,
     time3_text: str,
     depth_text: str,
+    time4_text: str | None = None,
+    sin_repeat_text: str = "1",
 ) -> Awp1221SincParams:
     peak = _parse_positive_voltage(peak_text, "Maximum")
     trough = _parse_positive_voltage(trough_text, "Minimum")
-    times = tuple(_parse_point_time(value) for value in (time1_text, time2_text, time3_text))
+    time_texts = (time1_text, time2_text, time3_text)
+    if time4_text is not None:
+        time_texts += (time4_text,)
+    times = tuple(_parse_point_time(value) for value in time_texts)
+    repeat_count = _parse_repeat_count(sin_repeat_text)
     depth_key = str(depth_text).strip()
     if depth_key not in AWP1221_SINC_DEPTH_POINTS:
         raise ValueError(f"Unsupported waveform depth: {depth_text}")
@@ -174,6 +181,7 @@ def awp1221_sinc_parse_params(
         trough_target=trough,
         times_us=times,
         depth_points=AWP1221_SINC_DEPTH_POINTS[depth_key],
+        sin_repeat_count=repeat_count,
     )
 
 
@@ -197,10 +205,36 @@ def _parse_point_time(text: str) -> int:
     return value
 
 
-def awp1221_sinc_duration_us(depth_points: int, time1: int, time2: int, time3: int) -> int:
+def _parse_repeat_count(text: str) -> int:
+    try:
+        value = int(str(text).strip(), 10)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("SIN repeat count must be an integer in range 1..256") from exc
+    if not 1 <= value <= 256:
+        raise ValueError("SIN repeat count must be in range 1..256")
+    return value
+
+
+def awp1221_sinc_duration_us(
+    depth_points: int,
+    time1: int,
+    time2: int,
+    time3: int,
+    time4: int | None = None,
+    sin_repeat_count: int = 1,
+) -> int:
     if depth_points not in AWP1221_SINC_DEPTH_CODES:
         raise ValueError(f"Unsupported waveform depth: {depth_points}")
-    return (depth_points // 2) * (int(time1) + int(time2) + int(time3))
+    if time4 is None:
+        return (depth_points // 2) * sum(map(int, (time1, time2, time3)))
+    else:
+        repeat_count = int(sin_repeat_count)
+        if not 1 <= repeat_count <= 256:
+            raise ValueError("SIN repeat count must be in range 1..256")
+        return (
+            depth_points * int(time1) * repeat_count
+            + (depth_points // 2) * sum(map(int, (time2, time3, time4)))
+        )
 
 
 def awp1221_sinc_slice_windows(serial: str) -> tuple[tuple[int, int], ...]:
@@ -338,8 +372,29 @@ def build_awp1221_sinc_plan(
     windows = awp1221_sinc_slice_windows(serial)
     depth_code = AWP1221_SINC_DEPTH_CODES[params.depth_points]
     points_per_segment = params.depth_points // 2
-    duration_us = awp1221_sinc_duration_us(params.depth_points, *params.times_us)
+    duration_us = awp1221_sinc_duration_us(
+        params.depth_points,
+        *params.times_us,
+        sin_repeat_count=params.sin_repeat_count,
+    )
     solved = awp1221_sinc_solve(params.peak_target, params.trough_target)
+    if serial in {"serial3", "serial4"} and len(params.times_us) != 4:
+        return Awp1221SincPlan(
+            serial=serial,
+            writable=False,
+            reason="four_times_required",
+            slices=(),
+            sram_words=(),
+            params=params,
+            solution=solved.solution,
+            descriptor_words=(),
+            offset_codes=(),
+            vpk_codes=(),
+            half_cycle_codes=(),
+            duration_us=duration_us,
+            points_per_segment=points_per_segment,
+            depth_code=depth_code,
+        )
     if not windows:
         return Awp1221SincPlan(
             serial=serial,
@@ -360,9 +415,10 @@ def build_awp1221_sinc_plan(
     if not 0 <= int(window_index) < len(windows):
         raise ValueError("SINC slice window index is out of range")
     start_slice, end_slice = windows[int(window_index)]
-    slices = tuple(range(start_slice, start_slice + 3))
+    slice_count = 4 if serial in {"serial3", "serial4"} else 3
+    slices = tuple(range(start_slice, start_slice + slice_count))
     if slices[-1] > end_slice:
-        raise ValueError("SINC slice window must contain three slices")
+        raise ValueError("Waveform slice window does not contain the required slices")
     sram_words = tuple(
         slice_index * 4 + word
         for slice_index in slices
@@ -394,14 +450,34 @@ def build_awp1221_sinc_plan(
             points_per_segment=points_per_segment,
             depth_code=depth_code,
         )
-    descriptor_words = tuple(
+    sinc_descriptor_words = tuple(
         encode_awp1221_sinc_descriptor_words(
             segment,
             depth_code=depth_code,
             point_time=point_time,
         )
-        for segment, point_time in zip(solution.segments, params.times_us)
+        for segment, point_time in zip(solution.segments, params.times_us[-3:])
     )
+    if slice_count == 4:
+        if len(params.times_us) != 4:
+            raise ValueError("Serial3/4 require one SIN and three SINC point times")
+        first = solution.segments[0]
+        sin_descriptor_words = (
+            (0b10 << 10)
+            | (first.fine_code << 6)
+            | (depth_code << 5),
+            params.times_us[0] - 1,
+            params.sin_repeat_count - 1,
+        )
+        descriptor_words = (sin_descriptor_words, *sinc_descriptor_words)
+        offset_codes = (first.offset_code, *(segment.offset_code for segment in solution.segments))
+        vpk_codes = (first.coarse_code, *(segment.coarse_code for segment in solution.segments))
+        half_cycle_codes = (0, *(segment.half_cycle_code for segment in solution.segments))
+    else:
+        descriptor_words = sinc_descriptor_words
+        offset_codes = tuple(segment.offset_code for segment in solution.segments)
+        vpk_codes = tuple(segment.coarse_code for segment in solution.segments)
+        half_cycle_codes = tuple(segment.half_cycle_code for segment in solution.segments)
     return Awp1221SincPlan(
         serial=serial,
         writable=writable,
@@ -411,9 +487,9 @@ def build_awp1221_sinc_plan(
         params=params,
         solution=solution,
         descriptor_words=descriptor_words,
-        offset_codes=tuple(segment.offset_code for segment in solution.segments),
-        vpk_codes=tuple(segment.coarse_code for segment in solution.segments),
-        half_cycle_codes=tuple(segment.half_cycle_code for segment in solution.segments),
+        offset_codes=offset_codes,
+        vpk_codes=vpk_codes,
+        half_cycle_codes=half_cycle_codes,
         duration_us=duration_us,
         points_per_segment=points_per_segment,
         depth_code=depth_code,

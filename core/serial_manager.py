@@ -382,7 +382,7 @@ class SerialManager:
     def list_ports(self) -> list[str]:
         return [info.device for info in self.list_port_info()]
 
-    def list_port_info(self) -> list[SerialPortInfo]:
+    def list_port_info(self, *, probe_missing: bool = True) -> list[SerialPortInfo]:
         self.last_error = ""
         if serial is None:
             self.last_error = "pyserial is not installed"
@@ -397,7 +397,7 @@ class SerialManager:
         except Exception as exc:
             self.last_error = str(exc)
 
-        if sys.platform.startswith("win") and not ports:
+        if sys.platform.startswith("win") and not ports and probe_missing:
             for port in self._scan_windows_com_ports():
                 ports[port] = port
 
@@ -1161,8 +1161,8 @@ class SerialManager:
 
         payload = bytes(payload)
         length = len(payload)
-        if length < 1 or length > 128:
-            return SerialResponse(False, error="CFG payload length must be between 1 and 128 bytes")
+        if length not in (128, 256):
+            return SerialResponse(False, error="CFG record length must be 128 or 256 bytes")
         crc = crc16_ccitt_false(payload)
 
         with self.snapshot_transaction():
@@ -1202,8 +1202,15 @@ class SerialManager:
         Extract the HEX field from a CFGREAD response.
         Format: CFGREAD <slot> <HEX> CRC=<crc>
         """
-        match = re.match(r"CFGREAD\s+\d+\s+([0-9A-Fa-f]+)\s+CRC=[0-9A-Fa-f]+", text.strip())
+        match = re.fullmatch(r"CFGREAD\s+\d+\s+([0-9A-Fa-f]+)\s+CRC=([0-9A-Fa-f]{4})", text.strip())
         if not match:
+            return None
+        from core.arduino_preset_sync import crc16_ccitt_false
+        try:
+            raw = bytes.fromhex(match.group(1))
+        except ValueError:
+            return None
+        if len(raw) not in (128, 256) or crc16_ccitt_false(raw) != int(match.group(2), 16):
             return None
         return match.group(1).upper()
 
@@ -1308,9 +1315,12 @@ class SerialRouter:
     def list_ports(self) -> list[str]:
         return [info.device for info in self.list_port_info()]
 
-    def list_port_info(self) -> list[SerialPortInfo]:
+    def list_port_info(self, *, probe_missing: bool = True) -> list[SerialPortInfo]:
         self.last_error = ""
-        info = self._scanner.list_port_info()
+        try:
+            info = self._scanner.list_port_info(probe_missing=probe_missing)
+        except TypeError:
+            info = self._scanner.list_port_info()
         self.last_error = getattr(self._scanner, "last_error", "")
         seen = {item.device for item in info}
         for port in self.connected_ports():

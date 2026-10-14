@@ -78,6 +78,7 @@ class AWP1018Page(BasePage):
             self,
             horizontal=True,
             min_content_width=1320,
+            propagate_height=True,
         )
         self.mode_scroll.grid(row=1, column=0, sticky="nsew")
         # Keep the first glyph inside the canvas clip edge when a small
@@ -144,52 +145,58 @@ class AWP1018Page(BasePage):
             self._buttons[key] = button
 
     def _build_identity_bar(self, parent: tk.Misc) -> None:
-        addr_label = ttk.Label(parent, style="Panel.TLabel")
-        self.make_serial_selector(parent, page_name=self.page_name, row=0, column=0)
-        addr_label.grid(row=0, column=2, sticky="w", padx=(0, 8))
+        serial_group = parent.add_group()
+        self.make_serial_selector(serial_group, page_name=self.page_name, row=0, column=0)
+        addr_group = parent.add_group()
+        addr_label = ttk.Label(addr_group, style="Panel.TLabel")
+        addr_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels["current_chip_addr"] = addr_label
         self.addr_combo = ttk.Combobox(
-            parent,
+            addr_group,
             textvariable=self.addr_var,
             values=[f"0x{addr:02X}" for addr in self.DEVICE_ADDRS],
             state="readonly",
             width=10,
         )
-        self.addr_combo.grid(row=0, column=3, sticky="w", padx=(0, 12))
+        self.addr_combo.grid(row=0, column=1, sticky="w")
         self.addr_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_addr_changed())
-        detect_btn = ttk.Button(parent, style="Primary.TButton", command=self.detect_chip)
-        detect_btn.grid(row=0, column=4, sticky="w", padx=(0, 16))
+        detect_group = parent.add_group()
+        detect_btn = ttk.Button(detect_group, style="Primary.TButton", command=self.detect_chip)
+        detect_btn.grid(row=0, column=0, sticky="w")
         self._buttons["detect_chip"] = detect_btn
-        ttk.Label(parent, textvariable=self.status_var, style="Muted.TLabel").grid(
-            row=0, column=5, sticky="e"
-        )
+        status_group = parent.add_group()
+        ttk.Label(status_group, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
 
     def _build_register_bar(self, parent: tk.Misc) -> None:
-        title_label = ttk.Label(parent, style="Panel.TLabel")
-        title_label.grid(row=0, column=0, sticky="w", padx=(0, 12))
+        title_group = parent.add_group()
+        title_label = ttk.Label(title_group, style="Panel.TLabel")
+        title_label.grid(row=0, column=0, sticky="w")
         self._labels["read_write_registers"] = title_label
 
-        reg_addr_label = ttk.Label(parent, style="Panel.TLabel")
-        reg_addr_label.grid(row=0, column=1, sticky="w", padx=(0, 6))
+        addr_group = parent.add_group()
+        reg_addr_label = ttk.Label(addr_group, style="Panel.TLabel")
+        reg_addr_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._labels["reg_addr"] = reg_addr_label
-        ttk.Entry(parent, textvariable=self.reg_addr_var, width=8).grid(row=0, column=2, sticky="w", padx=(0, 12))
+        ttk.Entry(addr_group, textvariable=self.reg_addr_var, width=8).grid(row=0, column=1, sticky="w")
 
-        write_value_label = ttk.Label(parent, style="Panel.TLabel")
-        write_value_label.grid(row=0, column=3, sticky="w", padx=(0, 6))
+        write_group = parent.add_group()
+        write_value_label = ttk.Label(write_group, style="Panel.TLabel")
+        write_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._labels["write_value"] = write_value_label
-        ttk.Entry(parent, textvariable=self.write_value_var, width=10).grid(row=0, column=4, sticky="w", padx=(0, 12))
+        ttk.Entry(write_group, textvariable=self.write_value_var, width=10).grid(row=0, column=1, sticky="w")
 
-        read_value_label = ttk.Label(parent, style="Panel.TLabel")
-        read_value_label.grid(row=0, column=5, sticky="w", padx=(0, 6))
+        read_group = parent.add_group()
+        read_value_label = ttk.Label(read_group, style="Panel.TLabel")
+        read_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._labels["read_value"] = read_value_label
-        ttk.Entry(parent, textvariable=self.read_value_var, width=12, state="readonly").grid(row=0, column=6, sticky="w", padx=(0, 12))
+        ttk.Entry(read_group, textvariable=self.read_value_var, width=12, state="readonly").grid(row=0, column=1, sticky="w")
 
-        read_btn = ttk.Button(parent, style="Secondary.TButton", command=self.read_register)
-        read_btn.grid(row=0, column=7, sticky="w", padx=(0, 6))
+        button_group = parent.add_group()
+        read_btn = ttk.Button(button_group, style="Secondary.TButton", command=self.read_register)
+        read_btn.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._buttons["rr"] = read_btn
-
-        write_btn = ttk.Button(parent, style="Primary.TButton", command=self.write_register)
-        write_btn.grid(row=0, column=8, sticky="w", padx=(0, 14))
+        write_btn = ttk.Button(button_group, style="Primary.TButton", command=self.write_register)
+        write_btn.grid(row=0, column=1, sticky="w")
         self._buttons["rw"] = write_btn
 
     def _parse_int(self, text: str) -> int:
@@ -695,6 +702,22 @@ class AWP1018Page(BasePage):
         if update_chip and mode != "awp1018_diff_mode" and hasattr(page, "on_show"):
             page.on_show()
         self._sync_mode_button_styles()
+        # Each mode has a different requested height.  Recompute the outer
+        # canvas after Tk has processed the new grid request so a short Full
+        # page can use a maximized viewport while Normal/Diff retain their
+        # vertical scroll range.
+        try:
+            self.after_idle(self._sync_mode_scroll_layout)
+        except tk.TclError:
+            pass
+
+    def _sync_mode_scroll_layout(self) -> None:
+        try:
+            # Configure events complete the geometry pass. Re-entering the
+            # idle loop here drains every pending redraw before input can run.
+            self.mode_scroll._sync_scroll_region()
+        except tk.TclError:
+            pass
 
     def _set_diff_mode_registers(self, enabled: bool) -> None:
         if not self.ctx.serial.is_connected:
@@ -1073,7 +1096,8 @@ class AWP1018NormalModePage(BasePage):
         variable.trace_add("write", lambda *_args, s=stage, k=kind: self._on_stage_threshold_changed(s, k))
 
     def _build_preset_header(self, parent: tk.Misc) -> ttk.Frame:
-        header = self.make_title(parent, self.page_name, show_logo=False)
+        title_key = "awp1018_diff_mode" if self.diff_mode else self.page_name
+        header = self.make_title(parent, title_key, show_logo=False)
         header.columnconfigure(0, weight=0)
         header.columnconfigure(1, weight=1)
 
@@ -5235,7 +5259,11 @@ class AWP1018FullModePage(AWP1018NormalModePage):
 
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=0, minsize=760)
+        # Keep the ADC column at its safe minimum, then let it grow with the
+        # other Full Mode columns.  A fixed zero-weight column leaves its
+        # inner scroll area 10 px narrower than the ADC form at ordinary
+        # desktop widths, even though the outer page has spare space.
+        body.columnconfigure(0, weight=2, minsize=760)
         body.columnconfigure(1, weight=4, minsize=360)
         body.columnconfigure(2, weight=3, minsize=360)
         body.rowconfigure(0, weight=1)
@@ -5815,7 +5843,7 @@ class AWP1018ReservedModePage(BasePage):
         panel.grid(row=0, column=0, sticky="nsew")
         panel.columnconfigure(0, weight=1)
 
-        self.title_label = ttk.Label(panel, style="Title.TLabel")
+        self.title_label = ttk.Label(panel, style="Prominent.TLabel")
         self.title_label.grid(row=0, column=0, sticky="w")
 
         self.hint_label = ttk.Label(panel, style="Muted.TLabel", wraplength=720)

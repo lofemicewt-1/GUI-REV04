@@ -25,7 +25,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 ARTIFACT_DIR = ROOT / "sidebar_startup_validation_artifacts"
-REPORT_PATH = ROOT / "SIDEBAR_STARTUP_VALIDATION.md"
+REPORT_PATH = ROOT / "docs" / "specs" / "SIDEBAR_STARTUP_VALIDATION.md"
 PRODUCT_FILES = (
     ROOT / "app" / "application.py",
     ROOT / "app" / "navigation.py",
@@ -172,7 +172,9 @@ class SidebarStartupProbe:
 
     def _snapshot(self, label: str) -> dict[str, Any]:
         title = self.nav._title_canvas
-        brand_texts = [str(title.itemcget(item, "text")) for item in title.find_all()]
+        brand_items = list(title.find_all())
+        brand_texts = [str(title.itemcget(item, "text")) for item in brand_items if title.type(item) == "text"]
+        brand_images = [item for item in brand_items if title.type(item) == "image"]
         buttons = {
             name: {
                 "mapped": _mapped(button),
@@ -207,7 +209,8 @@ class SidebarStartupProbe:
                 "mapped": _mapped(title),
                 "width": int(title.winfo_width()),
                 "height": int(title.winfo_height()),
-                "items": len(title.find_all()),
+                "items": len(brand_items),
+                "images": len(brand_images),
                 "texts": brand_texts,
             },
             "buttons": buttons,
@@ -282,6 +285,16 @@ class SidebarStartupProbe:
         if self._finished:
             return
         self.root.deiconify()
+        # Measure from the actual restore request. On a slow first map all
+        # timers registered before mainloop can already be overdue; sampling
+        # them together observes the child hierarchy before its new Map event.
+        for delay in (40, 70, 100, 130):
+            self.root.after(delay, self._check_hidden_first_frame)
+        self.root.after(1200, self._prepare_small_window)
+        self.root.after(5700, self._check_small_window)
+        self.root.after(5850, self._scroll_small_window)
+        self.root.after(6000, self._check_small_scroll_end)
+        self.root.after(6300, self.root.quit)
 
     def _check_hidden_first_frame(self) -> None:
         if any(item["label"] == "hidden-first-mapped" for item in self.records):
@@ -351,9 +364,8 @@ class SidebarStartupProbe:
         if not brand["mapped"] or brand["width"] <= 10 or brand["height"] <= 10:
             self._fail(f"{phase}: brand canvas is not visibly mapped: {brand}")
             return
-        text = "".join(brand["texts"])
-        if brand["items"] < 10 or "PIEZO" not in text or "CONTROL" not in text:
-            self._fail(f"{phase}: brand items/text are missing: {brand}")
+        if brand.get("images", 0) < 1:
+            self._fail(f"{phase}: sidebar logo is missing: {brand}")
             return
         missing = {
             name: info
@@ -407,15 +419,8 @@ class SidebarStartupProbe:
             self.root.after(delay, self._capture_default_if_ready)
         self.root.after(240, self._check_default_first_frame)
         self.root.after(300, self._show_after_hidden)
-        for delay in (340, 370, 400, 430):
-            self.root.after(delay, self._check_hidden_first_frame)
-        self.root.after(1500, self._prepare_small_window)
-        # Tk/Windows applies this application's post-show resize request
-        # asynchronously; leave one bounded wait for the actual 640x480 map.
-        self.root.after(7000, self._check_small_window)
-        self.root.after(7150, self._scroll_small_window)
-        self.root.after(7300, self._check_small_scroll_end)
-        self.root.after(7600, self.root.quit)
+        # Absolute watchdog remains independent of the restore callbacks.
+        self.root.after(15000, self.root.quit)
         self.app.run()
         product_hash_after = _hash_product_files()
         if product_hash_after != self._product_hash_before:

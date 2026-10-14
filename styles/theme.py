@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
 
@@ -30,7 +31,7 @@ DARK_COLORS = {
     "border": "#374151",
     "primary": "#60A5FA",
     "primary_hover": "#3B82F6",
-    "mode_idle": "#2871FA",
+    "mode_idle": "#173B70",
     "mode_selected": "#4128DA",
     "danger": "#F87171",
     "success": "#4ADE80",
@@ -40,6 +41,85 @@ DARK_COLORS = {
 
 def get_colors(theme: str) -> dict[str, str]:
     return DARK_COLORS if theme == "dark" else LIGHT_COLORS
+
+
+BRAND_ENLARGE = 1.15
+
+
+def logo_asset(theme: str) -> Path | None:
+    assets = Path(__file__).resolve().parents[1] / "assets"
+    name = "logo_dark.png" if theme == "dark" else "logo_light.png"
+    for path in (assets / name, assets / "logo.png"):
+        if path.exists():
+            return path
+    return None
+
+
+def scale_photoimage(
+    image: tk.PhotoImage,
+    *,
+    max_width: int | None = None,
+    max_height: int | None = None,
+    enlarge: float = 1.0,
+) -> tk.PhotoImage:
+    """Scale a PhotoImage with integer zoom/subsample, closer than one subsample step."""
+    src_w = max(1, int(image.width()))
+    src_h = max(1, int(image.height()))
+    limit_w = src_w if max_width is None else max(1, int(max_width))
+    limit_h = src_h if max_height is None else max(1, int(max_height))
+    target_w = src_w
+    target_h = src_h
+    if max_width is not None and src_w > limit_w:
+        factor = max(1, (src_w + limit_w - 1) // limit_w)
+        current_w = max(1, src_w // factor)
+        target_w = min(limit_w, max(1, int(round(current_w * enlarge))))
+        target_h = max(1, int(round(src_h * target_w / src_w)))
+    elif max_height is not None and src_h > limit_h:
+        factor = max(1, (src_h + limit_h - 1) // limit_h)
+        current_h = max(1, src_h // factor)
+        target_h = min(limit_h, max(1, int(round(current_h * enlarge))))
+        target_w = max(1, int(round(src_w * target_h / src_h)))
+    elif enlarge > 1.0:
+        grown_w = max(1, int(round(src_w * enlarge)))
+        grown_h = max(1, int(round(src_h * enlarge)))
+        target_w = min(limit_w, grown_w)
+        target_h = max(1, int(round(src_h * target_w / src_w)))
+        if target_h > limit_h:
+            target_h = limit_h
+            target_w = max(1, int(round(src_w * target_h / src_h)))
+    if max_width is not None:
+        target_w = min(target_w, limit_w)
+    if max_height is not None:
+        target_h = min(target_h, limit_h)
+    return _resample_photoimage(image, target_w, target_h)
+
+
+def _resample_photoimage(image: tk.PhotoImage, target_w: int, target_h: int) -> tk.PhotoImage:
+    src_w = max(1, int(image.width()))
+    src_h = max(1, int(image.height()))
+    scale = min(max(1, target_w) / src_w, max(1, target_h) / src_h)
+    if abs(scale - 1.0) < 0.02:
+        return image
+    best_n, best_d = 1, 1
+    best_err = abs(1.0 - scale)
+    for denominator in range(1, 13):
+        numerator = max(1, int(round(scale * denominator)))
+        if numerator > 16:
+            continue
+        produced = src_w * numerator / denominator
+        if scale < 1.0 and produced > target_w + 1:
+            continue
+        err = abs((numerator / denominator) - scale)
+        if err < best_err - 1e-9 or (abs(err - best_err) <= 1e-9 and numerator + denominator < best_n + best_d):
+            best_n, best_d, best_err = numerator, denominator, err
+    if best_n == best_d:
+        return image
+    scaled = image
+    if best_n != 1:
+        scaled = scaled.zoom(best_n, best_n)
+    if best_d != 1:
+        scaled = scaled.subsample(best_d, best_d)
+    return scaled
 
 
 def _restore_button_style(widget: ttk.Button, original_style: str, flash_style: str) -> None:
@@ -237,7 +317,14 @@ def _configure_rounded_button_styles(
     slice_border = radius + 3
     image_store = getattr(root, "_rounded_button_images", {})
 
-    def make_set(surface: str) -> dict[str, tk.PhotoImage]:
+    def make_set(
+        surface: str,
+        *,
+        selected_fill: str | None = None,
+        selected_border: str | None = None,
+    ) -> dict[str, tk.PhotoImage]:
+        fill = selected_center if selected_fill is None else selected_fill
+        edge = selected_edge if selected_border is None else selected_border
         return {
             "normal": _make_rounded_button_image(
                 root,
@@ -250,8 +337,8 @@ def _configure_rounded_button_styles(
             ),
             "pressed": _make_rounded_button_image(
                 root,
-                fill=selected_center,
-                border=selected_edge,
+                fill=fill,
+                border=edge,
                 corner=surface,
                 size=32,
                 radius=radius,
@@ -302,18 +389,41 @@ def _configure_rounded_button_styles(
             ),
         }
 
+    sidebar_selected_fill = selected_center if theme != "dark" else "#2871FA"
+    sidebar_selected_edge = selected_edge if theme != "dark" else "#173B70"
+    sidebar_selected_text = "#FFFFFF" if theme != "dark" else "#05070D"
+    pressed_accent = sidebar_selected_fill if theme == "dark" else colors["mode_selected"]
     if theme not in image_store or "panel" not in image_store[theme]:
         image_store[theme] = {
             "panel": make_set(colors["panel"]),
             "bg": make_set(colors["bg"]),
-            "sidebar": make_set(colors["panel_alt"]),
+            "sidebar": make_set(
+                colors["panel_alt"],
+                selected_fill=sidebar_selected_fill,
+                selected_border=sidebar_selected_edge,
+            ),
         }
         setattr(root, "_rounded_button_images", image_store)
 
     store = image_store[theme]
     if "sidebar_mode" not in store:
-        store["sidebar_mode"] = make_mode_set(colors["mode_idle"], colors["mode_selected"])
-        store["sidebar_mode_selected"] = make_mode_set(colors["mode_selected"], colors["mode_selected"])
+        store["sidebar_mode"] = make_mode_set(colors["mode_idle"], pressed_accent)
+        selected_image = store["sidebar"]["pressed"]
+        if theme == "dark":
+            store["sidebar_mode"]["pressed"] = selected_image
+        store["sidebar_mode_selected"] = {
+            "normal": selected_image,
+            "pressed": selected_image,
+            "disabled": _make_rounded_button_image(
+                root,
+                fill=colors["mode_idle"],
+                border=colors["muted"],
+                corner=colors["panel_alt"],
+                size=32,
+                radius=radius,
+                shadow=0.0,
+            ),
+        }
 
     panel_images = store["panel"]
     bg_images = store["bg"]
@@ -412,6 +522,49 @@ def _configure_rounded_button_styles(
 
     for button_style in ("TButton", "Primary.TButton", "Secondary.TButton"):
         configure_plain(button_style, normal_element, colors["panel"], colors["text"])
+    quiet_element = f"{theme}.Quiet.Button.button"
+    if quiet_element not in style.element_names():
+        style.element_create(
+            quiet_element,
+            "image",
+            panel_images["normal"],
+            ("disabled", panel_images["disabled"]),
+            ("pressed", panel_images["normal"]),
+            ("active", panel_images["normal"]),
+            border=slice_border,
+            padding=radius,
+            sticky="nswe",
+        )
+    configure_plain("Quiet.TButton", quiet_element, colors["panel"], colors["text"])
+    style.map(
+        "Quiet.TButton",
+        background=[
+            ("disabled", colors["panel"]),
+            ("pressed", colors["panel"]),
+            ("active", colors["panel"]),
+        ],
+        foreground=[
+            ("disabled", colors["muted"]),
+            ("pressed", colors["text"]),
+            ("active", colors["text"]),
+        ],
+        bordercolor=[
+            ("disabled", colors["muted"]),
+            ("pressed", colors["border"]),
+            ("active", colors["border"]),
+        ],
+        lightcolor=[
+            ("disabled", colors["muted"]),
+            ("pressed", colors["border"]),
+            ("active", colors["border"]),
+        ],
+        darkcolor=[
+            ("disabled", colors["muted"]),
+            ("pressed", colors["border"]),
+            ("active", colors["border"]),
+        ],
+        relief=[("disabled", "flat"), ("pressed", "flat"), ("active", "flat")],
+    )
 
     configure_plain("Danger.TButton", normal_element, colors["panel"], colors["danger"])
 
@@ -440,14 +593,39 @@ def _configure_rounded_button_styles(
     )
 
     configure_plain("Sidebar.TButton", sidebar_element, colors["panel_alt"], colors["text"])
-    configure_plain("SidebarSelected.TButton", sidebar_selected_element, colors["panel_alt"], "#FFFFFF")
+    if theme == "dark":
+        style.map(
+            "Sidebar.TButton",
+            foreground=[("disabled", colors["muted"]), ("pressed", sidebar_selected_text)],
+            background=[
+                ("disabled", colors["panel_alt"]),
+                ("pressed", sidebar_selected_fill),
+                ("active", colors["panel_alt"]),
+            ],
+            bordercolor=[
+                ("disabled", colors["muted"]),
+                ("pressed", sidebar_selected_edge),
+                ("active", colors["border"]),
+            ],
+            lightcolor=[
+                ("disabled", colors["muted"]),
+                ("pressed", sidebar_selected_edge),
+                ("active", colors["border"]),
+            ],
+            darkcolor=[
+                ("disabled", colors["muted"]),
+                ("pressed", sidebar_selected_edge),
+                ("active", colors["border"]),
+            ],
+        )
+    configure_plain("SidebarSelected.TButton", sidebar_selected_element, colors["panel_alt"], sidebar_selected_text)
     style.map(
         "SidebarSelected.TButton",
-        background=[("disabled", colors["panel_alt"]), ("active", selected_center), ("pressed", selected_center)],
-        foreground=[("disabled", "#D1D5DB")],
-        bordercolor=[("disabled", colors["muted"]), ("active", selected_edge), ("pressed", selected_edge)],
-        lightcolor=[("disabled", colors["muted"]), ("active", selected_edge), ("pressed", selected_edge)],
-        darkcolor=[("disabled", colors["muted"]), ("active", selected_edge), ("pressed", selected_edge)],
+        background=[("disabled", colors["panel_alt"]), ("active", sidebar_selected_fill), ("pressed", sidebar_selected_fill)],
+        foreground=[("disabled", "#D1D5DB"), ("pressed", sidebar_selected_text), ("active", sidebar_selected_text)],
+        bordercolor=[("disabled", colors["muted"]), ("active", sidebar_selected_edge), ("pressed", sidebar_selected_edge)],
+        lightcolor=[("disabled", colors["muted"]), ("active", sidebar_selected_edge), ("pressed", sidebar_selected_edge)],
+        darkcolor=[("disabled", colors["muted"]), ("active", sidebar_selected_edge), ("pressed", sidebar_selected_edge)],
         relief=[("disabled", "flat"), ("!disabled", "flat")],
     )
     configure_plain("SidebarMode.TButton", sidebar_mode_element, colors["mode_idle"], "#FFFFFF")
@@ -455,50 +633,50 @@ def _configure_rounded_button_styles(
         "SidebarMode.TButton",
         background=[
             ("disabled", colors["mode_idle"]),
-            ("pressed", colors["mode_selected"]),
+            ("pressed", pressed_accent),
             ("active", colors["mode_idle"]),
         ],
-        foreground=[("disabled", "#D1D5DB"), ("pressed", "#FFFFFF")],
+        foreground=[("disabled", "#D1D5DB"), ("pressed", sidebar_selected_text if theme == "dark" else "#FFFFFF")],
         bordercolor=[
             ("disabled", colors["muted"]),
-            ("pressed", colors["mode_selected"]),
+            ("pressed", sidebar_selected_edge if theme == "dark" else colors["mode_selected"]),
             ("active", colors["mode_selected"]),
         ],
         lightcolor=[
             ("disabled", colors["muted"]),
-            ("pressed", colors["mode_selected"]),
+            ("pressed", sidebar_selected_edge if theme == "dark" else colors["mode_selected"]),
             ("active", colors["mode_selected"]),
         ],
         darkcolor=[
             ("disabled", colors["muted"]),
-            ("pressed", colors["mode_selected"]),
+            ("pressed", sidebar_selected_edge if theme == "dark" else colors["mode_selected"]),
             ("active", colors["mode_selected"]),
         ],
         relief=[("disabled", "flat"), ("pressed", "flat"), ("active", "flat")],
     )
-    configure_plain("SidebarModeSelected.TButton", sidebar_mode_selected_element, colors["mode_selected"], "#FFFFFF")
+    configure_plain("SidebarModeSelected.TButton", sidebar_mode_selected_element, colors["panel_alt"], sidebar_selected_text)
     style.map(
         "SidebarModeSelected.TButton",
         background=[
             ("disabled", colors["mode_idle"]),
-            ("active", colors["mode_selected"]),
-            ("pressed", colors["mode_selected"]),
+            ("active", sidebar_selected_fill),
+            ("pressed", sidebar_selected_fill),
         ],
-        foreground=[("disabled", "#D1D5DB")],
+        foreground=[("disabled", "#D1D5DB"), ("pressed", sidebar_selected_text), ("active", sidebar_selected_text)],
         bordercolor=[
             ("disabled", colors["muted"]),
-            ("active", colors["mode_selected"]),
-            ("pressed", colors["mode_selected"]),
+            ("active", sidebar_selected_edge),
+            ("pressed", sidebar_selected_edge),
         ],
         lightcolor=[
             ("disabled", colors["muted"]),
-            ("active", colors["mode_selected"]),
-            ("pressed", colors["mode_selected"]),
+            ("active", sidebar_selected_edge),
+            ("pressed", sidebar_selected_edge),
         ],
         darkcolor=[
             ("disabled", colors["muted"]),
-            ("active", colors["mode_selected"]),
-            ("pressed", colors["mode_selected"]),
+            ("active", sidebar_selected_edge),
+            ("pressed", sidebar_selected_edge),
         ],
         relief=[("disabled", "flat"), ("!disabled", "flat")],
     )
@@ -570,10 +748,14 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
     colors = get_colors(theme)
     selected_bg = colors["primary_hover"]
     selected_edge = "#1E40AF" if theme != "dark" else "#1E3A8A"
+    sidebar_selected_fill = selected_bg if theme != "dark" else "#2871FA"
+    sidebar_selected_edge = selected_edge if theme != "dark" else "#173B70"
+    sidebar_selected_text = "#FFFFFF" if theme != "dark" else "#05070D"
     scale = max(0.75, min(1.35, window_scale))
     base_font_size = max(8, min(18, int(font_size)))
     body_size = max(8, min(24, _scaled(base_font_size, scale)))
     title_size = max(14, min(34, _scaled(base_font_size + 8, scale)))
+    prominent_size = min(36, title_size + 1)
     subtitle_size = max(8, min(22, _scaled(base_font_size, scale)))
     sidebar_title_size = max(12, min(28, _scaled(base_font_size + 6, scale)))
     small_size = max(7, min(20, _scaled(base_font_size - 1, scale)))
@@ -582,6 +764,7 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
     setattr(root, "_piezo_font_family", "Microsoft YaHei UI")
     setattr(root, "_piezo_body_font_size", body_size)
     setattr(root, "_piezo_title_font_size", title_size)
+    setattr(root, "_piezo_prominent_title_font_size", prominent_size)
     setattr(root, "_piezo_sidebar_title_font_size", sidebar_title_size)
     setattr(root, "_piezo_mono_font_size", mono_size)
     setattr(root, "_piezo_spacing_scale", scale)
@@ -644,6 +827,25 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
 
     style.configure(
         "Title.TLabel",
+        background=colors["bg"],
+        foreground=colors["text"],
+        font=("Microsoft YaHei UI", title_size, "bold"),
+    )
+    style.configure(
+        "Prominent.TLabel",
+        background=colors["bg"],
+        foreground=colors["text"],
+        font=("Microsoft YaHei UI", prominent_size, "bold"),
+    )
+    chip_title_size = int(getattr(root, "_piezo_chip_title_font_size", 0) or max(prominent_size, 28))
+    style.configure(
+        "ChipTitle.TLabel",
+        background=colors["bg"],
+        foreground=colors["text"],
+        font=("Microsoft YaHei UI", chip_title_size, "bold"),
+    )
+    style.configure(
+        "Wordmark.TLabel",
         background=colors["bg"],
         foreground=colors["text"],
         font=("Microsoft YaHei UI", title_size, "bold"),
@@ -725,6 +927,7 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
             ("TButton", colors["panel"], colors["text"]),
             ("Primary.TButton", colors["panel"], colors["text"]),
             ("Secondary.TButton", colors["panel"], colors["text"]),
+            ("Quiet.TButton", colors["panel"], colors["text"]),
             ("Danger.TButton", colors["panel"], colors["danger"]),
             ("Bg.TButton", colors["bg"], colors["text"]),
             ("Sidebar.TButton", colors["panel_alt"], colors["text"]),
@@ -743,30 +946,42 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
                 padding=(_scaled(7, scale), _scaled(10, scale)),
                 font=("Microsoft YaHei UI", body_size),
             )
+            if button_style == "Quiet.TButton":
+                pressed_fill = surface
+                pressed_text = fg
+            elif theme == "dark" and button_style in {"Sidebar.TButton", "SidebarMode.TButton"}:
+                pressed_fill = sidebar_selected_fill
+                pressed_text = sidebar_selected_text
+            else:
+                pressed_fill = selected_bg
+                pressed_text = "#FFFFFF"
+            pressed_edge = colors["border"] if button_style == "Quiet.TButton" else (
+                sidebar_selected_edge if pressed_fill == sidebar_selected_fill else selected_edge
+            )
             style.map(
                 button_style,
-                background=[("disabled", surface), ("pressed", selected_bg), ("active", surface)],
-                foreground=[("disabled", colors["muted"]), ("pressed", "#FFFFFF")],
-                bordercolor=[("pressed", selected_edge), ("active", colors["border"])],
-                lightcolor=[("pressed", selected_edge), ("active", colors["border"])],
-                darkcolor=[("pressed", selected_edge), ("active", colors["border"])],
-                relief=[("disabled", "flat"), ("pressed", "sunken"), ("active", "flat")],
+                background=[("disabled", surface), ("pressed", pressed_fill), ("active", surface)],
+                foreground=[("disabled", colors["muted"]), ("pressed", pressed_text)],
+                bordercolor=[("pressed", pressed_edge), ("active", colors["border"])],
+                lightcolor=[("pressed", pressed_edge), ("active", colors["border"])],
+                darkcolor=[("pressed", pressed_edge), ("active", colors["border"])],
+                relief=[("disabled", "flat"), ("pressed", "flat" if button_style == "Quiet.TButton" else "sunken"), ("active", "flat")],
             )
-        for button_style, surface in (
-            ("Selected.TButton", colors["panel"]),
-            ("Flash.TButton", colors["panel"]),
-            ("BgSelected.TButton", colors["bg"]),
-            ("SidebarSelected.TButton", colors["panel_alt"]),
-            ("SidebarModeSelected.TButton", colors["mode_idle"]),
+        for button_style, surface, fill, edge in (
+            ("Selected.TButton", colors["panel"], selected_bg, selected_edge),
+            ("Flash.TButton", colors["panel"], selected_bg, selected_edge),
+            ("BgSelected.TButton", colors["bg"], selected_bg, selected_edge),
+            ("SidebarSelected.TButton", colors["panel_alt"], sidebar_selected_fill, sidebar_selected_edge),
+            ("SidebarModeSelected.TButton", colors["mode_idle"], sidebar_selected_fill, sidebar_selected_edge),
         ):
             style.configure(
                 button_style,
-                background=selected_bg,
-                foreground="#FFFFFF",
+                background=fill,
+                foreground=sidebar_selected_text if button_style in {"SidebarSelected.TButton", "SidebarModeSelected.TButton"} else "#FFFFFF",
                 borderwidth=1,
-                bordercolor=selected_edge,
-                lightcolor=selected_edge,
-                darkcolor=selected_edge,
+                bordercolor=edge,
+                lightcolor=edge,
+                darkcolor=edge,
                 relief="sunken",
                 focusthickness=0,
                 padding=(_scaled(7, scale), _scaled(10, scale)),
@@ -774,11 +989,11 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
             )
             style.map(
                 button_style,
-                background=[("disabled", surface), ("active", selected_bg), ("pressed", selected_bg)],
+                background=[("disabled", surface), ("active", fill), ("pressed", fill)],
                 foreground=[("disabled", "#D1D5DB")],
-                bordercolor=[("disabled", colors["muted"]), ("active", selected_edge), ("pressed", selected_edge)],
-                lightcolor=[("disabled", colors["muted"]), ("active", selected_edge), ("pressed", selected_edge)],
-                darkcolor=[("disabled", colors["muted"]), ("active", selected_edge), ("pressed", selected_edge)],
+                bordercolor=[("disabled", colors["muted"]), ("active", edge), ("pressed", edge)],
+                lightcolor=[("disabled", colors["muted"]), ("active", edge), ("pressed", edge)],
+                darkcolor=[("disabled", colors["muted"]), ("active", edge), ("pressed", edge)],
                 relief=[("disabled", "flat"), ("!disabled", "sunken")],
             )
 

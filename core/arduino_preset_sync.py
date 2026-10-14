@@ -18,7 +18,8 @@ from core.awp192x_button_runtime import (
 
 
 MAX_PRESET_SLOTS = 3
-V2_PRESET_SLOT_SIZE = 128
+V2_PRESET_SLOT_SIZE = 256
+LEGACY_PRESET_RECORD_SIZE = 128
 V2_PRESET_MAGIC = 0xA192
 V2_PRESET_VERSION = 2
 V2_HEADER_FORMAT = "<HBBHBB"
@@ -34,6 +35,7 @@ CHIP_SIGNATURES = {
     0x192B: (0x45, 0x1E, 0x5081),
     0x192C: (0x46, 0x1E, 0x5081),
     **{0x1018 + index: (0x48 + index, 0x2B, 0x1018) for index in range(8)},
+    0x1221: (0x50, 0x16, 0x1221),
 }
 
 _CRC_STRUCT = struct.Struct("<H")
@@ -65,6 +67,8 @@ def signature_for_address(address: int) -> int:
     except (TypeError, ValueError):
         raise ValueError("unsupported preset device address") from None
 
+    if 0x50 <= device_addr <= 0x57:
+        return 0x1221
     for chip_signature, (allowed_address, _, _) in CHIP_SIGNATURES.items():
         if device_addr == allowed_address:
             return chip_signature
@@ -90,13 +94,16 @@ def pack_v2_preset(preset: V2Preset) -> bytes:
     )
     body = header + payload
     encoded = body + _CRC_STRUCT.pack(crc16_ccitt_false(body))
-    return encoded + (b"\xFF" * (V2_PRESET_SLOT_SIZE - len(encoded)))
+    record_size = V2_PRESET_SLOT_SIZE if payload_type == PAYLOAD_TYPE_AWP1221_RUNTIME else LEGACY_PRESET_RECORD_SIZE
+    if len(encoded) > record_size:
+        raise ValueError("Preset exceeds record capacity")
+    return encoded + (b"\xFF" * (record_size - len(encoded)))
 
 
 def unpack_v2_preset(data: bytes) -> V2Preset:
     raw = bytes(data)
-    if len(raw) != V2_PRESET_SLOT_SIZE:
-        raise ValueError("v2 preset record must be exactly 128 bytes")
+    if len(raw) not in (LEGACY_PRESET_RECORD_SIZE, V2_PRESET_SLOT_SIZE):
+        raise ValueError("v2 preset record must be exactly 128 or 256 bytes")
 
     magic, version, payload_type, chip_signature, device_addr, payload_length = struct.unpack_from(
         V2_HEADER_FORMAT,
@@ -106,8 +113,10 @@ def unpack_v2_preset(data: bytes) -> V2Preset:
         raise ValueError("invalid v2 preset magic")
     if version != V2_PRESET_VERSION:
         raise ValueError("invalid v2 preset version")
-    if payload_length < 1 or payload_length > V2_MAX_PAYLOAD_SIZE:
+    if payload_length < 1 or payload_length > len(raw) - V2_HEADER_SIZE - 2:
         raise ValueError("invalid v2 payload length")
+    if payload_type == PAYLOAD_TYPE_AWP1221_RUNTIME and len(raw) != V2_PRESET_SLOT_SIZE:
+        raise ValueError("Type-4 requires a 256 byte record")
 
     crc_offset = V2_HEADER_SIZE + payload_length
     expected_crc = _CRC_STRUCT.unpack(raw[crc_offset : crc_offset + _CRC_STRUCT.size])[0]
@@ -163,8 +172,13 @@ def format_preset_summary(raw: bytes) -> str:
             + " ".join(f"0x{word:04X}" for word in descriptor.words)
             for descriptor in plan.waveform_descriptors
         )
-    else:
-        raise ValueError("CFG_UNSUPPORTED: Type-4 is reserved for a later phase")
+    elif preset.payload_type == PAYLOAD_TYPE_AWP1221_RUNTIME:
+        from core.awp1221_preset import unpack_awp1221_payload
+        model = unpack_awp1221_payload(preset.payload)
+        summary_lines.extend((f"Payload: AWP1221 Button Mode Type-4 v{preset.payload[0]}",
+                              f"Waveforms: {len(model.waves)}",
+                              f"Stage0/1 thresholds: 0x{model.thresholds[0]:03X}, 0x{model.thresholds[1]:03X}",
+                              f"Stage0/1 jumps: Stage{model.jumps[0]}, Stage{model.jumps[1]}"))
     return "\n".join(summary_lines)
 
 
@@ -205,13 +219,12 @@ def _validate_v2_preset(
     payload: bytes,
 ) -> tuple[int, int, int]:
     validated_payload_type = _u8(payload_type, "payload_type")
-    if validated_payload_type == PAYLOAD_TYPE_AWP1221_RUNTIME:
-        raise ValueError("CFG_UNSUPPORTED: Type-4 is reserved for a later phase")
     if validated_payload_type not in (
         PAYLOAD_TYPE_AWP192X_BUTTON_RUNTIME,
         PAYLOAD_TYPE_AWP1018_ADC_STAGE4,
+        PAYLOAD_TYPE_AWP1221_RUNTIME,
     ):
-        raise ValueError("CFG_UNSUPPORTED: only Type-3 v2 and Type-5 schema2 are supported")
+        raise ValueError("CFG_UNSUPPORTED: supported preset types are 3, 4 and 5")
 
     validated_signature = _u16(chip_signature, "chip_signature")
     validated_address = _u8(device_addr, "device_addr")
@@ -227,6 +240,11 @@ def _validate_v2_preset(
                 f"{AWP192X_BUTTON_PAYLOAD_V2_SIZE} bytes"
             )
         unpack_awp192x_button_payload(payload)
+    elif validated_payload_type == PAYLOAD_TYPE_AWP1221_RUNTIME:
+        from core.awp1221_preset import unpack_awp1221_payload
+        if validated_signature != 0x1221 or not 0x50 <= validated_address <= 0x57:
+            raise ValueError("Type-4 requires an AWP1221 target")
+        unpack_awp1221_payload(payload)
     else:
         if not 0x1018 <= validated_signature <= 0x101F:
             raise ValueError("AWP1018 ADC Stage4 payload requires an AWP1018 signature")

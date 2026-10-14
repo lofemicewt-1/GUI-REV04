@@ -50,6 +50,37 @@ class VerticalScrollAreaWidthTests(unittest.TestCase):
         self.root.update()
         self.assertLessEqual(_overflow(form, area.canvas), 1)
 
+    def test_shrink_after_enlarge_restores_fitted_scroll_area(self) -> None:
+        self.root.deiconify()
+        self.root.geometry("480x320+40+40")
+        area = VerticalScrollArea(self.root, self.ctx, horizontal=True, propagate_height=True)
+        area.pack(fill="both", expand=True)
+        ttk.Label(area.content, text="fitted").pack(anchor="w")
+        self.root.update_idletasks()
+        self.root.update()
+
+        fitted = int(float(area.canvas.itemcget(area.window_id, "width")))
+        self.assertFalse(area.horizontal_scrollbar.winfo_ismapped())
+        self.assertFalse(area.scrollbar.winfo_ismapped())
+
+        self.root.geometry("1100x700+40+40")
+        self.root.update_idletasks()
+        self.root.update()
+        enlarged = int(float(area.canvas.itemcget(area.window_id, "width")))
+        self.assertGreater(enlarged, fitted)
+
+        self.root.geometry("480x320+40+40")
+        self.root.update_idletasks()
+        self.root.update()
+        restored = int(float(area.canvas.itemcget(area.window_id, "width")))
+        canvas_width = int(area.canvas.winfo_width())
+        region = tuple(int(float(value)) for value in str(area.canvas.cget("scrollregion")).split())
+        self.assertLessEqual(restored, canvas_width + 1)
+        self.assertLess(restored, enlarged)
+        self.assertLessEqual(region[2], canvas_width + 1)
+        self.assertFalse(area.horizontal_scrollbar.winfo_ismapped())
+        self.assertFalse(area.scrollbar.winfo_ismapped())
+
 
 class FullModeAdcLayoutTests(unittest.TestCase):
     def setUp(self) -> None:

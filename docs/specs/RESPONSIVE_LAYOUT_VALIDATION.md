@@ -6,7 +6,7 @@
 - 错误：0；警告：0。
 - JSON 证据：[responsive_layout_matrix.json](C:/Users/wasd1/Desktop/GUI REV04/responsive_layout_validation_artifacts/responsive_layout_matrix.json)。
 - 已完成尺寸矩阵基线：[responsive_layout_matrix_baseline.json](C:/Users/wasd1/Desktop/GUI REV04/responsive_layout_validation_artifacts/responsive_layout_matrix_baseline.json)；本轮只复用其记录，不复用旧问题列表。
-- 当前产品布局代码 fingerprint：`89b62d050dc8d76dc3c2550715c0afee45287f43db11772d48d2a8a35e51c96d`。
+- 当前产品布局代码 fingerprint：`c1db6bfd90edeeb34c9915ff79569ec2cd01da81412e836d72192d10c3814482`。
 - DPI 说明：矩阵中的 `scale` 是 Tk logical scaling（`tk scaling`），用于逻辑字号/尺寸回归；本次离线验证没有修改或声称覆盖 Windows 系统显示 DPI。
 
 ## 覆盖清单

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Generic, Protocol, TypeVar
 
@@ -13,6 +14,7 @@ REGISTER_DATA_WIDTHS = (8, 16)
 RREGW_MAX_VALUES = {8: 32, 16: 16}
 WREGW_MAX_VALUES = {8: 10, 16: 5}
 ALLOWED_I2C_SPEEDS = (100000, 400000)
+I2C_ADDRESS_NACK_RETRY_DELAY_S = 0.002
 GPIO_MODE_HIGH = "HIGH"
 GPIO_MODE_LOW = "LOW"
 GPIO_MODE_DETECT = "DETECT"
@@ -284,6 +286,11 @@ _RDATAW_PATTERN = re.compile(
 _OK_WREGW_PATTERN = re.compile(
     r"OK\s+WREGW\s+([0-9A-Fa-f]{2})\s+([0-9A-Fa-f]{2})\s+(8|16)\s+([1-9][0-9]*)"
 )
+_I2C_ADDRESS_NACK_PATTERN = re.compile(
+    r"ERR\s+(?:RREGW|WREGW)\s+I2C\s+2\b|ERR\s+WREGW\s+I2C\s*(?:$|[^0-9])",
+    re.IGNORECASE,
+)
+_I2C_OTHER_CODE_PATTERN = re.compile(r"\bI2C\s+(?!2\b)\d+", re.IGNORECASE)
 
 
 def _normalized_frame(text: str) -> str:
@@ -559,8 +566,8 @@ def _cfg_slot(slot: int) -> int:
 
 def _cfg_length(length: int) -> int:
     value = int(length)
-    if not 1 <= value <= 128:
-        raise ValueError("length must be between 1 and 128")
+    if value not in (128, 256):
+        raise ValueError("length must be 128 or 256")
     return value
 
 
@@ -573,8 +580,8 @@ def _cfg_crc(crc: int) -> str:
 
 def _cfg_offset(offset: int) -> int:
     value = int(offset)
-    if not 0 <= value <= 127:
-        raise ValueError("offset must be between 0 and 127")
+    if not 0 <= value <= 255:
+        raise ValueError("offset must be between 0 and 255")
     return value
 
 
@@ -760,6 +767,22 @@ def _firmware_error_response(response: SerialResponse) -> SerialResponse:
     return response
 
 
+def is_i2c_address_nack(response: SerialResponse) -> bool:
+    """True for Wire address NACK (error 2), including WREGW frames that omit the code."""
+    text = f"{response.error} {response.data}"
+    if _I2C_OTHER_CODE_PATTERN.search(text):
+        return False
+    return _I2C_ADDRESS_NACK_PATTERN.search(text) is not None
+
+
+def _retry_8bit_address_nack(bits: int, operation: Callable[[], SerialResponse]) -> SerialResponse:
+    response = operation()
+    if int(bits) != 8 or response.ok or not is_i2c_address_nack(response):
+        return response
+    time.sleep(I2C_ADDRESS_NACK_RETRY_DELAY_S)
+    return operation()
+
+
 def read_board_flag(transport: CommandTransport) -> SerialResponse:
     response = _firmware_error_response(
         transport(build_read_board_flag_command(), expect_response=True)
@@ -874,24 +897,31 @@ def write_register_values(
     log: Callable[[str], None] | None = None,
 ) -> RegisterTransaction:
     data = tuple(values)
-    if log is not None:
-        log(
-            f"WRITE{_register_data_width(bits)} "
-            f"dev=0x{_device_address(device_addr):02X} "
-            f"reg=0x{u8(reg_addr, name='reg_addr'):02X} count={len(data)}"
+
+    def once() -> SerialResponse:
+        if log is not None:
+            log(
+                f"WRITE{_register_data_width(bits)} "
+                f"dev=0x{_device_address(device_addr):02X} "
+                f"reg=0x{u8(reg_addr, name='reg_addr'):02X} count={len(data)}"
+            )
+        response = _firmware_error_response(
+            transport(
+                build_write_register_values_command(device_addr, reg_addr, data, bits=bits),
+                expect_response=True,
+            )
         )
-    response = transport(
-        build_write_register_values_command(device_addr, reg_addr, data, bits=bits),
-        expect_response=True,
-    )
-    response = expect_wregw_response(
-        response,
-        device_addr=device_addr,
-        reg_addr=reg_addr,
-        bits=bits,
-        count=len(data),
-    )
-    return RegisterTransaction(response)
+        if not response.ok:
+            return response
+        return expect_wregw_response(
+            response,
+            device_addr=device_addr,
+            reg_addr=reg_addr,
+            bits=bits,
+            count=len(data),
+        )
+
+    return RegisterTransaction(_retry_8bit_address_nack(bits, once))
 
 
 def read_register_values(
@@ -903,27 +933,30 @@ def read_register_values(
     count: int = 1,
     log: Callable[[str], None] | None = None,
 ) -> RegisterTransaction:
-    if log is not None:
-        log(
-            f"READ{_register_data_width(bits)} "
-            f"dev=0x{_device_address(device_addr):02X} "
-            f"reg=0x{u8(reg_addr, name='reg_addr'):02X} count={count}"
+    def once() -> SerialResponse:
+        if log is not None:
+            log(
+                f"READ{_register_data_width(bits)} "
+                f"dev=0x{_device_address(device_addr):02X} "
+                f"reg=0x{u8(reg_addr, name='reg_addr'):02X} count={count}"
+            )
+        response = _firmware_error_response(
+            transport(
+                build_read_register_values_command(device_addr, reg_addr, bits=bits, count=count),
+                expect_response=True,
+            )
         )
-    response = _firmware_error_response(
-        transport(
-            build_read_register_values_command(device_addr, reg_addr, bits=bits, count=count),
-            expect_response=True,
-        )
-    )
-    if response.ok and extract_rdataw_values(
-        response.data,
-        device_addr=device_addr,
-        reg_addr=reg_addr,
-        bits=bits,
-        count=count,
-    ) is None:
-        response = _unexpected_response(response)
-    return RegisterTransaction(response)
+        if response.ok and extract_rdataw_values(
+            response.data,
+            device_addr=device_addr,
+            reg_addr=reg_addr,
+            bits=bits,
+            count=count,
+        ) is None:
+            response = _unexpected_response(response)
+        return response
+
+    return RegisterTransaction(_retry_8bit_address_nack(bits, once))
 
 
 def write_register_value(

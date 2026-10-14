@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import tkinter as tk
 import webbrowser
 from tkinter import font as tkfont
@@ -9,6 +10,7 @@ from typing import Any
 from config.app_info import APP_VERSION, USER_GUIDE_URL
 from config.languages import t
 from styles.fonts import sidebar_brand_font_spec
+from styles.theme import BRAND_ENLARGE, logo_asset, scale_photoimage
 
 
 class Navigation:
@@ -31,7 +33,7 @@ class Navigation:
         self.container.grid(row=0, column=0, sticky="nsew")
         # Reserve room for the sidebar scrollbar while retaining the button
         # labels' natural width.  The canvas and scrollbar share this column.
-        self.container.columnconfigure(0, minsize=self._scaled(224))
+        self.container.columnconfigure(0, minsize=self._scaled(round(224 * BRAND_ENLARGE)))
         self.container.columnconfigure(1, weight=1)
         self.container.rowconfigure(0, weight=1)
 
@@ -131,7 +133,7 @@ class Navigation:
 
         self._guide_button = ttk.Button(
             self.sidebar,
-            text="\u4f7f\u7528\u8bf4\u660e",
+            text=t(self.ctx.state.language, "user_guide"),
             style="Sidebar.TButton",
             command=self._open_user_guide,
         )
@@ -143,6 +145,17 @@ class Navigation:
         )
         self._version_label.grid(row=100, column=0, sticky="sw", pady=(4, 0))
         self.sidebar.rowconfigure(98, weight=1)
+        self._settings_bar = ttk.Frame(self.sidebar_shell, style="Sidebar.TFrame", padding=self._pad(10, 8))
+        self._settings_bar.grid(row=1, column=0, sticky="ew")
+        self._settings_bar.columnconfigure(0, weight=1)
+        self._settings_images: dict[bool, tk.PhotoImage] = {}
+        self._settings_button = ttk.Button(
+            self._settings_bar,
+            style="Sidebar.TButton",
+            command=lambda: self.show("settings"),
+        )
+        self._settings_button.grid(row=0, column=0, sticky="ew")
+        self._refresh_settings_button()
         self._refresh_version_label()
         self.refresh_layout()
 
@@ -192,20 +205,20 @@ class Navigation:
     def _pad(self, x: int, y: int) -> tuple[int, int]:
         return (self._scaled(x), self._scaled(y))
 
-    def add_page(self, name: str, label_key: str, page: ttk.Frame) -> None:
-        row = len(self.buttons) + 1
-        btn = ttk.Button(
-            self.sidebar,
-            text=t(self.ctx.state.language, label_key),
-            style="Sidebar.TButton",
-            command=lambda n=name: self.show(n),
-        )
-        btn.grid(row=row, column=0, sticky="ew", pady=(0, 3) if row == 1 else 3)
+    def add_page(self, name: str, label_key: str, page: ttk.Frame, *, sidebar_button: bool = True) -> None:
+        if sidebar_button:
+            row = len(self.buttons) + 1
+            btn = ttk.Button(
+                self.sidebar,
+                text=t(self.ctx.state.language, label_key),
+                style="Sidebar.TButton",
+                command=lambda n=name: self.show(n),
+            )
+            btn.grid(row=row, column=0, sticky="ew", pady=(0, 3) if row == 1 else 3)
+            self.buttons[name] = btn
+            self.label_keys[name] = label_key
 
         self.sidebar.columnconfigure(0, weight=1)
-
-        self.buttons[name] = btn
-        self.label_keys[name] = label_key
         self.pages[name] = page
         page.grid(row=0, column=0, sticky="nsew")
         page.grid_remove()
@@ -238,6 +251,7 @@ class Navigation:
         lang = self.ctx.state.language
         self._redraw_sidebar_brand()
         self._refresh_version_label()
+        self._guide_button.configure(text=t(lang, "user_guide"))
 
         for name, btn in self.buttons.items():
             key = self.label_keys.get(name, name)
@@ -251,13 +265,17 @@ class Navigation:
 
     def refresh_theme(self) -> None:
         self.refresh_layout()
+        self._settings_images.clear()
+        self._refresh_settings_button()
         for page in self.pages.values():
             if hasattr(page, "refresh_theme"):
                 page.refresh_theme()
 
     def refresh_layout(self) -> None:
-        self.container.columnconfigure(0, minsize=self._scaled(224))
+        self.container.columnconfigure(0, minsize=self._scaled(round(224 * BRAND_ENLARGE)))
         self.sidebar.configure(padding=self._pad(10, 8))
+        if getattr(self, "_settings_bar", None) is not None:
+            self._settings_bar.configure(padding=self._pad(10, 8))
         self.sidebar_canvas.configure(bg=self.ctx.colors["panel_alt"])
         self.content.configure(padding=self._pad(16, 8))
         self._title_canvas.grid_configure(pady=(0, self._scaled(8)))
@@ -291,32 +309,51 @@ class Navigation:
         font.configure(size=size)
         return font
 
+    def _sidebar_logo(self, theme: str, max_width: int) -> tk.PhotoImage | None:
+        path = logo_asset(theme)
+        if path is None:
+            return None
+        cache = getattr(self, "_sidebar_logo_cache", {})
+        key = (str(path), max_width, BRAND_ENLARGE)
+        image = cache.get(key)
+        if image is None:
+            image = tk.PhotoImage(file=str(path), master=self.root)
+            image = scale_photoimage(image, max_width=max_width, enlarge=BRAND_ENLARGE)
+            cache[key] = image
+            self._sidebar_logo_cache = cache
+        return image
+
+    def _refresh_header_wordmarks(self) -> None:
+        for page in self.pages.values():
+            refresh = getattr(page, "_refresh_header_logos", None)
+            if callable(refresh):
+                refresh()
+
     def _redraw_sidebar_brand(self, _event: tk.Event | None = None) -> None:
         canvas = getattr(self, "_title_canvas", None)
         if canvas is None:
             return
         bg = self.ctx.colors["panel_alt"]
-        fg = self.ctx.colors["text"]
-        family, weight = sidebar_brand_font_spec(self.root)
+        theme = str(getattr(self.ctx.state, "theme", "light"))
         try:
             allocated = int(canvas.winfo_width())
         except tk.TclError:
             allocated = 0
-        max_width = allocated if allocated > 10 else self._scaled(148)
-        font = self._fit_brand_font(family, weight, max_width)
-        size = int(font.cget("size"))
-        line_h = int(font.metrics("ascent")) + 1
-        chrome_h = max(line_h * 2, self._scaled(40))
+        max_width = allocated if allocated > 10 else self._scaled(round(184 * BRAND_ENLARGE))
+        image = self._sidebar_logo(theme, max_width)
+        chrome_h = max(int(image.height()) if image is not None else 0, self._scaled(36))
         setattr(self.root, "_piezo_top_chrome_height", chrome_h)
-        state = (max_width, chrome_h, size, bg, fg, family, weight)
+        state = (max_width, chrome_h, bg, theme, None if image is None else (int(image.width()), int(image.height())))
         if state == self._brand_state:
             return
         self._brand_state = state
+        self._brand_logo = image
         canvas.configure(bg=bg, height=chrome_h)
         canvas.delete("all")
-        # 两行都按整宽两端对齐（justified），左右边缘与下方按钮列对齐。
-        self._draw_justified_line(canvas, "PIEZO", font, 0, 0, max_width, fg)
-        self._draw_justified_line(canvas, "CONTROL", font, 0, line_h, max_width, fg)
+        if image is None:
+            return
+        canvas.create_image(max_width / 2, chrome_h / 2, image=image, anchor="center")
+        self._refresh_header_wordmarks()
 
     def _align_home_panel(self) -> None:
         if getattr(self, "_aligning_home", False):
@@ -331,7 +368,8 @@ class Navigation:
             return
         self._aligning_home = True
         try:
-            self.root.update_idletasks()
+            # Called after a geometry event/idle pass; do not start a nested
+            # idle loop while the user is resizing the window.
             delta = int(panel.winfo_rooty()) - int(btn.winfo_rooty())
             if abs(delta) <= 1:
                 return
@@ -377,6 +415,7 @@ class Navigation:
         current_page = self.ctx.state.current_page
         for name, btn in self.buttons.items():
             btn.configure(style="SidebarSelected.TButton" if name == current_page else "Sidebar.TButton")
+        self._refresh_settings_button()
 
     def _mode_keys_for(self, page: Any) -> list[str]:
         mode_pages = getattr(page, "mode_pages", None)
@@ -509,6 +548,42 @@ class Navigation:
             text = f"Rev : {APP_VERSION}"
         self._version_label.configure(text=text)
 
+    def _gear_image(self, selected: bool) -> tk.PhotoImage:
+        theme = str(getattr(self.ctx.state, "theme", "light"))
+        color = "#05070D" if selected and theme == "dark" else "#FFFFFF" if selected else self.ctx.colors["text"]
+        size = max(24, self._scaled(30))
+        cached = self._settings_images.get(selected)
+        key = (selected, color, theme, size)
+        if cached is not None and getattr(cached, "_gear_key", None) == key:
+            return cached
+        image = tk.PhotoImage(master=self.root, width=size, height=size)
+        # Eight broad teeth and an open hub remain legible at sidebar size.
+        for y in range(size):
+            for x in range(size):
+                dx = (x + 0.5 - size / 2) / size
+                dy = (y + 0.5 - size / 2) / size
+                radius = math.hypot(dx, dy)
+                angle = math.atan2(dy, dx)
+                tooth = abs((angle + math.pi / 8) % (math.pi / 4) - math.pi / 8)
+                outer = 0.47 if tooth < math.pi / 15 else 0.36
+                if 0.16 <= radius <= outer:
+                    image.put(color, to=(x, y, x + 1, y + 1))
+        image._gear_key = key
+        self._settings_images[selected] = image
+        return image
+
+    def _refresh_settings_button(self) -> None:
+        button = getattr(self, "_settings_button", None)
+        if button is None:
+            return
+        selected = self.ctx.state.current_page == "settings"
+        image = self._gear_image(selected)
+        button.configure(
+            style="SidebarSelected.TButton" if selected else "Sidebar.TButton",
+            image=image,
+        )
+        button.image = image
+
     def _open_user_guide(self) -> None:
         if USER_GUIDE_URL:
             webbrowser.open(USER_GUIDE_URL)
@@ -531,7 +606,7 @@ class Navigation:
             current_name = getattr(self.ctx.state, "current_page", "")
             page = self.pages.get(current_name)
             pin = bool(getattr(page, "pin_window_footer", False)) if page is not None else False
-            window_width = max(canvas_width, required_width)
+            window_width = canvas_width if pin else max(canvas_width, required_width)
             window_height = canvas_height if pin else max(canvas_height, required_height)
             state = (canvas_width, canvas_height, required_width, required_height, current_name, pin)
             if state == self._last_canvas_state:
@@ -544,7 +619,7 @@ class Navigation:
                 height=window_height,
             )
             self.content_canvas.configure(scrollregion=self.content_canvas.bbox("all"))
-            self._update_scrollbars(required_width > canvas_width, (not pin) and required_height > canvas_height)
+            self._update_scrollbars((not pin) and required_width > canvas_width, (not pin) and required_height > canvas_height)
         except tk.TclError:
             pass
 

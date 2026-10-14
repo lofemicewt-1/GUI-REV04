@@ -177,43 +177,32 @@ class AWP1921AWP1923Page(BasePage):
         self._detail_field_choice_values: dict[str, dict[str, int]] = {}
         self._detail_tooltips: list[SimpleTooltip] = []
         self._detail_last_view = "write"
+        self._plain_reg_addr = self.reg_addr_var.get()
+        self._plain_write_value = self.write_value_var.get()
+        self._detail_value_drafts: dict[int, str] = {}
+        self._detail_loaded_address: int | None = None
+        self._detail_session = False
         self.detail_fields_canvas: tk.Canvas | None = None
         self.detail_fields_frame: tk.Frame | None = None
         self._detail_fields_window_id: int | None = None
         self._build_ui()
 
     def _build_ui(self) -> None:
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(3, weight=1)
+        self.enable_pinned_footer_layout()
 
         header = self.make_title(self, "awp1921_1923")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
 
-        mode_bar = ttk.Frame(self, style="Panel.TFrame", padding=(12, 10))
-        mode_bar.grid(row=1, column=0, sticky="ew", pady=(0, 12))
-        mode_bar.columnconfigure(12, weight=1)
-
-        self.addr_label = ttk.Label(mode_bar, style="Panel.TLabel")
-        self.make_serial_selector(mode_bar, page_name=self.page_name, row=0, column=0)
-        self.addr_label.grid(row=0, column=2, sticky="w", padx=(0, 8))
-
-        self.addr_combo = ttk.Combobox(
-            mode_bar,
-            textvariable=self.addr_var,
-            values=["Pull-down 0x44", "Pull-up 0x45", "Floating 0x46"],
-            state="readonly",
-            width=18,
-        )
-        self.addr_combo.grid(row=0, column=3, sticky="w", padx=(0, 18))
-        self.addr_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_addr_changed())
-
-        self.reg_panel = ttk.Frame(self, style="Panel.TFrame", padding=(12, 10))
-        self.reg_panel.grid(row=2, column=0, sticky="ew", pady=(0, 12))
-        self.reg_panel.columnconfigure(10, weight=1)
-        self._build_register_bar(self.reg_panel)
-
         self.mode_scroll, self.mode_container = self.make_vertical_scroll_area(self)
-        self.mode_scroll.grid(row=3, column=0, sticky="nsew")
+        self.mode_scroll.grid(row=1, column=0, sticky="nsew")
+
+        footer, actions, self.reg_panel, identity = self.make_merged_footer()
+        footer.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        self._footer = footer
+        self._build_state_actions(actions)
+        self._build_register_bar(self.reg_panel)
+        self._build_identity_bar(identity)
+        self._build_detail_host(footer)
         # Keep mode headers away from the inner canvas clip edge on compact
         # windows while retaining horizontal scrolling for wide panels.
         self.mode_container.configure(padding=(8, 0, 8, 0))
@@ -232,52 +221,78 @@ class AWP1921AWP1923Page(BasePage):
         self._on_addr_changed()
         self.show_mode("button_mode")
 
-    def _build_register_bar(self, parent: tk.Misc) -> None:
-        self.reg_title_label = ttk.Label(parent, style="Panel.TLabel")
-        self.reg_title_label.grid(row=0, column=0, sticky="w", padx=(0, 12))
-
-        self.reg_addr_label = ttk.Label(parent, style="Panel.TLabel")
-        self.reg_addr_label.grid(row=0, column=1, sticky="w", padx=(0, 6))
-        ttk.Entry(parent, textvariable=self.reg_addr_var, width=8).grid(row=0, column=2, sticky="w", padx=(0, 12))
-
-        self.write_value_label = ttk.Label(parent, style="Panel.TLabel")
-        self.write_value_label.grid(row=0, column=3, sticky="w", padx=(0, 6))
-        self.write_value_entry = ttk.Entry(parent, textvariable=self.write_value_var, width=10)
-        self.write_value_entry.grid(row=0, column=4, sticky="w", padx=(0, 12))
-        self.write_value_entry.bind("<Return>", lambda _event: self._commit_detail_shared_value(), add="+")
-        self.write_value_entry.bind("<FocusOut>", lambda _event: self._commit_detail_shared_value(), add="+")
-
-        self.read_value_label = ttk.Label(parent, style="Panel.TLabel")
-        self.read_value_label.grid(row=0, column=5, sticky="w", padx=(0, 6))
-        ttk.Entry(parent, textvariable=self.read_value_var, width=12, state="readonly").grid(row=0, column=6, sticky="w", padx=(0, 12))
-
-        self.rr_btn = ttk.Button(parent, style="Secondary.TButton", command=self.read_register)
-        self.rr_btn.grid(row=0, column=7, sticky="w", padx=(0, 6))
-
-        self.rw_btn = ttk.Button(parent, style="Primary.TButton", command=self.write_register)
-        self.rw_btn.grid(row=0, column=8, sticky="w")
-
-        self.detail_mode_check = ttk.Checkbutton(
-            parent,
-            variable=self.detail_mode_var,
-            command=self._on_detail_mode_changed,
-        )
-        self.detail_mode_check.grid(row=0, column=9, sticky="w", padx=(14, 0))
-
-        state_actions = ttk.Frame(parent, style="Panel.TFrame")
-        state_actions.grid(row=1, column=0, columnspan=11, sticky="w", pady=(10, 0))
+    def _build_state_actions(self, parent: tk.Misc) -> None:
         for column, (key, value, style) in enumerate(self.STATE_COMMANDS):
-            state_actions.columnconfigure(column, weight=1, uniform="chip_state_actions")
+            parent.columnconfigure(column, weight=1, uniform="chip_state_actions")
             button = ttk.Button(
-                state_actions,
+                parent,
                 style=style,
                 command=lambda command_value=value: self.write_chip_state(command_value),
             )
             button.grid(row=0, column=column, sticky="ew", padx=(0, 8))
             self.state_buttons[key] = button
 
-        self.detail_frame = ttk.Frame(parent, style="Panel.TFrame")
-        self.detail_frame.grid(row=2, column=0, columnspan=11, sticky="ew", pady=(10, 0))
+    def _build_identity_bar(self, parent: tk.Misc) -> None:
+        serial_group = parent.add_group()
+        self.make_serial_selector(serial_group, page_name=self.page_name, row=0, column=0)
+        addr_group = parent.add_group()
+        self.addr_label = ttk.Label(addr_group, style="Panel.TLabel")
+        self.addr_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.addr_combo = ttk.Combobox(
+            addr_group,
+            textvariable=self.addr_var,
+            values=["Pull-down 0x44", "Pull-up 0x45", "Floating 0x46"],
+            state="readonly",
+            width=18,
+        )
+        self.addr_combo.grid(row=0, column=1, sticky="w")
+        self.addr_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_addr_changed())
+
+    def _build_register_bar(self, parent: tk.Misc) -> None:
+        title_group = parent.add_group()
+        self.reg_title_label = ttk.Label(title_group, style="Panel.TLabel")
+        self.reg_title_label.grid(row=0, column=0, sticky="w")
+
+        addr_group = parent.add_group()
+        self.reg_addr_label = ttk.Label(addr_group, style="Panel.TLabel")
+        self.reg_addr_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Entry(addr_group, textvariable=self.reg_addr_var, width=8).grid(row=0, column=1, sticky="w")
+
+        write_group = parent.add_group()
+        self.write_value_label = ttk.Label(write_group, style="Panel.TLabel")
+        self.write_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.write_value_entry = ttk.Entry(write_group, textvariable=self.write_value_var, width=10)
+        self.write_value_entry.grid(row=0, column=1, sticky="w")
+        self.write_value_entry.bind("<Return>", lambda _event: self._commit_detail_shared_value(), add="+")
+        self.write_value_entry.bind("<FocusOut>", lambda _event: self._commit_detail_shared_value(), add="+")
+
+        read_group = parent.add_group()
+        self.read_value_label = ttk.Label(read_group, style="Panel.TLabel")
+        self.read_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Entry(read_group, textvariable=self.read_value_var, width=12, state="readonly").grid(row=0, column=1, sticky="w")
+
+        button_group = parent.add_group()
+        self.rr_btn = ttk.Button(button_group, style="Secondary.TButton", command=self.read_register)
+        self.rr_btn.grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.rw_btn = ttk.Button(button_group, style="Primary.TButton", command=self.write_register)
+        self.rw_btn.grid(row=0, column=1, sticky="w")
+
+        self._detail_entry_group = parent.add_group()
+        self.detail_mode_check = ttk.Checkbutton(
+            self._detail_entry_group,
+            variable=self.detail_mode_var,
+            command=self._on_detail_mode_changed,
+        )
+        self.detail_mode_check.grid(row=0, column=0, sticky="w")
+
+    def _build_detail_host(self, footer: ttk.Frame) -> None:
+        self._detail_host = ttk.Frame(footer, style="Panel.TFrame")
+        self._detail_host.columnconfigure(0, weight=1)
+        self._detail_host.rowconfigure(0, weight=1)
+        self._detail_scroll, detail_inner = self.make_vertical_scroll_area(self._detail_host, horizontal=False)
+        self._detail_scroll.grid(row=0, column=0, sticky="nsew")
+        self.detail_frame = ttk.Frame(detail_inner, style="Panel.TFrame")
+        self.detail_frame.grid(row=0, column=0, sticky="ew")
         self.detail_frame.columnconfigure(1, weight=1)
         self.detail_frame.columnconfigure(3, weight=1)
 
@@ -331,7 +346,7 @@ class AWP1921AWP1923Page(BasePage):
         )
         self.detail_fields_frame.bind("<Configure>", self._sync_detail_fields_scrollregion)
         self.detail_fields_canvas.bind("<Configure>", self._sync_detail_fields_canvas_width)
-        self.detail_frame.grid_remove()
+        detail_inner.columnconfigure(0, weight=1)
 
     def _parse_int(self, text: str) -> int:
         return int(text.strip(), 0)
@@ -359,32 +374,89 @@ class AWP1921AWP1923Page(BasePage):
             return None
         return awp192x_registers.get_awp192x_detail_register_definition(address)
 
+    def detail_mode_active(self) -> bool:
+        return self.current_mode == "full_mode" and bool(self.detail_mode_var.get())
+
     def _active_register_address(self) -> int:
-        definition = self._current_detail_definition() if self.detail_mode_var.get() else None
+        definition = self._current_detail_definition() if self.detail_mode_active() else None
         if definition is not None:
             return definition.address
         return self._parse_int(self.reg_addr_var.get())
 
-    def _on_detail_mode_changed(self) -> None:
-        if self.detail_mode_var.get():
-            self.detail_frame.grid()
-            self.write_value_label.configure(text=self.tr("detail_register_value"))
-            self._on_detail_register_selected()
+    def _store_detail_draft(self) -> None:
+        address = self._detail_loaded_address
+        if address is None:
             return
+        self._detail_value_drafts[int(address)] = self.write_value_var.get()
 
-        self.detail_frame.grid_remove()
+    def _apply_detail_host_height(self) -> None:
+        try:
+            top_height = int(self.winfo_toplevel().winfo_height())
+        except tk.TclError:
+            top_height = 0
+        cap = 220
+        if top_height > 1:
+            cap = max(96, min(220, top_height // 3))
+        content = max(96, int(self.detail_frame.winfo_reqheight()))
+        self._detail_host.grid_propagate(False)
+        self._detail_host.configure(height=min(cap, content))
+
+    def _show_detail_editor(self) -> None:
+        self._detail_host.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self._apply_detail_host_height()
+        self.write_value_label.configure(text=self.tr("detail_register_value"))
+
+    def _hide_detail_editor(self) -> None:
+        self._detail_host.grid_remove()
         self.detail_note_var.set("")
         self.write_value_label.configure(text=self.tr("write_value"))
         self._set_register_button_states(can_read=True, can_write=True)
 
+    def _sync_detail_mode_state(self) -> None:
+        full = self.current_mode == "full_mode"
+        self.reg_panel.set_group_visible(self._detail_entry_group, full)
+        active = self.detail_mode_active()
+        if active and not self._detail_session:
+            self._plain_reg_addr = self.reg_addr_var.get()
+            self._plain_write_value = self.write_value_var.get()
+            self._detail_session = True
+            self._show_detail_editor()
+            self._on_detail_register_selected()
+            return
+        if not active and self._detail_session:
+            self._store_detail_draft()
+            self._detail_session = False
+            self.reg_addr_var.set(self._plain_reg_addr)
+            self.write_value_var.set(self._plain_write_value)
+            self._hide_detail_editor()
+            return
+        if active:
+            self._show_detail_editor()
+        else:
+            self._hide_detail_editor()
+
+    def _on_detail_mode_changed(self) -> None:
+        if self.current_mode != "full_mode":
+            return
+        self._sync_detail_mode_state()
+
     def _on_detail_register_selected(self) -> None:
+        if not self.detail_mode_active():
+            return
         definition = self._current_detail_definition()
         if definition is None:
             return
 
+        previous = self._detail_loaded_address
+        if previous is not None and previous != definition.address:
+            self._detail_value_drafts[int(previous)] = self.write_value_var.get()
         self.reg_addr_var.set(f"0x{definition.address:02X}")
-        current_value = definition.default_value & definition.value_mask
-        self.write_value_var.set(register_base.format_register_value(definition, current_value))
+        draft = self._detail_value_drafts.get(definition.address)
+        if draft is None:
+            current_value = definition.default_value & definition.value_mask
+            draft = register_base.format_register_value(definition, current_value)
+        self._detail_loaded_address = definition.address
+        self.write_value_var.set(draft)
         self._sync_detail_note(definition)
         self._set_register_button_states(can_read=definition.can_read, can_write=definition.can_write)
         self._refresh_detail_fields(definition=definition, view="write")
@@ -402,7 +474,7 @@ class AWP1921AWP1923Page(BasePage):
         self.rw_btn.state(["!disabled"] if can_write else ["disabled"])
 
     def _commit_detail_shared_value(self) -> None:
-        if not self.detail_mode_var.get():
+        if not self.detail_mode_active():
             return
         definition = self._current_detail_definition()
         if definition is None:
@@ -422,7 +494,7 @@ class AWP1921AWP1923Page(BasePage):
         definition: register_base.RegisterDefinition | None = None,
         view: str = "write",
     ) -> None:
-        if not self.detail_mode_var.get():
+        if not self.detail_mode_active():
             return
 
         definition = definition or self._current_detail_definition()
@@ -605,7 +677,7 @@ class AWP1921AWP1923Page(BasePage):
         return bit_range
 
     def _apply_detail_field_value(self, field_key: str) -> None:
-        if not self.detail_mode_var.get():
+        if not self.detail_mode_active():
             return
         definition = self._current_detail_definition()
         if definition is None or not definition.can_write:
@@ -638,7 +710,7 @@ class AWP1921AWP1923Page(BasePage):
             from tkinter import messagebox
             messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
             return
-        definition = self._current_detail_definition() if self.detail_mode_var.get() else None
+        definition = self._current_detail_definition() if self.detail_mode_active() else None
         if definition is not None and not definition.can_read:
             return
         try:
@@ -673,7 +745,7 @@ class AWP1921AWP1923Page(BasePage):
             from tkinter import messagebox
             messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
             return
-        definition = self._current_detail_definition() if self.detail_mode_var.get() else None
+        definition = self._current_detail_definition() if self.detail_mode_active() else None
         if definition is not None and not definition.can_write:
             return
         try:
@@ -750,6 +822,7 @@ class AWP1921AWP1923Page(BasePage):
         page.grid()
         if hasattr(page, "on_show"):
             page.on_show()
+        self._sync_detail_mode_state()
 
     def refresh_language(self) -> None:
         super().refresh_language()
@@ -758,7 +831,7 @@ class AWP1921AWP1923Page(BasePage):
             self.reg_title_label.configure(text=self.tr("read_write_registers"))
             self.reg_addr_label.configure(text=self.tr("reg_addr"))
             self.write_value_label.configure(
-                text=self.tr("detail_register_value") if self.detail_mode_var.get() else self.tr("write_value")
+                text=self.tr("detail_register_value") if self.detail_mode_active() else self.tr("write_value")
             )
             self.read_value_label.configure(text=self.tr("read_value"))
             self.rr_btn.configure(text=self.tr("rr"))
@@ -782,8 +855,9 @@ class AWP1921AWP1923Page(BasePage):
             self.detail_fields_canvas.configure(bg=self.colors["panel"])
         if self.detail_fields_frame is not None:
             self.detail_fields_frame.configure(bg=self.colors["panel"])
-        if hasattr(self, "detail_mode_var") and self.detail_mode_var.get():
+        if self.detail_mode_active():
             self._refresh_detail_fields(view=self._detail_last_view)
+            self._apply_detail_host_height()
         for page in self.mode_pages.values():
             if hasattr(page, "refresh_theme"):
                 page.refresh_theme()
@@ -829,19 +903,20 @@ class AWP1744AWP1766Page(BasePage):
         self.mode_buttons["awp1744_awp1766_export_user_preset"] = export_btn
         actions.columnconfigure(0, weight=1, uniform="chip_state_actions")
         actions.columnconfigure(1, weight=1, uniform="chip_state_actions")
-        self.reg_panel.columnconfigure(9, weight=1)
         self._build_register_bar(self.reg_panel)
-        self.addr_label = ttk.Label(identity, style="Panel.TLabel")
-        self.make_serial_selector(identity, page_name=self.page_name, row=0, column=0)
-        self.addr_label.grid(row=0, column=2, sticky="w", padx=(0, 8))
+        serial_group = identity.add_group()
+        self.make_serial_selector(serial_group, page_name=self.page_name, row=0, column=0)
+        addr_group = identity.add_group()
+        self.addr_label = ttk.Label(addr_group, style="Panel.TLabel")
+        self.addr_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.addr_combo = ttk.Combobox(
-            identity,
+            addr_group,
             textvariable=self.addr_var,
             values=[label for label, _addr in self.ADDR_OPTIONS],
             state="readonly",
             width=18,
         )
-        self.addr_combo.grid(row=0, column=3, sticky="w", padx=(0, 18))
+        self.addr_combo.grid(row=0, column=1, sticky="w")
         self.addr_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_addr_changed())
         self.mode_container.rowconfigure(0, weight=1)
         self.mode_container.columnconfigure(0, weight=1)
@@ -862,26 +937,30 @@ class AWP1744AWP1766Page(BasePage):
         self.show_mode(self.current_mode)
 
     def _build_register_bar(self, parent: tk.Misc) -> None:
-        self.reg_title_label = ttk.Label(parent, style="Panel.TLabel")
-        self.reg_title_label.grid(row=0, column=0, sticky="w", padx=(0, 12))
+        title_group = parent.add_group()
+        self.reg_title_label = ttk.Label(title_group, style="Panel.TLabel")
+        self.reg_title_label.grid(row=0, column=0, sticky="w")
 
-        self.reg_addr_label = ttk.Label(parent, style="Panel.TLabel")
-        self.reg_addr_label.grid(row=0, column=1, sticky="w", padx=(0, 6))
-        ttk.Entry(parent, textvariable=self.reg_addr_var, width=8).grid(row=0, column=2, sticky="w", padx=(0, 12))
+        addr_group = parent.add_group()
+        self.reg_addr_label = ttk.Label(addr_group, style="Panel.TLabel")
+        self.reg_addr_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Entry(addr_group, textvariable=self.reg_addr_var, width=8).grid(row=0, column=1, sticky="w")
 
-        self.write_value_label = ttk.Label(parent, style="Panel.TLabel")
-        self.write_value_label.grid(row=0, column=3, sticky="w", padx=(0, 6))
-        ttk.Entry(parent, textvariable=self.write_value_var, width=10).grid(row=0, column=4, sticky="w", padx=(0, 12))
+        write_group = parent.add_group()
+        self.write_value_label = ttk.Label(write_group, style="Panel.TLabel")
+        self.write_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Entry(write_group, textvariable=self.write_value_var, width=10).grid(row=0, column=1, sticky="w")
 
-        self.read_value_label = ttk.Label(parent, style="Panel.TLabel")
-        self.read_value_label.grid(row=0, column=5, sticky="w", padx=(0, 6))
-        ttk.Entry(parent, textvariable=self.read_value_var, width=12, state="readonly").grid(row=0, column=6, sticky="w", padx=(0, 12))
+        read_group = parent.add_group()
+        self.read_value_label = ttk.Label(read_group, style="Panel.TLabel")
+        self.read_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Entry(read_group, textvariable=self.read_value_var, width=12, state="readonly").grid(row=0, column=1, sticky="w")
 
-        self.rr_btn = ttk.Button(parent, style="Secondary.TButton", command=self.read_register)
-        self.rr_btn.grid(row=0, column=7, sticky="w", padx=(0, 6))
-
-        self.rw_btn = ttk.Button(parent, style="Primary.TButton", command=self.write_register)
-        self.rw_btn.grid(row=0, column=8, sticky="w")
+        button_group = parent.add_group()
+        self.rr_btn = ttk.Button(button_group, style="Secondary.TButton", command=self.read_register)
+        self.rr_btn.grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.rw_btn = ttk.Button(button_group, style="Primary.TButton", command=self.write_register)
+        self.rw_btn.grid(row=0, column=1, sticky="w")
 
     def _parse_int(self, text: str) -> int:
         return int(text.strip(), 0)
@@ -1361,7 +1440,7 @@ class ReservedModePage(BasePage):
         self.columnconfigure(0, weight=1)
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
         panel.grid(row=0, column=0, sticky="nsew")
-        self.title_label = ttk.Label(panel, style="Title.TLabel")
+        self.title_label = ttk.Label(panel, style="Prominent.TLabel")
         self.title_label.grid(row=0, column=0, sticky="w")
         self.hint_label = ttk.Label(panel, style="Muted.TLabel", wraplength=620)
         self.hint_label.grid(row=1, column=0, sticky="w", pady=(10, 0))

@@ -109,6 +109,7 @@ class HomePage(BasePage):
     FLAG_POLL_INTERVAL_MS = 250
     FLAG_RESULT_CHECK_INTERVAL_MS = 25
     STATUS_POLL_INTERVAL_MS = 300
+    PORT_LIST_POLL_INTERVAL_MS = 30000
     STATUS_RESULT_CHECK_INTERVAL_MS = 25
     PUSH_EVENT_POLL_INTERVAL_MS = 25
     CONTINUOUS_READ_RESULT_CHECK_INTERVAL_MS = 25
@@ -173,6 +174,10 @@ class HomePage(BasePage):
         # still invoke the explicit read API and the old FLAG helpers.
         self._status_auto_poll_enabled = False
         self._serial_disconnect_error_by_port: dict[str, str] = {}
+        self._port_list_poll_after_id: str | None = None
+        self._port_scan_results: Queue[tuple[Any, str]] | None = None
+        self._port_scan_after_id: str | None = None
+        self._port_scan_closed = False
         self._serial_connection_listener = self._on_serial_connection_lost
         add_connection_listener = getattr(self.ctx.serial, "add_connection_listener", None)
         if callable(add_connection_listener):
@@ -232,7 +237,7 @@ class HomePage(BasePage):
         )
         self.baud_combo.grid(row=0, column=3, sticky="w")
 
-        self.refresh_btn = ttk.Button(toolbar, style="Secondary.TButton", command=self.refresh_ports)
+        self.refresh_btn = ttk.Button(toolbar, style="Quiet.TButton", command=self.refresh_ports)
         self.refresh_btn.grid(row=0, column=4, padx=(8, 0))
 
         self.connect_btn = ttk.Button(toolbar, style="Primary.TButton", command=self.toggle_connection)
@@ -397,6 +402,7 @@ class HomePage(BasePage):
         self._build_status_panel(panel)
         self.refresh_ports()
         self.refresh_language()
+        self._schedule_port_list_poll()
 
     def _build_status_panel(self, parent: tk.Misc) -> None:
         """Build the compact explicit status-cache target table on Home."""
@@ -553,6 +559,7 @@ class HomePage(BasePage):
                 self._refresh_status_rows()
         else:
             self._refresh_status_rows()
+        self._update_current_port_name()
 
     def _stop_status_monitor(self) -> None:
         """Invalidate status workers and cancel the next Tk callback."""
@@ -1686,8 +1693,45 @@ class HomePage(BasePage):
 
         self.logo_label.configure(text="PIEZO\nGUI", justify="center")
 
-    def refresh_ports(self) -> None:
-        port_info = self.ctx.serial.list_port_info()
+    def refresh_ports(self, *, probe_missing: bool = True) -> None:
+        if self._port_scan_closed or self._port_scan_results is not None:
+            return
+        # Windows port enumeration (including the COM fallback) can block in
+        # a driver. Never make navigation/translation wait for that work.
+        results: Queue[tuple[Any, str]] = Queue(maxsize=1)
+        self._port_scan_results = results
+
+        def scan() -> None:
+            try:
+                try:
+                    info = self.ctx.serial.list_port_info(probe_missing=probe_missing)
+                except TypeError:
+                    info = self.ctx.serial.list_port_info()
+            except Exception as exc:
+                results.put((None, str(exc)))
+            else:
+                results.put((info, ""))
+
+        threading.Thread(target=scan, daemon=True, name="serial-port-scan").start()
+        self._port_scan_after_id = self.after(25, self._finish_port_scan)
+
+    def _finish_port_scan(self) -> None:
+        self._port_scan_after_id = None
+        results = self._port_scan_results
+        if self._port_scan_closed or results is None:
+            return
+        try:
+            port_info, error = results.get_nowait()
+        except Empty:
+            self._port_scan_after_id = self.after(25, self._finish_port_scan)
+            return
+        self._port_scan_results = None
+        if port_info is None:
+            self.port_hint_label.configure(text=error)
+            return
+        self._apply_port_info(port_info)
+
+    def _apply_port_info(self, port_info: Any) -> None:
         self.port_names = {info.device: info.name for info in port_info}
         ports = [info.device for info in port_info]
         current = self.port_var.get().strip()
@@ -1695,7 +1739,9 @@ class HomePage(BasePage):
         if is_port_connected and current and current not in ports:
             ports = [current, *ports]
             self.port_names.setdefault(current, self.ctx.state.extra.get("selected_port_name", current))
-        self.port_combo.configure(values=ports)
+        current_values = tuple(str(value) for value in self.port_combo.cget("values"))
+        if current_values != tuple(ports):
+            self.port_combo.configure(values=ports)
 
         if ports and (not current or (current not in ports and not is_port_connected)):
             self.port_var.set(ports[0])
@@ -1706,13 +1752,49 @@ class HomePage(BasePage):
             self._cancel_continuous_read("connection_changed", port=operation.port)
 
         if not self.ctx.serial.is_available:
-            self.port_hint_label.configure(text=self.tr("serial_unavailable"))
+            hint = self.tr("serial_unavailable")
         elif not ports:
-            self.port_hint_label.configure(text=self.tr("no_ports_found"))
+            hint = self.tr("no_ports_found")
         else:
-            self.port_hint_label.configure(text="")
+            hint = ""
+        if self.port_hint_label.cget("text") != hint:
+            self.port_hint_label.configure(text=hint)
 
         self._update_current_port_name()
+
+    def _stop_port_list_poll(self) -> None:
+        after_id = getattr(self, "_port_list_poll_after_id", None)
+        if after_id is None:
+            return
+        try:
+            self.after_cancel(after_id)
+        except (tk.TclError, AttributeError):
+            pass
+        self._port_list_poll_after_id = None
+
+    def _schedule_port_list_poll(self) -> None:
+        self._stop_port_list_poll()
+        try:
+            self._port_list_poll_after_id = self.after(
+                self.PORT_LIST_POLL_INTERVAL_MS,
+                self._poll_port_list,
+            )
+        except tk.TclError:
+            self._port_list_poll_after_id = None
+
+    def _poll_port_list(self) -> None:
+        self._stop_port_list_poll()
+        try:
+            if not self.winfo_exists():
+                return
+            self.refresh_ports(probe_missing=False)
+        except tk.TclError:
+            return
+        self._schedule_port_list_poll()
+
+    def on_show(self) -> None:
+        super().on_show()
+        self.refresh_ports()
 
     def _update_current_port_name(self) -> None:
         port = self.port_var.get().strip()
@@ -2299,7 +2381,16 @@ class HomePage(BasePage):
         self.refresh_language()
 
     def destroy(self) -> None:
+        self._port_scan_closed = True
+        if self._port_scan_after_id is not None:
+            try:
+                self.after_cancel(self._port_scan_after_id)
+            except tk.TclError:
+                pass
+            self._port_scan_after_id = None
+        self._port_scan_results = None
         self._cancel_continuous_read("page_destroyed")
+        self._stop_port_list_poll()
         after_id = getattr(self, "_continuous_read_after_id", None)
         if after_id is not None:
             try:
@@ -3522,8 +3613,17 @@ class SettingsPage(BasePage):
 
     def __init__(self, parent: tk.Misc, ctx: ApplicationContext) -> None:
         super().__init__(parent, ctx)
-        self.language_var = tk.StringVar(value=self.ctx.state.language)
-        self.theme_var = tk.StringVar(value=self.ctx.state.theme)
+        self._language_choices = {"中文": "zh", "English": "en"}
+        self._language_labels = {"zh": "中文", "en": "English"}
+        self.language_var = tk.StringVar(value=self._language_labels.get(self.ctx.state.language, "English"))
+        self._theme_choices = {
+            "light（浅色）": "light",
+            "dark（深色）": "dark",
+            "Auto（自动）": "auto",
+        }
+        self._theme_labels = {code: label for label, code in self._theme_choices.items()}
+        preference = str(self.ctx.state.extra.get("theme_preference", self.ctx.state.theme))
+        self.theme_var = tk.StringVar(value=self._theme_labels.get(preference, "light（浅色）"))
         self.font_size_var = tk.IntVar(value=self.ctx.state.font_size)
         self._build_ui()
 
@@ -3539,13 +3639,19 @@ class SettingsPage(BasePage):
 
         self.lang_label = ttk.Label(panel, style="Panel.TLabel")
         self.lang_label.grid(row=0, column=0, sticky="w", padx=(0, 10), pady=8)
-        ttk.Combobox(panel, textvariable=self.language_var, values=["zh", "en"], state="readonly").grid(
+        ttk.Combobox(panel, textvariable=self.language_var, values=["中文", "English"], state="readonly").grid(
             row=0, column=1, sticky="w", pady=8
         )
 
         self.theme_label = ttk.Label(panel, style="Panel.TLabel")
         self.theme_label.grid(row=1, column=0, sticky="w", padx=(0, 10), pady=8)
-        ttk.Combobox(panel, textvariable=self.theme_var, values=["light", "dark"], state="readonly").grid(
+        ttk.Combobox(
+            panel,
+            textvariable=self.theme_var,
+            values=list(self._theme_choices),
+            state="readonly",
+            width=16,
+        ).grid(
             row=1, column=1, sticky="w", pady=8
         )
 
@@ -3565,14 +3671,39 @@ class SettingsPage(BasePage):
         self.refresh_language()
 
     def apply_settings(self) -> None:
-        self.ctx.app.apply_settings(self.language_var.get(), self.theme_var.get(), self.font_size_var.get())
+        language = self._language_choices.get(self.language_var.get(), "en")
+        theme = self._theme_choices.get(self.theme_var.get(), "light")
+        self.ctx.app.apply_settings(language, theme, self.font_size_var.get())
 
     def refresh_language(self) -> None:
         super().refresh_language()
-        self.lang_label.configure(text=self.tr("language"))
-        self.theme_label.configure(text=self.tr("theme"))
-        self.font_size_label.configure(text=self.tr("font_size"))
-        self.apply_btn.configure(text=self.tr("apply"))
+        active = self._language_labels.get(self.ctx.state.language, "English")
+        if self._language_choices.get(self.language_var.get()) != self.ctx.state.language:
+            self.language_var.set(active)
+        preference = str(self.ctx.state.extra.get("theme_preference", self.ctx.state.theme))
+        theme_label = self._theme_labels.get(preference, "light（浅色）")
+        if self._theme_choices.get(self.theme_var.get()) != preference:
+            self.theme_var.set(theme_label)
+        self.lang_label.configure(text="Language")
+        self.theme_label.configure(text="Theme")
+        self.font_size_label.configure(text="Font Size 字体大小")
+        self.apply_btn.configure(text="Apply")
+
+
+def _resolve_theme(theme: str) -> str:
+    if theme != "auto":
+        return theme if theme in {"light", "dark"} else "light"
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        ) as key:
+            value, _kind = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        return "light" if int(value) else "dark"
+    except Exception:
+        return "light"
 
 
 class PiezoApplication:
@@ -3637,7 +3768,12 @@ class PiezoApplication:
         self.navigation.add_page("awp1922", "awp1922", AWP1922Page(self.navigation.content, self.ctx))
         self.navigation.add_page("awp1018", "awp1018", AWP1018Page(self.navigation.content, self.ctx))
         self.navigation.add_page("awp1221", "awp1221", AWP1221Page(self.navigation.content, self.ctx))
-        self.navigation.add_page("settings", "settings", SettingsPage(self.navigation.content, self.ctx))
+        self.navigation.add_page(
+            "settings",
+            "settings",
+            SettingsPage(self.navigation.content, self.ctx),
+            sidebar_button=False,
+        )
 
     def set_language(self, language: str) -> None:
         if language not in {"zh", "en"}:
@@ -3669,7 +3805,9 @@ class PiezoApplication:
 
     def apply_settings(self, language: str, theme: str, font_size: int) -> None:
         language_changed = language in {"zh", "en"} and language != self.state.language
-        theme_changed = theme in {"light", "dark"} and theme != self.state.theme
+        preference = theme if theme in {"light", "dark", "auto"} else "light"
+        resolved = _resolve_theme(preference)
+        theme_changed = resolved != self.state.theme or self.state.extra.get("theme_preference") != preference
         try:
             next_font_size = max(8, min(18, int(font_size)))
         except Exception:
@@ -3683,7 +3821,8 @@ class PiezoApplication:
 
         if theme_changed or font_changed:
             if theme_changed:
-                self.state.theme = theme
+                self.state.theme = resolved
+                self.state.extra["theme_preference"] = preference
             if font_changed:
                 self.state.font_size = next_font_size
             self._apply_visual_settings()
@@ -3756,7 +3895,12 @@ class PiezoApplication:
             if isinstance(widget, tk.Text):
                 font = ("Consolas", mono_size)
             elif isinstance(widget, ttk.Label):
-                if style_name in {"Title.TLabel", "PanelTitle.TLabel"}:
+                if style_name in {"Wordmark.TLabel", "ChipTitle.TLabel"}:
+                    font = None
+                elif style_name == "Prominent.TLabel":
+                    prominent_size = int(getattr(self.root, "_piezo_prominent_title_font_size", title_size + 1))
+                    font = ("Microsoft YaHei UI", prominent_size, "bold", *(() if not underline else ("underline",)))
+                elif style_name in {"Title.TLabel", "PanelTitle.TLabel"}:
                     font = ("Microsoft YaHei UI", title_size, "bold", *(() if not underline else ("underline",)))
                 elif style_name == "SectionTitle.TLabel":
                     font = ("Microsoft YaHei UI", body_size, "bold", *(() if not underline else ("underline",)))
