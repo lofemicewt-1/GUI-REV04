@@ -17,6 +17,9 @@ import time
 # Off by default: on Windows, mapped-but-covered pages made every layout
 # pass (update_idletasks) and text prep much slower (56fac66 field log).
 _PAGE_STACK = os.environ.get("PIEZO_PAGE_STACK", "0") == "1"
+# Slide length is cut so click -> settled stays under ~500 ms (target).
+SLIDE_BUDGET_MS = 470
+SLIDE_MIN_MS = 120
 
 from core import animation as anim
 from core.text_wrap import guard_orphans
@@ -431,7 +434,7 @@ class Navigation:
         if fading:
             self._run_page_fade()
         elif mode == "slide":
-            self._run_page_slide()
+            self._run_page_slide(t_build)
 
     def prepare_page_fonts(self, page: tk.Misc) -> None:
         """Run the size-dependent text steps synchronously for the page being
@@ -520,10 +523,11 @@ class Navigation:
         animator = anim.animator_for(self.root)
         if animator is None or not animator.enabled:
             return "none"
-        # Windows: every Tk widget is a native child window, so moving the
-        # page per frame (slide) costs a repaint of all of them and delays
-        # the click; default to none there.  PIEZO_PAGE_TRANSITION overrides.
-        default = "none" if self._windowing_system() == "win32" else "slide"
+        # slide on every platform (incl. Windows: measured under Wine with the
+        # pages prebuilt -- ~16 ms per frame, +0-60 ms to click-to-settled).
+        # The settings checkbox (animator.enabled) turns it off;
+        # PIEZO_PAGE_TRANSITION overrides.
+        default = "slide"
         mode = os.environ.get("PIEZO_PAGE_TRANSITION", default).strip().lower()
         if mode not in {"slide", "fade", "none"}:
             mode = default
@@ -537,12 +541,18 @@ class Navigation:
         except tk.TclError:
             return ""
 
-    def _run_page_slide(self) -> None:
+    def _run_page_slide(self, started: float | None = None) -> None:
         """New page rises a few pixels into place (ease-out).  Only the
-        canvas window item moves: no widget is re-laid out per frame."""
+        canvas window item moves: no widget is re-laid out per frame.
+        When the switch itself was slow (``started`` = click time), the
+        motion is shortened so the whole switch settles within ~500 ms."""
         animator = anim.animator_for(self.root)
         if animator is None:
             return
+        duration = anim.PAGE_TRANSITION_MS
+        if started is not None:
+            spent = (time.perf_counter() - started) * 1000
+            duration = max(SLIDE_MIN_MS, min(duration, SLIDE_BUDGET_MS - spent))
         canvas = self.content_canvas
         item = self.content_window
         offset = max(8, self._scaled(18))
@@ -562,7 +572,7 @@ class Navigation:
             canvas.coords(item, 0, offset)
         except tk.TclError:
             return
-        animator.animate("page-transition", anim.PAGE_TRANSITION_MS, step, ease=anim.EASE_OUT, done=done)
+        animator.animate("page-transition", duration, step, ease=anim.EASE_OUT, done=done)
 
     # -- page fade-in ------------------------------------------------------
     # Tk cannot blend a widget, so a borderless toplevel in the background
@@ -1070,7 +1080,11 @@ class Navigation:
         page = self.mode_host
         if page is None or not hasattr(page, "show_mode"):
             return
+        started = time.perf_counter()
+        changed = getattr(page, "current_mode", None) != key
         page.show_mode(key)
+        if changed and self._page_transition_mode() == "slide":
+            self._run_page_slide(started)
         sync = getattr(page, "_sync_mode_button_styles", None)
         if callable(sync):
             sync()
