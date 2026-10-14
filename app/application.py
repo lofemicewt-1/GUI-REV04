@@ -3302,29 +3302,25 @@ class PiezoApplication:
             pass
 
     def _register_pages(self) -> None:
+        """Only home is built at startup; the other pages are built on first
+        use (shown, or looked up by another page) with the current theme,
+        language and font settings."""
         from core import animation as _anim
-        spans: list[str] = []
-
-        def build(name: str, cls: Any, **kw: Any) -> None:
-            t0 = time.perf_counter()
-            page = cls(self.navigation.content, self.ctx)
-            t1 = time.perf_counter()
-            self.navigation.add_page(name, name, page, **kw)
-            if _anim.DEBUG:
-                count, stack = 0, [page]
-                while stack:
-                    w = stack.pop()
-                    count += 1
-                    stack.extend(w.winfo_children())
-                spans.append(f"{name} {(t1 - t0) * 1000:.0f}ms/{count} widgets (+add {(time.perf_counter() - t1) * 1000:.0f})")
-
-        build("home", HomePage)
-        build("awp1921_1923", AWP1921AWP1923Page)
-        build("awp1922", AWP1922Page)
-        build("awp1018", AWP1018Page)
-        build("awp1221", AWP1221Page)
-        build("settings", SettingsPage, sidebar_button=False)
-        _anim.debug_log("build pages: " + ", ".join(spans))
+        content = self.navigation.content
+        self.navigation.on_page_built = self._refresh_widget_fonts
+        t0 = time.perf_counter()
+        self.navigation.add_page("home", "home", HomePage(content, self.ctx))
+        for name, cls, sidebar in (
+            ("awp1921_1923", AWP1921AWP1923Page, True),
+            ("awp1922", AWP1922Page, True),
+            ("awp1018", AWP1018Page, True),
+            ("awp1221", AWP1221Page, True),
+            ("settings", SettingsPage, False),
+        ):
+            self.navigation.register_page(
+                name, name, lambda cls=cls: cls(content, self.ctx), sidebar_button=sidebar
+            )
+        _anim.debug_log(f"build pages: home {(time.perf_counter() - t0) * 1000:.0f} ms (others lazy)")
 
     def set_language(self, language: str) -> None:
         if language not in {"zh", "en"}:
@@ -3420,7 +3416,7 @@ class PiezoApplication:
             if getattr(self.state, "current_page", "") == "home":
                 nav._align_home_panel()
 
-    def _refresh_widget_fonts(self) -> None:
+    def _refresh_widget_fonts(self, start: tk.Misc | None = None) -> None:
         body_size = int(getattr(self.root, "_piezo_body_font_size", self.state.font_size))
         title_size = int(getattr(self.root, "_piezo_title_font_size", self.state.font_size + 8))
         small_size = max(7, body_size - 1)
@@ -3508,7 +3504,7 @@ class PiezoApplication:
             for child in widget.winfo_children():
                 apply(child)
 
-        apply(self.root)
+        apply(self.root if start is None else start)
 
     def run(self) -> None:
         self.root.mainloop()
@@ -3528,7 +3524,8 @@ class PiezoApplication:
             except tk.TclError:
                 pass
             self._resize_after = None
-        home_page = getattr(getattr(self, "navigation", None), "pages", {}).get("home")
+        nav = getattr(self, "navigation", None)
+        home_page = nav.get_page("home", build=False) if nav is not None else None
         cancel_connect = getattr(home_page, "cancel_connection", None)
         if callable(cancel_connect):
             cancel_connect()

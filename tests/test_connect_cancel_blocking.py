@@ -53,6 +53,11 @@ class _FakeCH340:
 
 class BlockingCancelTests(unittest.TestCase):
     def _run(self, open_s: float) -> None:
+        # Collect Tk objects (e.g. PhotoImage) left by earlier tests' apps now,
+        # on the main thread; otherwise a GC pass inside the connect worker
+        # runs their __del__ against a dead interpreter and blocks it.
+        import gc
+        gc.collect()
         _FakeCH340.instances = []
         _FakeCH340.open_s = open_s
         app = PiezoApplication()

@@ -5,7 +5,7 @@ import tkinter as tk
 import webbrowser
 from tkinter import font as tkfont
 from tkinter import ttk
-from typing import Any
+from typing import Any, Callable
 
 from config.app_info import APP_VERSION, USER_GUIDE_URL
 from config.languages import t
@@ -135,7 +135,11 @@ class Navigation:
         self.root.bind_class(root_tag, "<Map>", self._on_root_map, add="+")
         self.root.bind_class(root_tag, "<Unmap>", self._on_root_unmap, add="+")
 
-        self.pages: dict[str, ttk.Frame] = {}
+        self.pages: LazyPages = LazyPages(self)
+        self._page_factories: dict[str, Callable[[], ttk.Frame]] = {}
+        self._page_order: list[str] = []
+        # Called with each lazily built page (the app applies widget fonts).
+        self.on_page_built: Callable[[ttk.Frame], None] | None = None
         self.buttons: dict[str, ttk.Button] = {}
         self.label_keys: dict[str, str] = {}
         self.mode_host: Any | None = None
@@ -232,6 +236,23 @@ class Navigation:
         return (self._scaled(x), self._scaled(y))
 
     def add_page(self, name: str, label_key: str, page: ttk.Frame, *, sidebar_button: bool = True) -> None:
+        self.register_page(name, label_key, None, sidebar_button=sidebar_button)
+        self._install_page(name, page)
+
+    def register_page(
+        self,
+        name: str,
+        label_key: str,
+        factory: Callable[[], ttk.Frame] | None,
+        *,
+        sidebar_button: bool = True,
+    ) -> None:
+        """Register a page (sidebar button now); with a factory the page is
+        built on first use: get_page(), show(), or another page's lookup."""
+        if name not in self._page_order:
+            self._page_order.append(name)
+        if factory is not None:
+            self._page_factories[name] = factory
         if sidebar_button:
             row = len(self.buttons) + 1
             btn = ttk.Button(
@@ -247,7 +268,46 @@ class Navigation:
             self.label_keys[name] = label_key
 
         self.sidebar.columnconfigure(0, weight=1)
-        self.pages[name] = page
+
+    def page_names(self) -> list[str]:
+        return list(self._page_order)
+
+    def built_pages(self) -> list[ttk.Frame]:
+        return list(dict.values(self.pages))
+
+    def is_page_built(self, name: str) -> bool:
+        return dict.__contains__(self.pages, name)
+
+    def get_page(self, name: str, build: bool = True) -> ttk.Frame | None:
+        """The page called name; built now (with the current theme, language
+        and font settings, not shown) when it does not exist yet."""
+        page = dict.get(self.pages, name)
+        if page is not None or not build:
+            return page
+        factory = self._page_factories.pop(name, None)
+        if factory is None:
+            return None
+        t0 = time.perf_counter()
+        page = factory()
+        t1 = time.perf_counter()
+        self._install_page(name, page)
+        hook = self.on_page_built
+        if callable(hook):
+            hook(page)
+        if anim.DEBUG:
+            count, stack = 0, [page]
+            while stack:
+                w = stack.pop()
+                count += 1
+                stack.extend(w.winfo_children())
+            anim.debug_log(
+                f"lazy build {name}: construct {(t1 - t0) * 1000:.0f} ms, fonts+install "
+                f"{(time.perf_counter() - t1) * 1000:.0f} ms, {count} widgets"
+            )
+        return page
+
+    def _install_page(self, name: str, page: ttk.Frame) -> None:
+        dict.__setitem__(self.pages, name, page)
         if not _PAGE_STACK:
             page.grid(row=0, column=0, sticky="nsew")
             page.grid_remove()
@@ -256,18 +316,23 @@ class Navigation:
     def show(self, name: str) -> None:
         if name not in self.pages:
             return
+        t_build = time.perf_counter()
+        target = self.get_page(name)
+        if target is None:
+            return
+        build_ms = (time.perf_counter() - t_build) * 1000
 
         current_name = self.ctx.state.current_page
         mode = self._page_transition_mode() if current_name != name else "none"
         fading = mode == "fade" and self._begin_page_fade()
         if current_name != name:
-            current_page = self.pages.get(current_name)
+            current_page = self.get_page(current_name, build=False)
             if current_page is not None and hasattr(current_page, "on_hide"):
                 current_page.on_hide()
 
-        page = self.pages[name]
+        page = target
         t0 = time.perf_counter()
-        spans: list[tuple[str, float]] = []
+        spans: list[tuple[str, float]] = [("lazy build", build_ms)]
 
         def span(label: str, _last: list[float] = [t0]) -> None:
             now = time.perf_counter()
@@ -284,7 +349,7 @@ class Navigation:
             page.lift()
             span("lift")
         else:
-            for other_name, other in self.pages.items():
+            for other_name, other in list(dict.items(self.pages)):
                 if other_name != name and other.winfo_ismapped():
                     other.grid_remove()
             page.grid()
@@ -579,7 +644,7 @@ class Navigation:
         for key, btn in self.mode_buttons.items():
             btn.configure(text=t(lang, key))
 
-        for page in self.pages.values():
+        for page in self.built_pages():
             if hasattr(page, "refresh_language"):
                 page.refresh_language()
 
@@ -588,7 +653,7 @@ class Navigation:
         self.refresh_layout()
         self._settings_images.clear()
         self._refresh_settings_button()
-        for page in self.pages.values():
+        for page in self.built_pages():
             if hasattr(page, "refresh_theme"):
                 page.refresh_theme()
 
@@ -604,7 +669,7 @@ class Navigation:
         self._relayout_sidebar()
         self._brand_state = None
         self._redraw_sidebar_brand()
-        for page in self.pages.values():
+        for page in self.built_pages():
             sync = getattr(page, "_sync_header_chrome", None)
             if callable(sync):
                 sync()
@@ -645,7 +710,7 @@ class Navigation:
         return image
 
     def _refresh_header_wordmarks(self) -> None:
-        for page in self.pages.values():
+        for page in self.built_pages():
             refresh = getattr(page, "_refresh_header_logos", None)
             if callable(refresh):
                 refresh()
@@ -679,7 +744,7 @@ class Navigation:
     def _align_home_panel(self) -> None:
         if getattr(self, "_aligning_home", False):
             return
-        home = self.pages.get("home")
+        home = self.get_page("home", build=False)
         btn = self.buttons.get("home")
         if home is None or btn is None:
             return
@@ -1058,7 +1123,7 @@ class Navigation:
             canvas_width = max(1, self.content_canvas.winfo_width())
             canvas_height = max(1, self.content_canvas.winfo_height())
             current_name = getattr(self.ctx.state, "current_page", "")
-            page = self.pages.get(current_name)
+            page = self.get_page(current_name, build=False)
             if _PAGE_STACK and page is not None:
                 padx, pady = self._pad(16, 8)
                 required_width = max(1, page.winfo_reqwidth() + 2 * padx)
@@ -1153,3 +1218,44 @@ class Navigation:
                 return True
             current = getattr(current, "master", None)
         return False
+
+
+class LazyPages(dict):
+    """Mapping of all registered pages that builds a page on first access.
+    Iteration/len cover every registered name (registration order); values()
+    and items() build all.  Navigation's broadcast loops use built_pages()
+    so theme/language changes only touch pages that exist (later builds
+    pick up the current settings)."""
+
+    def __init__(self, nav: "Navigation") -> None:
+        super().__init__()
+        self._nav = nav
+
+    def __contains__(self, name: object) -> bool:
+        return dict.__contains__(self, name) or name in self._nav._page_factories
+
+    def __getitem__(self, name: str) -> ttk.Frame:
+        page = self._nav.get_page(name)
+        if page is None:
+            raise KeyError(name)
+        return page
+
+    def get(self, name: str, default: Any = None) -> Any:  # type: ignore[override]
+        page = self._nav.get_page(name)
+        return default if page is None else page
+
+    def __iter__(self):  # type: ignore[override]
+        return iter([n for n in self._nav._page_order if n in self])
+
+    def keys(self):  # type: ignore[override]
+        return list(self.__iter__())
+
+    def __len__(self) -> int:
+        return len(self.keys())
+
+    def values(self):  # type: ignore[override]
+        return [self[n] for n in self.keys()]
+
+    def items(self):  # type: ignore[override]
+        return [(n, self[n]) for n in self.keys()]
+
