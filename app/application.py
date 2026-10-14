@@ -45,6 +45,9 @@ from pages.chip_pages import AWP1921AWP1923Page
 from styles.theme import apply_theme
 
 
+CONNECT_RESULT_POLL_MS = 25
+
+
 @dataclass
 class ApplicationContext:
     state: AppState
@@ -1588,7 +1591,46 @@ class HomePage(BasePage):
             baudrate = self.ctx.state.baudrate
         self.ctx.state.baudrate = baudrate
 
-        resp = self.ctx.serial.connect(port, baudrate)
+        # Opening a port can block for seconds (e.g. a Bluetooth SPP COM port
+        # tries to reach its paired device; the handshake then hits the write
+        # timeout).  Run it off the Tk thread so the window keeps repainting
+        # and resizing; the result is applied on the main thread below.
+        if getattr(self, "_connect_inflight", False):
+            return
+        self._connect_inflight = True
+        try:
+            self.connect_btn.state(["disabled"])
+        except tk.TclError:
+            pass
+        results: Queue[SerialResponse] = Queue(maxsize=1)
+        serial_router = self.ctx.serial
+
+        def connect_worker() -> None:
+            try:
+                response = serial_router.connect(port, baudrate)
+            except Exception as exc:  # never leave the button disabled
+                response = SerialResponse(False, error=str(exc))
+            results.put(response)
+
+        threading.Thread(target=connect_worker, daemon=True, name="serial-connect").start()
+        self.after(CONNECT_RESULT_POLL_MS, self._finish_connect_attempt, port, results)
+
+    def _finish_connect_attempt(self, port: str, results: "Queue[SerialResponse]") -> None:
+        try:
+            resp = results.get_nowait()
+        except Empty:
+            try:
+                self.after(CONNECT_RESULT_POLL_MS, self._finish_connect_attempt, port, results)
+            except tk.TclError:
+                pass
+            return
+        self._connect_inflight = False
+        try:
+            if not self.winfo_exists():
+                return
+            self.connect_btn.state(["!disabled"])
+        except tk.TclError:
+            return
         if resp.ok:
             self._serial_disconnect_error_by_port.pop(port, None)
             self.ctx.state.serial_connected = True
