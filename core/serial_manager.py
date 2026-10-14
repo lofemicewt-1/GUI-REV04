@@ -798,6 +798,11 @@ class SerialManager:
                         return SerialResponse(False, error=error)
                     self._update_board_ready_from_frame(data)
                     self.emit_log(f"MCU ^{data}~")
+                    # Success/failure semantics are unchanged (callers decide);
+                    # this only states where the firmware said it failed.
+                    description = base_tool.describe_firmware_error(data)
+                    if description is not None:
+                        self.emit_log(f"ERROR {description}")
                     return SerialResponse(True, data=data)
                 except Exception as exc:
                     marked = self._mark_transport_failure(exc, handle)
@@ -964,7 +969,9 @@ class SerialManager:
         try:
             parser(self._status_frame(response))
         except (TypeError, ValueError) as exc:
-            return SerialResponse(False, data=response.data, error=str(exc))
+            description = base_tool.describe_firmware_error(response.data)
+            error = base_tool.format_firmware_error(response.data) if description else str(exc)
+            return SerialResponse(False, data=response.data, error=error)
         return response
 
     def read_status_capabilities(self) -> SerialResponse:
@@ -1125,7 +1132,7 @@ class SerialManager:
 
     def _cfg_response(self, response: SerialResponse) -> SerialResponse:
         if response.ok and response.data.strip().upper().startswith("ERR "):
-            return SerialResponse(False, data=response.data, error=response.data)
+            return SerialResponse(False, data=response.data, error=base_tool.format_firmware_error(response.data))
         return response
 
     def cfg_query(self) -> SerialResponse:

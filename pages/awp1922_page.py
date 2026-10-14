@@ -6,6 +6,7 @@ from tkinter import messagebox, ttk
 from typing import Any
 
 from pages.base_page import BasePage
+from core.base_tool import parse_firmware_error
 
 
 def awp1922_amplitude_code(label: str) -> int | None:
@@ -26,8 +27,30 @@ def awp1922_frequency_code(label: str, options: list[int]) -> int | None:
     return options.index(freq) & 0xFF
 
 
+# Control register 0x00 (8-bit).  Bit numbers below are 0-based.
+# NOTE: the requirement says "bit8 = enable"; an 8-bit register has no 0-based
+# bit8 (0x100), so this uses the documented wake/enable bit 7 (0x80, i.e.
+# 1-based "bit8").  Play is 0-based bit6 (0x40) as documented.  Adjust these two
+# constants if the datasheet numbering differs.
+AWP1922_CTRL_ENABLE_BIT = 0x80
+AWP1922_CTRL_PLAY_BIT = 0x40
+AWP1922_REWRITE_ON_REENABLE_REGS = (0x05, 0x06)  # frequency, amplitude
+
+
 def awp1922_play_value(current: int) -> int:
-    return (int(current) | 0x40) & 0xFF
+    return (int(current) | AWP1922_CTRL_PLAY_BIT) & 0xFF
+
+
+def awp1922_ctrl_write_value(value: int, *, allow_disable: bool = False) -> tuple[int, bool]:
+    """Return (value to write to 0x00, whether the enable bit had to be set)."""
+    value = int(value) & 0xFF
+    if allow_disable or value & AWP1922_CTRL_ENABLE_BIT:
+        return value, False
+    return value | AWP1922_CTRL_ENABLE_BIT, True
+
+
+def awp1922_needs_rewrite_after_reenable(value: int, reenabled: bool) -> bool:
+    return bool(reenabled and (int(value) & AWP1922_CTRL_PLAY_BIT))
 
 
 class AWP1922Page(BasePage):
@@ -277,8 +300,19 @@ class AWP1922Page(BasePage):
     def _log_local(self, message: str) -> None:
         return
 
+    def _serial_log(self, message: str) -> None:
+        emit = getattr(self.ctx.serial, "emit_log", None)
+        if callable(emit):
+            emit(f"AWP1922 {message}")
+
     def _i2c_failed(self, response: Any) -> bool:
         text = f"{getattr(response, 'error', '')} {getattr(response, 'data', '')}".upper()
+        parsed = parse_firmware_error(getattr(response, "data", "")) or parse_firmware_error(
+            getattr(response, "error", "")
+        )
+        if parsed is not None and parsed.code is not None:
+            # A firmware that reports a code: only address NACK (2) is recoverable.
+            return parsed.reason == "I2C" and parsed.code == 2
         return "I2C" in text
 
     def _clear_status(self, dev: int | None = None) -> None:
@@ -328,14 +362,42 @@ class AWP1922Page(BasePage):
             self.status_var.set(self.tr("chip_detect_failed") + f" 0x00={show}")
         self._clear_status(addr)
 
-    def _write8(self, reg: int, value: int, show_error: bool = True) -> bool:
+    def _prepare_ctrl_write(self, reg: int, value: int, allow_disable: bool) -> tuple[int, bool]:
+        if (reg & 0xFF) != 0x00:
+            return value, False
+        value, reenabled = awp1922_ctrl_write_value(value, allow_disable=allow_disable)
+        self.current_ctrl_reg = value
+        if reenabled:
+            self._serial_log(f"0x00 bit7(enable)=0 -> set to 1, write 0x{value:02X}")
+        return value, reenabled
+
+    def _rewrite_after_reenable(self, dev: int, value: int, reenabled: bool) -> None:
+        """After re-enable in play mode, rewrite 0x05/0x06 with their current values."""
+        if not awp1922_needs_rewrite_after_reenable(value, reenabled):
+            return
+        for reg in AWP1922_REWRITE_ON_REENABLE_REGS:
+            current = None
+            resp = self.ctx.serial.read_register_value(dev, reg, bits=8)
+            if resp.ok:
+                current = self.ctx.serial.extract_rdataw_value(resp.data, device_addr=dev, reg_addr=reg, bits=8)
+            if current is None:
+                self._serial_log(f"ERROR re-enable rewrite: read 0x{reg:02X} failed: {resp.error or resp.data}")
+                continue
+            wresp = self._write_recovered(dev, reg, current & 0xFF)
+            if wresp.ok:
+                self._serial_log(f"re-enable rewrite reg=0x{reg:02X} value=0x{current & 0xFF:02X}")
+            else:
+                self._serial_log(f"ERROR re-enable rewrite 0x{reg:02X}: {wresp.error}")
+
+    def _write8(self, reg: int, value: int, show_error: bool = True, *, allow_disable: bool = False) -> bool:
         if not self._ensure_connected():
             return False
         dev = self._addr()
+        value, reenabled = self._prepare_ctrl_write(reg, value, allow_disable)
         self._log_local(f"WRITE8 dev=0x{dev:02X} reg=0x{reg & 0xFF:02X} value=0x{value & 0xFF:02X}")
         resp = self._write_recovered(dev, reg, value)
-        if resp.ok and (reg & 0xFF) == 0x00 and (value & 0x40):
-            self._clear_status(dev)
+        if resp.ok:
+            self._rewrite_after_reenable(dev, value, reenabled)
         if not resp.ok:
             self._log_local(f"ERROR {resp.error}")
             if show_error:
@@ -349,6 +411,7 @@ class AWP1922Page(BasePage):
             return
 
         dev = self._addr()
+        value, reenabled = self._prepare_ctrl_write(reg, value, False)
         self._log_local(f"WRITE8 dev=0x{dev:02X} reg=0x{reg & 0xFF:02X} value=0x{value & 0xFF:02X}")
 
         def finish(ok: bool, data: str, error: str) -> None:
@@ -362,8 +425,8 @@ class AWP1922Page(BasePage):
 
         def worker() -> None:
             resp = self._write_recovered(dev, reg, value)
-            if resp.ok and (reg & 0xFF) == 0x00 and (value & 0x40):
-                self._clear_status(dev)
+            if resp.ok:
+                self._rewrite_after_reenable(dev, value, reenabled)
             try:
                 self.after(0, finish, resp.ok, resp.data, resp.error)
             except tk.TclError:
@@ -403,8 +466,8 @@ class AWP1922Page(BasePage):
         self._write8(0x00, self.current_ctrl_reg)
 
     def shutdown(self) -> None:
-        self.current_ctrl_reg = self.current_ctrl_reg & ~0x80
-        self._write8(0x00, self.current_ctrl_reg)
+        self.current_ctrl_reg = self.current_ctrl_reg & ~AWP1922_CTRL_ENABLE_BIT
+        self._write8(0x00, self.current_ctrl_reg, allow_disable=True)
 
     def _write_selected_frequency(self, show_error: bool = False) -> bool:
         code = awp1922_frequency_code(self.freq_var.get(), self.FREQ_OPTIONS)
