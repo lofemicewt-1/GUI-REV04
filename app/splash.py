@@ -34,6 +34,11 @@ class StartupSplash:
         muted = "#9CA3AF" if dark else "#6B7280"
 
         self.root = tk.Tk()
+        # Don't let the splash become tkinter's default root: master-less
+        # StringVar/IntVar/fonts/images created later by the app would bind to
+        # this (soon destroyed) interpreter and show up empty in the main window.
+        if getattr(tk, "_default_root", None) is self.root:
+            tk._default_root = None
         self.root.withdraw()
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
