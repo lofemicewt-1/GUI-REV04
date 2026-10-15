@@ -3246,7 +3246,14 @@ class PiezoApplication:
         self.on_startup_progress = on_startup_progress
         self._start_withdrawn = start_withdrawn
         self._startup_done = False
+        from app.dpi import dpi_factor, enable_dpi_awareness
+
+        enable_dpi_awareness()  # no-op if main() already did it
         self.root = tk.Tk()
+        # Physical px per logical (96-dpi) px.  Tk scales point-sized fonts by
+        # the real DPI itself; window sizes given in px must be scaled here.
+        self._dpi = dpi_factor(self.root)
+        self.root._piezo_dpi_factor = self._dpi  # type: ignore[attr-defined]
         # Worker threads hand results to Tk only through this FIFO dispatcher.
         self.ui_dispatcher = UiDispatcher(self.root).start()
         self.animator = Animator(self.root, enabled=True)
@@ -3264,13 +3271,14 @@ class PiezoApplication:
         # expose their full content with scrollbars.
         screen_width = max(320, int(self.root.winfo_screenwidth()))
         screen_height = max(240, int(self.root.winfo_screenheight()))
-        initial_width = min(1700, max(480, screen_width - 80))
-        initial_height = min(980, max(360, screen_height - 120))
+        d = self._dpi
+        initial_width = min(round(1700 * d), max(480, screen_width - round(80 * d)))
+        initial_height = min(round(980 * d), max(360, screen_height - round(120 * d)))
         self.root.geometry(f"{initial_width}x{initial_height}")
         self._initial_size = f"{initial_width}x{initial_height}"
         self.root.minsize(480, 320)
-        self._base_width = 1700
-        self._base_height = 980
+        self._base_width = round(1700 * d)
+        self._base_height = round(980 * d)
         self._resize_after: str | None = None
         self._last_visual_scale = 1.0
         self._last_root_size: tuple[int, int] = (0, 0)

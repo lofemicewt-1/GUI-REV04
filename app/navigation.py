@@ -200,7 +200,9 @@ class Navigation:
         self.refresh_layout()
 
     def _scale(self) -> float:
-        return float(getattr(self.ctx.state, "ui_scale", 1.0) or 1.0)
+        # ui_scale (window-size ratio) x DPI factor: sidebar/logo sizes are px.
+        dpi = float(getattr(self.root, "_piezo_dpi_factor", 1.0) or 1.0)
+        return float(getattr(self.ctx.state, "ui_scale", 1.0) or 1.0) * dpi
 
     def _on_root_map(self, event: tk.Event | None = None) -> None:
         if event is not None and getattr(event, "widget", None) is not self.root:
@@ -448,7 +450,7 @@ class Navigation:
 
     # -- atomic switch (Windows): see app/atomic_paint.py -------------------
     def _atomic_cover(self) -> bool:
-        if not atomic_paint.ENABLED:
+        if not atomic_paint.enabled():
             return False
         sw = getattr(self, "_atomic", None)
         if sw is None:
@@ -1276,9 +1278,11 @@ class Navigation:
             chrome_h = self.content_canvas.winfo_rooty() - self.root.winfo_rooty()
         except tk.TclError:
             return canvas_width, canvas_height
-        if chrome_w < 0 or chrome_h < 0 or chrome_w > self._scaled(FIXED_W) // 2:
+        # FIXED_W/H are logical (96-dpi) px; _scaled() includes the DPI factor.
+        fixed_w, fixed_h = self._scaled(FIXED_W), self._scaled(FIXED_H)
+        if chrome_w < 0 or chrome_h < 0 or chrome_w > fixed_w // 2:
             return canvas_width, canvas_height
-        size = (max(1, self._scaled(FIXED_W) - chrome_w), max(1, self._scaled(FIXED_H) - chrome_h))
+        size = (max(1, fixed_w - chrome_w), max(1, fixed_h - chrome_h))
         self._fixed_size_cache = (key, size)
         return size
 

@@ -64,6 +64,9 @@ def _report_startup_failure(exc: BaseException) -> None:
 
 
 def main() -> None:
+    from app.dpi import enable_dpi_awareness
+
+    enable_dpi_awareness()  # before any Tk root (splash included)
     splash = None
     if os.environ.get("PIEZO_SPLASH", "0") == "1":
         try:

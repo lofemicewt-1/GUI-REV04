@@ -25,12 +25,59 @@ from typing import Callable
 QUIET_LIMIT_S = 0.30
 BUDGET_MS = 480
 FADE_MIN_MS = 80
-# Off by default: on real high-DPI Windows (mixed-DPI multi-monitor) the
-# screen grab and the overlay geometry can disagree (DPI virtualisation), and
-# a cross-fade between two different pages reads as a ghosted double image.
-# Opt in with PIEZO_ATOMIC_PAINT=1.
-ENABLED = sys.platform == "win32" and os.environ.get("PIEZO_ATOMIC_PAINT", "0") == "1"
+# On by default on Windows, but only when the process is DPI aware
+# (app/dpi.py): without that, Windows virtualises coordinates on scaled
+# displays and the screen grab / overlay geometry disagree with what is on
+# screen (ghosting, misplaced cover).  PIEZO_ATOMIC_PAINT=0 disables,
+# PIEZO_ATOMIC_PAINT=1 forces it on.
+def enabled() -> bool:
+    if sys.platform != "win32":
+        return False
+    flag = os.environ.get("PIEZO_ATOMIC_PAINT", "")
+    if flag == "0":
+        return False
+    if flag == "1":
+        return True
+    from app.dpi import dpi_aware
 
+    return dpi_aware()
+
+
+def _client_rect(widget: tk.Misc) -> tuple[int, int, int, int] | None:
+    """Exact on-screen client rect (x, y, w, h) of a widget's native window,
+    in physical px (GetClientRect + ClientToScreen)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        hwnd = wintypes.HWND(int(widget.winfo_id()))
+        rc = wintypes.RECT()
+        if not user32.GetClientRect(hwnd, ctypes.byref(rc)):
+            return None
+        pt = wintypes.POINT(0, 0)
+        if not user32.ClientToScreen(hwnd, ctypes.byref(pt)):
+            return None
+        return pt.x, pt.y, rc.right - rc.left, rc.bottom - rc.top
+    except Exception:
+        return None
+
+
+def _place_topmost(toplevel: tk.Misc, x: int, y: int, w: int, h: int) -> None:
+    """Put the overlay's frame window exactly at a physical-px rect, topmost,
+    without activating it."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        user32.GetParent.restype = wintypes.HWND
+        frame = user32.GetParent(wintypes.HWND(int(toplevel.winfo_id())))
+        if frame:
+            # HWND_TOPMOST, SWP_NOACTIVATE | SWP_NOOWNERZORDER
+            user32.SetWindowPos(frame, wintypes.HWND(-1), x, y, w, h, 0x0010 | 0x0200)
+    except Exception:
+        pass
 
 def _blit_bitmap(hwnd: int, bmp: int, w: int, h: int) -> None:
     """Paint a GDI bitmap into a window right now (no waiting for WM_PAINT /
@@ -155,7 +202,7 @@ class AtomicSwitch:
 
     def cover(self) -> bool:
         """Freeze what the user sees: show a screenshot of the area on top."""
-        if not ENABLED:
+        if not enabled():
             return False
         t0 = time.perf_counter()
         try:
@@ -165,6 +212,9 @@ class AtomicSwitch:
             w, h = self.area.winfo_width(), self.area.winfo_height()
         except tk.TclError:
             return False
+        rect = _client_rect(self.area)
+        if rect is not None:
+            x, y, w, h = rect
         if w <= 1 or h <= 1 or not self._ensure_overlay():
             return False
         grabbed = _grab_ppm(x, y, w, h)
@@ -181,6 +231,7 @@ class AtomicSwitch:
             self._overlay.update_idletasks()  # paint the snapshot while still parked
             self._overlay.geometry(f"{w}x{h}+{x}+{y}")
             self._overlay.update_idletasks()  # wm geometry is applied at idle
+            _place_topmost(self._overlay, x, y, w, h)
             # Paint it synchronously now that it is on screen: Tk would only
             # draw it on Expose, after the (blocking) page switch.
             _blit_bitmap(self._label.winfo_id(), bmp, w, h)
@@ -190,7 +241,7 @@ class AtomicSwitch:
         _delete_bitmap(bmp)
         self._active = True
         self._token += 1
-        self._debug(f"atomic: cover {w}x{h} in {(time.perf_counter() - t0) * 1000:.1f} ms")
+        self._debug(f"atomic: cover {w}x{h}+{x}+{y} in {(time.perf_counter() - t0) * 1000:.1f} ms")
         return True
 
     def reveal(self, fade_ms: int = 0, animator=None, started: float | None = None) -> None:
