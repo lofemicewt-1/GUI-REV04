@@ -340,6 +340,7 @@ class Navigation:
         current = self.get_page(self.ctx.state.current_page, build=False)
         page_hidden = page is not current and not page.winfo_ismapped()
         try:
+            self._size_pinned_page(page)
             if page_hidden:
                 page.grid()
                 if current is not None and current.winfo_manager() == "grid":
@@ -357,9 +358,17 @@ class Navigation:
                         except tk.TclError:
                             pass
                     page.update_idletasks()
+                    if _FIXED_LAYOUT and getattr(page, "pin_window_footer", False):
+                        cw, ch = self._fixed_content_size(self.content_canvas.winfo_width(), self.content_canvas.winfo_height())
+                        self._set_pinned_layout_floor(page, cw, ch)
+                        page.update_idletasks()
                     target.grid_remove()
             elif page_hidden:
                 self.prepare_page_fonts(page)
+                page.update_idletasks()
+            if _FIXED_LAYOUT and getattr(page, "pin_window_footer", False):
+                cw, ch = self._fixed_content_size(self.content_canvas.winfo_width(), self.content_canvas.winfo_height())
+                self._set_pinned_layout_floor(page, cw, ch)
                 page.update_idletasks()
         finally:
             if page_hidden:
@@ -445,6 +454,7 @@ class Navigation:
             for other_name, other in list(dict.items(self.pages)):
                 if other_name != name and other.winfo_ismapped():
                     other.grid_remove()
+            self._size_pinned_page(page)
             page.grid()
             self.ctx.state.current_page = name
             span("grid")
@@ -1263,14 +1273,15 @@ class Navigation:
             window_height = canvas_height if pin else max(canvas_height, required_height)
             if _FIXED_LAYOUT and pin:
                 # Pinned-footer chip pages (register read/write, reset,
-                # shutdown bar): follow the *visible* height so the footer
-                # stays at the bottom of the window; the page's own middle
-                # scroll area absorbs the difference.  Width follows the
-                # visible width too, so the footer (which wraps) is never
-                # clipped or hidden behind the outer h-scroll; the middle
-                # mode area keeps its own horizontal scrollbar above it.
-                window_height = max(1, view_height)
-                window_width = max(1, view_width)
+                # shutdown bar): the *page itself* is sized to the visible
+                # area (see _size_pinned_page) so the footer stays at the
+                # window bottom and is never clipped; the shared content frame
+                # keeps the same fixed-layout size as on every other page, so
+                # switching pages never resizes it (which re-laid out the
+                # whole target page on every home <-> chip switch).
+                window_width = max(canvas_width, required_width)
+                window_height = max(canvas_height, required_height)
+                self._size_pinned_page(page)
                 self._set_pinned_layout_floor(page, canvas_width, canvas_height)
             state = (canvas_width, canvas_height, required_width, required_height, current_name, pin, view_width, view_height)
             if state == self._last_canvas_state:
@@ -1283,6 +1294,13 @@ class Navigation:
                     self._content_origin = (ox, oy)
                     self.content_canvas.coords(self.content_window, ox, oy)
                 self.content_canvas.itemconfigure(self.content_window, width=window_width, height=window_height)
+                if pin:
+                    # The pinned page fills the visible area: no outer scroll.
+                    self.content_canvas.configure(scrollregion=(0, 0, view_width, view_height))
+                    self.content_canvas.xview_moveto(0.0)
+                    self.content_canvas.yview_moveto(0.0)
+                    self._update_scrollbars(False, False)
+                    return
                 self.content_canvas.configure(
                     scrollregion=(0, 0, max(view_width, window_width), max(view_height, window_height))
                 )
@@ -1308,14 +1326,17 @@ class Navigation:
         whole mode area (regression from fd6e0b0/6aeebfe).  Computed once per
         fixed size; constant afterwards, so resizes never change it."""
         key = (int(fixed_w), int(fixed_h))
-        if getattr(page, "_piezo_floor_key", None) == key:
-            return
         try:
-            cur_w = self.content.winfo_width()
-            cur_h = self.content.winfo_height()
+            padx, pady = self._pad(16, 8)
+            # Page size in the fixed layout vs. its actual (visible) size.
+            full_w, full_h = key[0] - 2 * padx, key[1] - 2 * pady
+            cur_w = page.winfo_width()
+            cur_h = page.winfo_height()
             if cur_w <= 1 or cur_h <= 1:
                 return
             for area in getattr(page, "_vertical_scroll_areas", ()):
+                if getattr(area, "_piezo_floor_key", None) == key:
+                    continue
                 parent = getattr(area, "master", None)
                 nested = False
                 while parent is not None and parent is not page:
@@ -1326,12 +1347,42 @@ class Navigation:
                 if nested or not area.winfo_ismapped():
                     continue
                 area.layout_floor = (
-                    max(1, area.canvas.winfo_width() + key[0] - cur_w),
-                    max(1, area.canvas.winfo_height() + key[1] - cur_h),
+                    max(1, area.canvas.winfo_width() + full_w - cur_w),
+                    max(1, area.canvas.winfo_height() + full_h - cur_h),
                 )
-            page._piezo_floor_key = key  # type: ignore[attr-defined]
+                area._piezo_floor_key = key  # type: ignore[attr-defined]
+                # Apply now: a floor change alone fires no <Configure>.
+                sync = getattr(area, "_sync_scroll_region", None)
+                if callable(sync):
+                    sync()
         except tk.TclError:
             pass
+
+    def _size_pinned_page(self, page: tk.Misc | None) -> bool:
+        """Give a pinned-footer chip page an explicit size = the visible
+        content area (scrollbars excluded, capped at the fixed layout size),
+        top-left in its grid cell.  Done for hidden pages too (premap/show),
+        so the page already has its final size before it is mapped and the
+        shared content frame never has to change size.  True if changed."""
+        if page is None or not _FIXED_LAYOUT or not getattr(page, "pin_window_footer", False):
+            return False
+        try:
+            sw = self.content_shell.winfo_width()
+            sh = self.content_shell.winfo_height()
+            if sw <= 1 or sh <= 1:
+                return False
+            fw, fh = self._fixed_content_size(sw, sh)
+            padx, pady = self._pad(16, 8)
+            size = (max(1, min(sw, fw) - 2 * padx), max(1, min(sh, fh) - 2 * pady))
+            if getattr(page, "_piezo_pin_size", None) == size:
+                return False
+            page._piezo_pin_size = size  # type: ignore[attr-defined]
+            page.grid_propagate(False)
+            page.configure(width=size[0], height=size[1])
+            page.grid_configure(sticky="nw")
+            return True
+        except tk.TclError:
+            return False
 
     def _fixed_content_size(self, canvas_width: int, canvas_height: int) -> tuple[int, int]:
         """Content-area size when the whole window is FIXED_W x FIXED_H:
