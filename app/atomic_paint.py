@@ -476,33 +476,32 @@ def reveal_root_painted(root: tk.Misc, debug: Callable[[str], None] | None = Non
                         budget_s: float = 2.0) -> bool:
     """First show of a withdrawn main window without staged painting.
 
-    The frame is DWM-cloaked (or alpha 0 as fallback) before it is mapped;
-    it maps, lays out and paints every native child window while invisible,
-    and only then is uncloaked in one step.  Returns True when handled
+    Tk creates the Windows wrapper (frame) only on the first map, so the
+    window is mapped at alpha 0, its wrapper is then DWM-cloaked and made
+    opaque again (still invisible), every native child is painted, and only
+    then is the frame uncloaked in one step.  Returns True when handled
     (the window is visible afterwards in every case)."""
     if sys.platform != "win32" or os.environ.get("PIEZO_STARTUP_CLOAK", "1") == "0":
         return False
     t0 = time.perf_counter()
     hwnd = 0
+    cloaked = used_alpha = False
+    rounds = events = 0
     try:
-        root.update_idletasks()  # creates the (withdrawn) wrapper window
-        hwnd = _frame_hwnd(root)
-    except Exception:
-        hwnd = 0
-    cloaked = bool(hwnd) and _cloak(hwnd, True)
-    used_alpha = False
-    if not cloaked:
         try:
             root.attributes("-alpha", 0.0)
             used_alpha = True
         except tk.TclError:
             pass
-    rounds = events = 0
-    try:
         root.deiconify()
-        if not hwnd:
-            root.update_idletasks()
+        try:
+            hwnd = int(str(root.wm_frame()), 16)
+        except (tk.TclError, ValueError):
             hwnd = _frame_hwnd(root)
+        cloaked = bool(hwnd) and _cloak(hwnd, True)
+        if cloaked and used_alpha:
+            root.attributes("-alpha", 1.0)  # drops WS_EX_LAYERED while hidden
+            used_alpha = False
         limit = t0 + budget_s
         quiet = 0
         while hwnd and time.perf_counter() < limit:
@@ -525,7 +524,7 @@ def reveal_root_painted(root: tk.Misc, debug: Callable[[str], None] | None = Non
     finally:
         if cloaked:
             _cloak(hwnd, False)
-        elif used_alpha:
+        if used_alpha:
             try:
                 root.attributes("-alpha", 1.0)
             except tk.TclError:
