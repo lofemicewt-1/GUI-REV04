@@ -20,8 +20,15 @@ _PAGE_STACK = os.environ.get("PIEZO_PAGE_STACK", "0") == "1"
 # Slide length is cut so click -> settled stays under ~500 ms (target).
 SLIDE_BUDGET_MS = 470
 SLIDE_MIN_MS = 120
+# Fixed-resolution layout (PIEZO_FIXED_LAYOUT=0 disables): the content area
+# is laid out once as if the window were FIXED_W x FIXED_H (logical px,
+# scaled by the UI scale); resizing/maximizing never re-lays out a page.
+# Smaller window -> scrollbars; larger -> content centred with margins.
+_FIXED_LAYOUT = os.environ.get("PIEZO_FIXED_LAYOUT", "1") != "0"
+FIXED_W, FIXED_H = 1920, 1080
 
 from core import animation as anim
+from app import atomic_paint
 from core.text_wrap import guard_orphans
 from styles.theme import BRAND_ENLARGE, logo_asset, scale_photoimage
 
@@ -366,7 +373,8 @@ class Navigation:
 
         current_name = self.ctx.state.current_page
         mode = self._page_transition_mode() if current_name != name else "none"
-        fading = mode == "fade" and self._begin_page_fade()
+        covered = current_name != name and self._atomic_cover()
+        fading = (not covered) and mode == "fade" and self._begin_page_fade()
         if current_name != name:
             current_page = self.get_page(current_name, build=False)
             if current_page is not None and hasattr(current_page, "on_hide"):
@@ -431,10 +439,29 @@ class Navigation:
             f"show {name}: grid+on_show {(t1 - t0) * 1000:.1f} ms, text prep {(t2 - t1) * 1000:.1f} ms, "
             f"layout {(t3 - t2) * 1000:.1f} ms, transition={mode}"
         )
-        if fading:
+        if covered:
+            self._atomic_reveal(mode, t_build)
+        elif fading:
             self._run_page_fade()
         elif mode == "slide":
             self._run_page_slide(t_build)
+
+    # -- atomic switch (Windows): see app/atomic_paint.py -------------------
+    def _atomic_cover(self) -> bool:
+        if not atomic_paint.ENABLED:
+            return False
+        sw = getattr(self, "_atomic", None)
+        if sw is None:
+            sw = self._atomic = atomic_paint.AtomicSwitch(self.root, self.root, anim.debug_log)
+        animator = anim.animator_for(self.root)
+        if animator is not None:
+            animator.cancel("page-transition", finish=True)
+        return sw.cover()
+
+    def _atomic_reveal(self, mode: str, started: float) -> None:
+        animator = anim.animator_for(self.root)
+        fade = anim.PAGE_TRANSITION_MS if mode != "none" and animator is not None else 0
+        self._atomic.reveal(fade, animator, started)
 
     def prepare_page_fonts(self, page: tk.Misc) -> None:
         """Run the size-dependent text steps synchronously for the page being
@@ -446,8 +473,8 @@ class Navigation:
         state = self.ctx.state
         try:
             key = (
-                self.content_canvas.winfo_width(),
-                self.content_canvas.winfo_height(),
+                *(self._fixed_content_size(self.content_canvas.winfo_width(), self.content_canvas.winfo_height())
+                  if _FIXED_LAYOUT else (self.content_canvas.winfo_width(), self.content_canvas.winfo_height())),
                 getattr(state, "theme", None),
                 getattr(state, "language", None),
                 getattr(state, "font_size", None),
@@ -558,18 +585,19 @@ class Navigation:
         offset = max(8, self._scaled(18))
 
         def step(p: float) -> None:
-            canvas.coords(item, 0, round(offset * (1.0 - p)))
+            canvas.coords(item, ox, oy + round(offset * (1.0 - p)))
 
         def done() -> None:
             try:
-                canvas.coords(item, 0, 0)
+                canvas.coords(item, ox, oy)
             except tk.TclError:
                 return
             self._last_canvas_state = None  # scrollregion was measured mid-slide
             self._sync_content_window()
 
+        ox, oy = getattr(self, "_content_origin", (0, 0))
         try:
-            canvas.coords(item, 0, offset)
+            canvas.coords(item, ox, oy + offset)
         except tk.TclError:
             return
         animator.animate("page-transition", duration, step, ease=anim.EASE_OUT, done=done)
@@ -710,6 +738,7 @@ class Navigation:
                 page.refresh_theme()
 
     def refresh_layout(self) -> None:
+        self._fixed_size_cache = None
         self.container.columnconfigure(0, minsize=self._scaled(round(224 * BRAND_ENLARGE)))
         self.sidebar.configure(padding=self._pad(10, 8))
         if getattr(self, "_settings_bar", None) is not None:
@@ -1082,8 +1111,15 @@ class Navigation:
             return
         started = time.perf_counter()
         changed = getattr(page, "current_mode", None) != key
+        covered = changed and self._atomic_cover()
         page.show_mode(key)
-        if changed and self._page_transition_mode() == "slide":
+        if covered:
+            try:
+                self.root.update_idletasks()
+            except tk.TclError:
+                pass
+            self._atomic_reveal(self._page_transition_mode(), started)
+        elif changed and self._page_transition_mode() == "slide":
             self._run_page_slide(started)
         sync = getattr(page, "_sync_mode_button_styles", None)
         if callable(sync):
@@ -1188,12 +1224,28 @@ class Navigation:
                 required_width = max(1, self.content.winfo_reqwidth())
                 required_height = max(1, self.content.winfo_reqheight())
             pin = bool(getattr(page, "pin_window_footer", False)) if page is not None else False
+            view_width, view_height = canvas_width, canvas_height
+            if _FIXED_LAYOUT:
+                # Lay out at the fixed size, independent of the window size.
+                canvas_width, canvas_height = self._fixed_content_size(canvas_width, canvas_height)
             window_width = canvas_width if pin else max(canvas_width, required_width)
             window_height = canvas_height if pin else max(canvas_height, required_height)
-            state = (canvas_width, canvas_height, required_width, required_height, current_name, pin)
+            state = (canvas_width, canvas_height, required_width, required_height, current_name, pin, view_width, view_height)
             if state == self._last_canvas_state:
                 return
             self._last_canvas_state = state
+            if _FIXED_LAYOUT:
+                ox = max(0, (view_width - window_width) // 2)
+                oy = max(0, (view_height - window_height) // 2)
+                if (ox, oy) != getattr(self, "_content_origin", (0, 0)):
+                    self._content_origin = (ox, oy)
+                    self.content_canvas.coords(self.content_window, ox, oy)
+                self.content_canvas.itemconfigure(self.content_window, width=window_width, height=window_height)
+                self.content_canvas.configure(
+                    scrollregion=(0, 0, max(view_width, window_width), max(view_height, window_height))
+                )
+                self._update_scrollbars(window_width > view_width, window_height > view_height)
+                return
 
             self.content_canvas.itemconfigure(
                 self.content_window,
@@ -1206,6 +1258,29 @@ class Navigation:
             self._update_scrollbars((not pin) and required_width > canvas_width, (not pin) and required_height > canvas_height)
         except tk.TclError:
             pass
+
+    def _fixed_content_size(self, canvas_width: int, canvas_height: int) -> tuple[int, int]:
+        """Content-area size when the whole window is FIXED_W x FIXED_H:
+        the fixed size minus what the window spends outside the content
+        canvas (sidebar, header, visible scrollbars).  Cached per UI scale /
+        layout; does not depend on the window size."""
+        key = (self._scale(), getattr(self.ctx.state, "font_size", None), getattr(self.ctx.state, "language", None))
+        cached = getattr(self, "_fixed_size_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        try:
+            if not self.content_canvas.winfo_ismapped():
+                return canvas_width, canvas_height  # not laid out yet: don't cache
+            # Sidebar / header: offset of the canvas inside the window.
+            chrome_w = self.content_canvas.winfo_rootx() - self.root.winfo_rootx()
+            chrome_h = self.content_canvas.winfo_rooty() - self.root.winfo_rooty()
+        except tk.TclError:
+            return canvas_width, canvas_height
+        if chrome_w < 0 or chrome_h < 0 or chrome_w > self._scaled(FIXED_W) // 2:
+            return canvas_width, canvas_height
+        size = (max(1, self._scaled(FIXED_W) - chrome_w), max(1, self._scaled(FIXED_H) - chrome_h))
+        self._fixed_size_cache = (key, size)
+        return size
 
     def _update_scrollbars(self, show_h: bool, show_v: bool) -> None:
         if show_v and not self._vbar_visible:
