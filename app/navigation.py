@@ -325,6 +325,45 @@ class Navigation:
                 other.grid()
             self._sync_content_window_immediately()
 
+    def premap_hidden(self, page: tk.Misc, mode: str | None = None) -> float:
+        """Background (no flash) version of premap_page: map ``page`` -- or
+        only its mode sub-page ``mode`` -- in its grid cell *below* the
+        sibling that is on screen, run the geometry pass so every native
+        child window exists and has its final size, then unmap it again.
+        The first real visit then only re-maps an already laid-out page
+        (~0.1 s instead of ~0.85 s).  Returns the layout time in ms."""
+        t0 = time.perf_counter()
+        if _PAGE_STACK:
+            return 0.0
+        current = self.get_page(self.ctx.state.current_page, build=False)
+        page_hidden = page is not current and not page.winfo_ismapped()
+        try:
+            if page_hidden:
+                page.grid()
+                if current is not None and current.winfo_manager() == "grid":
+                    page.lower(current)
+                self._sync_content_window_immediately()
+            modes = getattr(page, "mode_pages", None)
+            if mode is not None and modes is not None and hasattr(modes, "built_values"):
+                target = dict.get(modes, mode, None)
+                shown = [m for m in modes.built_values() if m.winfo_manager() == "grid"]
+                if target is not None and target not in shown:
+                    target.grid()
+                    for s in shown:
+                        try:
+                            target.lower(s)
+                        except tk.TclError:
+                            pass
+                    page.update_idletasks()
+                    target.grid_remove()
+            elif page_hidden:
+                self.prepare_page_fonts(page)
+                page.update_idletasks()
+        finally:
+            if page_hidden:
+                page.grid_remove()
+        return (time.perf_counter() - t0) * 1000
+
     def pending_page_names(self) -> list[str]:
         """Registered pages not built yet (does not build)."""
         return [n for n in self._page_order if n in self._page_factories]

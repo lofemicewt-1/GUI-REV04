@@ -49,6 +49,9 @@ from styles.fonts import digits_font, page_title_weight
 from styles.theme import apply_theme
 from pages.fast_label import make_label
 
+# Background build also lays each page / mode out hidden (PIEZO_BG_PREMAP=0 off).
+_BG_PREMAP = os.environ.get("PIEZO_BG_PREMAP", "1" if os.name == "nt" else "0") != "0"
+
 
 CONNECT_RESULT_POLL_MS = 25
 
@@ -3444,6 +3447,14 @@ class PiezoApplication:
                     modes = getattr(page, "mode_pages", None)
                     if modes is not None and hasattr(modes, "pending_keys"):
                         work.extend(("mode", name, m) for m in modes.pending_keys())
+                    if _BG_PREMAP:
+                        # lay the page out now (hidden), not on first visit
+                        work.insert(0, ("premap", name, None))
+            elif kind == "premap":
+                page = nav.get_page(name, build=False)
+                if page is not None:
+                    _anim.debug_log(f"background premap {name}{'' if mode is None else '/' + mode}: "
+                                    f"layout {nav.premap_hidden(page, mode):.0f} ms")
             else:
                 page = nav.get_page(name, build=False)
                 modes = getattr(page, "mode_pages", None) if page is not None else None
@@ -3453,6 +3464,8 @@ class PiezoApplication:
                         modes[mode].update_idletasks()
                     except Exception:
                         pass
+                    if _BG_PREMAP:
+                        work.insert(0, ("premap", name, mode))
         except Exception as exc:  # never let a background build kill the UI
             _anim.debug_log(f"background build {kind} {name}/{mode} failed: {exc!r}")
         _anim.debug_log(

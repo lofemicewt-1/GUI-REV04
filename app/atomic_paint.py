@@ -21,10 +21,6 @@ import time
 import tkinter as tk
 from typing import Callable
 
-# Longest the cover may stay up, from the click.
-QUIET_LIMIT_S = 0.30
-BUDGET_MS = 480
-FADE_MIN_MS = 80
 # On by default on Windows, but only when the process is DPI aware
 # (app/dpi.py): without that, Windows virtualises coordinates on scaled
 # displays and the screen grab / overlay geometry disagree with what is on
@@ -115,9 +111,9 @@ def _delete_bitmap(bmp: int) -> None:
         pass
 
 
-def _grab_ppm(x: int, y: int, w: int, h: int) -> tuple[bytes, int] | None:
-    """Screen rect -> (binary PPM bytes, HBITMAP) via GDI (no PIL dependency).
-    The caller owns the bitmap (_delete_bitmap)."""
+def _grab_bitmap(x: int, y: int, w: int, h: int) -> int | None:
+    """Screen rect -> HBITMAP (one BitBlt, no pixel conversion).  The caller
+    owns the bitmap (_delete_bitmap)."""
     try:
         import ctypes
         from ctypes import wintypes
@@ -135,44 +131,112 @@ def _grab_ppm(x: int, y: int, w: int, h: int) -> tuple[bytes, int] | None:
         bmp = gdi32.CreateCompatibleBitmap(wintypes.HDC(screen), w, h)
         old = gdi32.SelectObject(wintypes.HDC(mem), wintypes.HGDIOBJ(bmp))
         ok = gdi32.BitBlt(wintypes.HDC(mem), 0, 0, w, h, wintypes.HDC(screen), x, y, 0x00CC0020)  # SRCCOPY
-
-        class BITMAPINFOHEADER(ctypes.Structure):
-            _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG), ("biHeight", wintypes.LONG),
-                        ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
-                        ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
-                        ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD)]
-
-        bih = BITMAPINFOHEADER()
-        bih.biSize = ctypes.sizeof(BITMAPINFOHEADER)
-        bih.biWidth, bih.biHeight, bih.biPlanes, bih.biBitCount = w, -h, 1, 32  # top-down
-        buf = ctypes.create_string_buffer(w * h * 4)
-        got = gdi32.GetDIBits(wintypes.HDC(mem), wintypes.HBITMAP(bmp), 0, h, buf, ctypes.byref(bih), 0) if ok else 0
         gdi32.SelectObject(wintypes.HDC(mem), wintypes.HGDIOBJ(old))
         gdi32.DeleteDC(wintypes.HDC(mem))
         user32.ReleaseDC(None, wintypes.HDC(screen))
-        if not got:
+        if not ok:
             gdi32.DeleteObject(wintypes.HGDIOBJ(bmp))
             return None
-        bgra = buf.raw
-        rgb = bytearray(w * h * 3)
-        rgb[0::3] = bgra[2::4]
-        rgb[1::3] = bgra[1::4]
-        rgb[2::3] = bgra[0::4]
-        return b"P6 %d %d 255\n" % (w, h) + bytes(rgb), int(bmp)
+        return int(bmp)
     except Exception:
         return None
 
 
+def _frame_hwnd(widget: tk.Misc) -> int:
+    """Top-level (frame) HWND of a Tk widget."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    user32.GetAncestor.restype = wintypes.HWND
+    return int(user32.GetAncestor(wintypes.HWND(int(widget.winfo_id())), 2) or 0)  # GA_ROOT
+
+
+def _move_window(hwnd: int, x: int, y: int, w: int, h: int, show: bool) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    # HWND_TOPMOST; SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_NOREDRAW (+SHOWWINDOW)
+    flags = 0x0010 | 0x0200 | 0x0008 | (0x0040 if show else 0)
+    ctypes.windll.user32.SetWindowPos(wintypes.HWND(hwnd), wintypes.HWND(-1), x, y, w, h, flags)
+
+
+# RedrawWindow flags
+_RDW_INVALIDATE, _RDW_ERASE, _RDW_ALLCHILDREN, _RDW_UPDATENOW = 0x1, 0x4, 0x80, 0x100
+_INVALIDATE = os.environ.get("PIEZO_ATOMIC_INVALIDATE", "0") == "1"
+
+
+def _flush_native_paint(hwnd: int, invalidate: bool) -> None:
+    """Send every pending WM_PAINT of the window tree now (synchronously)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        flags = _RDW_ALLCHILDREN | _RDW_UPDATENOW
+        if invalidate:
+            flags |= _RDW_INVALIDATE | _RDW_ERASE
+        ctypes.windll.user32.RedrawWindow(wintypes.HWND(hwnd), None, None, flags)
+    except Exception:
+        pass
+
+
+def _any_update_pending(hwnd: int) -> bool:
+    """True when the window or any descendant still has an update region."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        found = [False]
+        PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def cb(child, _lp):
+            if user32.IsWindowVisible(child) and user32.GetUpdateRect(child, None, False):
+                found[0] = True
+                return False
+            return True
+
+        if user32.GetUpdateRect(wintypes.HWND(hwnd), None, False):
+            return True
+        user32.EnumChildWindows(wintypes.HWND(hwnd), PROC(cb), 0)
+        return found[0]
+    except Exception:
+        return False
+
+
+def _dwm_flush() -> None:
+    try:
+        import ctypes
+
+        ctypes.windll.dwmapi.DwmFlush()
+    except Exception:
+        pass
+
+
+# Cover is dropped at the latest this long after the click.
+COVER_CAP_S = float(os.environ.get("PIEZO_ATOMIC_CAP_MS", "700")) / 1000.0
+_PARK = -30000
+
+
 class AtomicSwitch:
-    """Snapshot cover for one content area (a widget, e.g. the content canvas)."""
+    """Snapshot cover for one content area (a widget, e.g. the root).
+
+    The overlay is a borderless topmost toplevel created once, sized to the
+    whole virtual screen and parked off-screen; it has no Tk background, so
+    nothing but our BitBlt ever paints it.  cover() = one screen BitBlt into
+    a bitmap + SetWindowPos + one BitBlt into the overlay (no PhotoImage, no
+    Tk geometry/idle pass).  reveal() keeps the cover until Windows has no
+    pending paint left anywhere in the main window, then removes it in one
+    step."""
 
     def __init__(self, root: tk.Misc, area: tk.Misc, debug: Callable[[str], None] | None = None) -> None:
         self.root = root
         self.area = area
         self._debug = debug or (lambda _m: None)
         self._overlay: tk.Toplevel | None = None
-        self._label: tk.Label | None = None
-        self._image: tk.PhotoImage | None = None
+        self._ov_frame = 0
+        self._ov_client = 0
+        self._bmp = 0
         self._active = False
         self._token = 0
 
@@ -184,21 +248,23 @@ class AtomicSwitch:
         if self._overlay is not None:
             return True
         try:
-            ov = tk.Toplevel(self.root, bd=0, highlightthickness=0)
+            import ctypes
+
+            sm = ctypes.windll.user32.GetSystemMetrics
+            vw, vh = max(1, sm(78)), max(1, sm(79))  # SM_CXVIRTUALSCREEN / CY
+            ov = tk.Toplevel(self.root, bd=0, highlightthickness=0, background="")
             ov.withdraw()
             ov.overrideredirect(True)
-            lbl = tk.Label(ov, bd=0, highlightthickness=0, padx=0, pady=0)
-            lbl.pack(fill="both", expand=True)
-            ov.attributes("-alpha", 1.0)
-            ov.geometry("1x1+-4000+-4000")
+            ov.geometry(f"{vw}x{vh}+{_PARK}+{_PARK}")
             ov.deiconify()
             ov.update_idletasks()
-            ov.attributes("-topmost", True)  # set once; never toggled (a toggle races wm geometry)
-            # stays mapped, parked off-screen: moving never activates it
-        except tk.TclError:
+            ov.attributes("-topmost", True)
+            self._ov_client = int(ov.winfo_id())
+            self._ov_frame = _frame_hwnd(ov)
+        except Exception:
             return False
-        self._overlay, self._label = ov, lbl
-        return True
+        self._overlay = ov
+        return bool(self._ov_frame)
 
     def cover(self) -> bool:
         """Freeze what the user sees: show a screenshot of the area on top."""
@@ -208,94 +274,83 @@ class AtomicSwitch:
         try:
             if not self.root.winfo_viewable() or str(self.root.state()) == "iconic":
                 return False
-            x, y = self.area.winfo_rootx(), self.area.winfo_rooty()
-            w, h = self.area.winfo_width(), self.area.winfo_height()
         except tk.TclError:
             return False
         rect = _client_rect(self.area)
-        if rect is not None:
-            x, y, w, h = rect
+        if rect is None:
+            return False
+        x, y, w, h = rect
         if w <= 1 or h <= 1 or not self._ensure_overlay():
             return False
-        grabbed = _grab_ppm(x, y, w, h)
-        if grabbed is None:
+        t1 = time.perf_counter()
+        bmp = _grab_bitmap(x, y, w, h)
+        if bmp is None:
             return False
-        data, bmp = grabbed
+        t2 = time.perf_counter()
+        if self._bmp:
+            _delete_bitmap(self._bmp)
+        self._bmp = bmp
         try:
-            img = tk.PhotoImage(master=self.root, data=data, format="ppm")
-            assert self._overlay is not None and self._label is not None
-            self._label.configure(image=img)
-            self._image = img
-            self._overlay.attributes("-alpha", 1.0)
-            self._overlay.geometry(f"{w}x{h}")
-            self._overlay.update_idletasks()  # paint the snapshot while still parked
-            self._overlay.geometry(f"{w}x{h}+{x}+{y}")
-            self._overlay.update_idletasks()  # wm geometry is applied at idle
-            _place_topmost(self._overlay, x, y, w, h)
-            # Paint it synchronously now that it is on screen: Tk would only
-            # draw it on Expose, after the (blocking) page switch.
-            _blit_bitmap(self._label.winfo_id(), bmp, w, h)
-        except (tk.TclError, AssertionError):
-            _delete_bitmap(bmp)
+            _move_window(self._ov_frame, x, y, w, h, show=True)
+            _blit_bitmap(self._ov_client, bmp, w, h)
+        except Exception:
+            self.park()
             return False
-        _delete_bitmap(bmp)
         self._active = True
         self._token += 1
-        self._debug(f"atomic: cover {w}x{h}+{x}+{y} in {(time.perf_counter() - t0) * 1000:.1f} ms")
+        t3 = time.perf_counter()
+        self._debug(
+            f"atomic: cover {w}x{h}+{x}+{y} in {(t3 - t0) * 1000:.1f} ms "
+            f"(setup {(t1 - t0) * 1000:.1f}, grab {(t2 - t1) * 1000:.1f}, show {(t3 - t2) * 1000:.1f})"
+        )
         return True
 
     def reveal(self, fade_ms: int = 0, animator=None, started: float | None = None) -> None:
-        """After the new page is laid out: let Tk finish painting it under the
-        cover, then drop the cover (instantly, or cross-fade over fade_ms)."""
+        """After the new page is laid out: make Windows finish painting every
+        child window under the cover, then drop the cover in one step."""
         if not self._active:
             return
         token = self._token
-
         t_reveal = time.perf_counter()
-        quiet = [0]
+        limit = (started if started is not None else t_reveal) + COVER_CAP_S
 
-        def finish_paint(expected: float | None = None) -> None:
-            # Drop the cover only once the event loop has gone quiet: two
-            # consecutive 16 ms ticks that fire on time mean Tk has no more
-            # redraws / Configure follow-ups queued for the new page.
-            if token != self._token:
+        def finish_paint() -> None:
+            if token != self._token or not self._active:
                 return
-            now = time.perf_counter()
-            if expected is not None and now - expected < 0.008:
-                quiet[0] += 1
-            else:
-                quiet[0] = 0
-            limit = (started if started is not None else t_reveal) + QUIET_LIMIT_S
-            if quiet[0] >= 1 or now > limit:
-                drop()
-                return
+            t_idle = time.perf_counter()
             try:
-                self.root.update_idletasks()
-                self.root.after(16, finish_paint, time.perf_counter() + 0.016)
-            except tk.TclError:
-                self.park()
-
-        def drop() -> None:
-            if token != self._token:
-                return
+                main = _frame_hwnd(self.root)
+            except Exception:
+                main = 0
+            rounds = events = 0
+            invalidate = _INVALIDATE
+            while main and time.perf_counter() < limit:
+                rounds += 1
+                # Pending WM_PAINTs -> Tk Expose events now, then let Tk
+                # handle them and run the resulting idle redraws.
+                _flush_native_paint(main, invalidate)
+                invalidate = False
+                n = 0
+                try:
+                    while n < 2000 and self.root.tk.dooneevent(_WINDOW_EVENTS | _DONT_WAIT):
+                        n += 1
+                    self.root.update_idletasks()
+                except tk.TclError:
+                    break
+                if token != self._token:
+                    return  # a newer switch took over (event re-entered show)
+                events += n
+                if n == 0 and not _any_update_pending(main):
+                    break
+            _dwm_flush()  # our GDI output is in the next composed frame
+            now = time.perf_counter()
             if started is not None:
-                self._debug(f"atomic: page painted {(time.perf_counter() - started) * 1000:.1f} ms after click")
-            # Never cross-fade: blending two different pages ghosts. Opaque
-            # until removal, then removed in one step.
-            fade = 0
-            if fade > 0 and started is not None:
-                # Keep click -> settled near the 500 ms target.
-                fade = int(min(fade, max(FADE_MIN_MS, BUDGET_MS - (time.perf_counter() - started) * 1000)))
-            if fade > 0 and animator is not None and self._overlay is not None:
-                ov = self._overlay
-
-                def step(p: float) -> None:
-                    ov.attributes("-alpha", max(0.0, 1.0 - p))
-
-                from core import animation as anim
-                animator.animate("page-transition", fade, step, ease=anim.EASE_OUT, done=self.park)
-            else:
-                self.park()
+                self._debug(
+                    f"atomic: page painted {(now - started) * 1000:.1f} ms after click "
+                    f"(first idle {(t_idle - started) * 1000:.1f}, flush {(now - t_idle) * 1000:.1f} ms, "
+                    f"{rounds} rounds, {events} events{', CAP' if now >= limit else ''})"
+                )
+            self.park()
 
         try:
             self.root.after_idle(finish_paint)
@@ -305,14 +360,17 @@ class AtomicSwitch:
 
     def park(self) -> None:
         self._active = False
-        ov = self._overlay
-        if ov is None:
-            return
-        try:
-            ov.geometry("+-4000+-4000")
-            ov.attributes("-alpha", 1.0)
-            if self._label is not None:
-                self._label.configure(image="")
-        except tk.TclError:
-            pass
-        self._image = None
+        if self._ov_frame:
+            try:
+                _move_window(self._ov_frame, _PARK, _PARK, 1, 1, show=False)
+            except Exception:
+                pass
+        if self._bmp:
+            _delete_bitmap(self._bmp)
+            self._bmp = 0
+
+
+import _tkinter  # noqa: E402
+
+_WINDOW_EVENTS = getattr(_tkinter, "WINDOW_EVENTS", 4)
+_DONT_WAIT = getattr(_tkinter, "DONT_WAIT", 2)
