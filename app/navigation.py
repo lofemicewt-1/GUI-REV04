@@ -1261,6 +1261,12 @@ class Navigation:
                 canvas_width, canvas_height = self._fixed_content_size(canvas_width, canvas_height)
             window_width = canvas_width if pin else max(canvas_width, required_width)
             window_height = canvas_height if pin else max(canvas_height, required_height)
+            if _FIXED_LAYOUT and pin:
+                # Pinned-footer chip pages (register read/write, reset,
+                # shutdown bar): follow the *visible* height so the footer
+                # stays at the bottom of the window; the page's own middle
+                # scroll area absorbs the difference.  Width stays fixed.
+                window_height = max(1, view_height)
             state = (canvas_width, canvas_height, required_width, required_height, current_name, pin, view_width, view_height)
             if state == self._last_canvas_state:
                 return
