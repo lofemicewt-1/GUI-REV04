@@ -165,6 +165,10 @@ class VerticalScrollArea(ttk.Frame):
         self.propagate_height = bool(propagate_height)
         self._scrollbar_visible = False
         self._horizontal_scrollbar_visible = False
+        # Fixed-layout floor (set by Navigation on pinned-footer pages): the
+        # content is never laid out smaller than the size it has in the fixed
+        # 1920x1080 layout, so a window resize only changes the viewport.
+        self.layout_floor: tuple[int, int] = (0, 0)
 
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
@@ -215,20 +219,25 @@ class VerticalScrollArea(ttk.Frame):
             natural_width, natural_height = self._natural_content_size()
             canvas_width = max(1, self.canvas.winfo_width())
             canvas_height = max(1, self.canvas.winfo_height())
+            floor_w, floor_h = self.layout_floor if self.horizontal else (0, 0)
+            # With a fixed-layout floor the content size ignores the viewport
+            # entirely (fixed layout): resizes only scroll / leave margin.
+            lay_w = floor_w if floor_w > 1 else canvas_width
+            lay_h = floor_h if floor_h > 1 else canvas_height
             if self.horizontal:
-                width = max(natural_width, canvas_width)
+                width = max(natural_width, lay_w)
             else:
                 width = canvas_width
             if self._window_item_span("width") != width:
                 self.canvas.itemconfigure(self.window_id, width=width)
             height = natural_height + 16
             if self.propagate_height:
-                requested_height = max(natural_height, canvas_height - 16)
+                requested_height = max(natural_height, lay_h - 16)
                 if self._window_item_span("height") != requested_height:
                     self.canvas.itemconfigure(self.window_id, height=requested_height)
                 height = max(height, requested_height)
-                if natural_height + 16 <= canvas_height:
-                    height = min(height, canvas_height)
+                if natural_height + 16 <= lay_h:
+                    height = min(height, lay_h)
             self.canvas.configure(scrollregion=(0, 0, width, height))
             needs_scrollbar = height > canvas_height
             needs_horizontal_scrollbar = self.horizontal and width > canvas_width
@@ -261,7 +270,7 @@ class VerticalScrollArea(ttk.Frame):
     def _sync_content_width(self, event: tk.Event) -> None:
         try:
             if self.horizontal:
-                width = max(1, event.width, self.min_content_width, self.content.winfo_reqwidth())
+                width = max(1, self.layout_floor[0] if self.horizontal and self.layout_floor[0] > 1 else event.width, self.min_content_width, self.content.winfo_reqwidth())
             else:
                 width = max(1, event.width)
             self.canvas.itemconfigure(self.window_id, width=width)

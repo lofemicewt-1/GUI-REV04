@@ -1271,6 +1271,7 @@ class Navigation:
                 # mode area keeps its own horizontal scrollbar above it.
                 window_height = max(1, view_height)
                 window_width = max(1, view_width)
+                self._set_pinned_layout_floor(page, canvas_width, canvas_height)
             state = (canvas_width, canvas_height, required_width, required_height, current_name, pin, view_width, view_height)
             if state == self._last_canvas_state:
                 return
@@ -1297,6 +1298,38 @@ class Navigation:
                 self._place_current_page(page, window_width, window_height)
             self.content_canvas.configure(scrollregion=self.content_canvas.bbox("all"))
             self._update_scrollbars((not pin) and required_width > canvas_width, (not pin) and required_height > canvas_height)
+        except tk.TclError:
+            pass
+
+    def _set_pinned_layout_floor(self, page: tk.Misc, fixed_w: int, fixed_h: int) -> None:
+        """Pinned-footer chip page: its top-level scroll areas keep laying
+        their content out at the size it has in the fixed layout (they only
+        scroll), so a resize re-lays out just the page shell + footer, not the
+        whole mode area (regression from fd6e0b0/6aeebfe).  Computed once per
+        fixed size; constant afterwards, so resizes never change it."""
+        key = (int(fixed_w), int(fixed_h))
+        if getattr(page, "_piezo_floor_key", None) == key:
+            return
+        try:
+            cur_w = self.content.winfo_width()
+            cur_h = self.content.winfo_height()
+            if cur_w <= 1 or cur_h <= 1:
+                return
+            for area in getattr(page, "_vertical_scroll_areas", ()):
+                parent = getattr(area, "master", None)
+                nested = False
+                while parent is not None and parent is not page:
+                    if parent.__class__.__name__ == "VerticalScrollArea":
+                        nested = True
+                        break
+                    parent = getattr(parent, "master", None)
+                if nested or not area.winfo_ismapped():
+                    continue
+                area.layout_floor = (
+                    max(1, area.canvas.winfo_width() + key[0] - cur_w),
+                    max(1, area.canvas.winfo_height() + key[1] - cur_h),
+                )
+            page._piezo_floor_key = key  # type: ignore[attr-defined]
         except tk.TclError:
             pass
 
