@@ -1265,8 +1265,12 @@ class Navigation:
                 # Pinned-footer chip pages (register read/write, reset,
                 # shutdown bar): follow the *visible* height so the footer
                 # stays at the bottom of the window; the page's own middle
-                # scroll area absorbs the difference.  Width stays fixed.
+                # scroll area absorbs the difference.  Width follows the
+                # visible width too, so the footer (which wraps) is never
+                # clipped or hidden behind the outer h-scroll; the middle
+                # mode area keeps its own horizontal scrollbar above it.
                 window_height = max(1, view_height)
+                window_width = max(1, view_width)
             state = (canvas_width, canvas_height, required_width, required_height, current_name, pin, view_width, view_height)
             if state == self._last_canvas_state:
                 return
