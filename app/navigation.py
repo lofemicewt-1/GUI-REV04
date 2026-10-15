@@ -501,7 +501,7 @@ class Navigation:
 
     def _atomic_reveal(self, mode: str, started: float) -> None:
         animator = anim.animator_for(self.root)
-        fade = anim.PAGE_TRANSITION_MS if mode != "none" and animator is not None else 0
+        fade = atomic_paint.FADE_MS if mode != "none" and animator is not None else 0
         self._atomic.reveal(fade, animator, started)
 
     def prepare_page_fonts(self, page: tk.Misc) -> None:

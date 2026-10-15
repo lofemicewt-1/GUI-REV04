@@ -227,6 +227,39 @@ def _dwm_flush() -> None:
         pass
 
 
+def _make_layered(hwnd: int) -> bool:
+    """Give the overlay WS_EX_LAYERED once, at creation (alpha 255), so the
+    fade only changes the alpha -- toggling the style later forces a fresh
+    surface and shows a stale frame."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        user32.GetWindowLongW.restype = ctypes.c_long
+        ex = user32.GetWindowLongW(wintypes.HWND(hwnd), -20)
+        user32.SetWindowLongW(wintypes.HWND(hwnd), -20, ex | 0x00080000)
+        return bool(_set_alpha(hwnd, 255))
+    except Exception:
+        return False
+
+
+def _set_alpha(hwnd: int, alpha: int) -> bool:
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        return bool(ctypes.windll.user32.SetLayeredWindowAttributes(
+            wintypes.HWND(hwnd), 0, max(0, min(255, int(alpha))), 0x2))  # LWA_ALPHA
+    except Exception:
+        return False
+
+
+# Fade-out of the cover once the new page is fully painted (transitions on).
+FADE_MS = int(os.environ.get("PIEZO_ATOMIC_FADE_MS", "150"))
+# Fade is shortened so click -> settled stays under this (skipped < 50 ms).
+FADE_BUDGET_S = float(os.environ.get("PIEZO_ATOMIC_FADE_BUDGET_MS", "1000")) / 1000.0
+
 # Cover is dropped at the latest this long after the click.
 COVER_CAP_S = float(os.environ.get("PIEZO_ATOMIC_CAP_MS", "700")) / 1000.0
 _PARK = -30000
@@ -253,6 +286,7 @@ class AtomicSwitch:
         self._bmp = 0
         self._active = False
         self._token = 0
+        self._layered = False
 
     @property
     def active(self) -> bool:
@@ -275,6 +309,7 @@ class AtomicSwitch:
             ov.attributes("-topmost", True)
             self._ov_client = int(ov.winfo_id())
             self._ov_frame = _frame_hwnd(ov)
+            self._layered = _make_layered(self._ov_frame)
         except Exception:
             return False
         self._overlay = ov
@@ -311,6 +346,8 @@ class AtomicSwitch:
             # snapshot -- for one frame before our BitBlt reached the screen
             # (old/new page flicker on every switch).
             cloaked = _cloak(self._ov_frame, True)
+            if self._layered:
+                _set_alpha(self._ov_frame, 255)
             _move_window(self._ov_frame, x, y, w, h, show=True)
             _blit_bitmap(self._ov_client, bmp, w, h)
             if cloaked:
@@ -374,13 +411,46 @@ class AtomicSwitch:
                     f"(first idle {(t_idle - started) * 1000:.1f}, flush {(now - t_idle) * 1000:.1f} ms, "
                     f"{rounds} rounds, {events} events{', CAP' if now >= limit else ''})"
                 )
-            self.park()
+            self._fade_out(token, fade_ms, animator, started, now)
 
         try:
             self.root.after_idle(finish_paint)
             self.root.after(1500, lambda: token == self._token and self._active and self.park())  # safety
         except tk.TclError:
             self.park()
+
+    def _fade_out(self, token: int, fade_ms: int, animator, started, now: float) -> None:
+        """New page is complete under the cover: cross-fade the snapshot out
+        (alpha only), or drop it in one step when transitions are off."""
+        ms = fade_ms
+        if started is not None:
+            ms = min(ms, int((started + FADE_BUDGET_S - now) * 1000))
+        if ms < 50 or animator is None or not self._layered or not getattr(animator, "enabled", False):
+            self._debug(f"atomic: reveal instant (fade {ms} ms requested)")
+            self.park()
+            return
+        frames = [0]
+        t0 = time.perf_counter()
+
+        def step(p: float) -> None:
+            if token != self._token or not self._active:
+                return
+            frames[0] += 1
+            _set_alpha(self._ov_frame, round(255 * (1.0 - p)))
+
+        def done() -> None:
+            if token != self._token:
+                return
+            end = time.perf_counter()
+            self._debug(
+                f"atomic: fade {ms} ms, {frames[0]} steps, {(end - t0) * 1000:.1f} ms"
+                + (f", settled {(end - started) * 1000:.1f} ms after click" if started is not None else "")
+            )
+            self.park()
+
+        from core import animation as anim
+
+        animator.animate("page-transition", ms, step, ease=anim.EASE_OUT, done=done)
 
     def park(self) -> None:
         self._active = False
@@ -389,6 +459,8 @@ class AtomicSwitch:
                 _move_window(self._ov_frame, _PARK, _PARK, 1, 1, show=False)
             except Exception:
                 pass
+            if self._layered:
+                _set_alpha(self._ov_frame, 255)
         if self._bmp:
             _delete_bitmap(self._bmp)
             self._bmp = 0
