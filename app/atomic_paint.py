@@ -22,10 +22,14 @@ import tkinter as tk
 from typing import Callable
 
 # Longest the cover may stay up, from the click.
-QUIET_LIMIT_S = 0.40
+QUIET_LIMIT_S = 0.30
 BUDGET_MS = 480
 FADE_MIN_MS = 80
-ENABLED = sys.platform == "win32" and os.environ.get("PIEZO_ATOMIC_PAINT", "1") != "0"
+# Off by default: on real high-DPI Windows (mixed-DPI multi-monitor) the
+# screen grab and the overlay geometry can disagree (DPI virtualisation), and
+# a cross-fade between two different pages reads as a ghosted double image.
+# Opt in with PIEZO_ATOMIC_PAINT=1.
+ENABLED = sys.platform == "win32" and os.environ.get("PIEZO_ATOMIC_PAINT", "0") == "1"
 
 
 def _blit_bitmap(hwnd: int, bmp: int, w: int, h: int) -> None:
@@ -225,7 +229,9 @@ class AtomicSwitch:
                 return
             if started is not None:
                 self._debug(f"atomic: page painted {(time.perf_counter() - started) * 1000:.1f} ms after click")
-            fade = fade_ms
+            # Never cross-fade: blending two different pages ghosts. Opaque
+            # until removal, then removed in one step.
+            fade = 0
             if fade > 0 and started is not None:
                 # Keep click -> settled near the 500 ms target.
                 fade = int(min(fade, max(FADE_MIN_MS, BUDGET_MS - (time.perf_counter() - started) * 1000)))
