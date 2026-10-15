@@ -103,7 +103,9 @@ class Navigation:
         self._nav_hover_color: str | None = None
         self._nav_hover_name: str | None = None
         self.sidebar_canvas.bind("<Configure>", self._sync_sidebar_content_width)
-        self.sidebar_canvas.bind_all("<MouseWheel>", self._on_sidebar_mousewheel, add="+")
+        self.sidebar_canvas.bind("<Configure>", self._sync_sidebar_scroll_region, add="+")
+        # The chip sidebar is fixed: it never scrolls (no wheel binding, no
+        # scrollbar, view pinned to the top in _sync_sidebar_scroll_region).
         self._sidebar_scrollbar_visible = False
 
         self.content_shell = ttk.Frame(self.container, style="App.TFrame")
@@ -1082,39 +1084,27 @@ class Navigation:
             pass
 
     def _sync_sidebar_scroll_region(self, _event: tk.Event | None = None) -> None:
+        """Pin the sidebar: scrollregion == visible area, view at the top.
+
+        The sidebar is a fixed column; it must never scroll (wheel, scrollbar
+        or keyboard), even when its content is taller than the window."""
         try:
             canvas_height = max(1, self.sidebar_canvas.winfo_height())
-            content_height = max(1, self.sidebar.winfo_reqheight(), self.sidebar.winfo_height())
             content_width = max(1, self.sidebar_canvas.winfo_width())
-            self.sidebar_canvas.configure(
-                scrollregion=(0, 0, content_width, content_height)
-            )
-            needs_scrollbar = content_height > canvas_height
-            if needs_scrollbar and not self._sidebar_scrollbar_visible:
-                self.sidebar_scrollbar.grid(row=0, column=1, sticky="ns")
-                self._sidebar_scrollbar_visible = True
-            elif not needs_scrollbar and self._sidebar_scrollbar_visible:
+            region = (0, 0, content_width, canvas_height)
+            if tuple(str(self.sidebar_canvas.cget("scrollregion")).split()) != tuple(str(v) for v in region):
+                self.sidebar_canvas.configure(scrollregion=region)
+            if float(self.sidebar_canvas.yview()[0]) != 0.0:
+                self.sidebar_canvas.yview_moveto(0.0)
+            if self._sidebar_scrollbar_visible:
                 self.sidebar_scrollbar.grid_remove()
                 self._sidebar_scrollbar_visible = False
         except tk.TclError:
             pass
 
     def _on_sidebar_mousewheel(self, event: tk.Event) -> None:
-        try:
-            widget = self.root.winfo_containing(int(event.x_root), int(event.y_root))
-            current: tk.Misc | None = widget
-            inside = False
-            while current is not None:
-                if current is self.sidebar:
-                    inside = True
-                    break
-                current = getattr(current, "master", None)
-            if not inside or not self.sidebar_canvas.winfo_ismapped():
-                return
-            delta = -1 if event.delta > 0 else 1
-            self.sidebar_canvas.yview_scroll(delta, "units")
-        except (tk.TclError, AttributeError, TypeError, ValueError):
-            pass
+        """The sidebar never scrolls; kept as a no-op for compatibility."""
+        return None
 
     def _sync_mode_buttons(self, page: Any) -> None:
         keys = self._mode_keys_for(page)

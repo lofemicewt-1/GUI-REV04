@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Empty, Full, Queue
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -3253,6 +3254,14 @@ class PiezoApplication:
 
         enable_dpi_awareness()  # no-op if main() already did it
         self.root = tk.Tk()
+        # Windows: keep the main window unmapped until it is fully built,
+        # laid out and painted (see _startup_reveal); mapping it early shows
+        # the widgets painting in stages.
+        self._startup_cloak = sys.platform == "win32" and not start_withdrawn and (
+            os.environ.get("PIEZO_STARTUP_CLOAK", "1") != "0")
+        self._startup_revealed = not self._startup_cloak
+        if self._startup_cloak:
+            self.root.withdraw()
         # Physical px per logical (96-dpi) px.  Tk scales point-sized fonts by
         # the real DPI itself; window sizes given in px must be scaled here.
         self._dpi = dpi_factor(self.root)
@@ -3327,7 +3336,9 @@ class PiezoApplication:
             # Show the window now; remaining pages/modes are built one per
             # idle slice after the first paint (get_page still builds on demand).
             self._bg_build_job: str | None = None
-            if os.environ.get("PIEZO_BG_BUILD", "1") != "0":
+            self._bg_build_pending = os.environ.get("PIEZO_BG_BUILD", "1") != "0"
+            if self._bg_build_pending and self._startup_revealed:
+                self._bg_build_pending = False
                 self._bg_build_job = self.root.after(400, self._start_background_build)
         from core import animation as _anim
         _anim.debug_log("startup spans (ms): " + ", ".join(_spans))
@@ -3771,7 +3782,36 @@ class PiezoApplication:
 
         apply(self.root if start is None else start)
 
+    def _startup_reveal(self) -> None:
+        """Map the withdrawn main window cloaked, let it paint completely,
+        then uncloak it in one step.  The background page build starts only
+        after this."""
+        if self._startup_revealed:
+            return
+        self._startup_revealed = True
+        from app import atomic_paint
+        from core import animation as _anim
+
+        try:
+            handled = atomic_paint.reveal_root_painted(self.root, _anim.debug_log)
+        except Exception:
+            handled = False
+        if not handled:
+            try:
+                self.root.deiconify()
+            except tk.TclError:
+                pass
+        try:
+            self.root.lift()
+            self.root.focus_force()
+        except tk.TclError:
+            pass
+        if getattr(self, "_bg_build_pending", False):
+            self._bg_build_pending = False
+            self._bg_build_job = self.root.after(400, self._start_background_build)
+
     def run(self) -> None:
+        self._startup_reveal()
         self.root.mainloop()
 
     def _on_root_destroy(self, event: tk.Event) -> None:

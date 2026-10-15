@@ -470,3 +470,68 @@ import _tkinter  # noqa: E402
 
 _WINDOW_EVENTS = getattr(_tkinter, "WINDOW_EVENTS", 4)
 _DONT_WAIT = getattr(_tkinter, "DONT_WAIT", 2)
+
+
+def reveal_root_painted(root: tk.Misc, debug: Callable[[str], None] | None = None,
+                        budget_s: float = 2.0) -> bool:
+    """First show of a withdrawn main window without staged painting.
+
+    The frame is DWM-cloaked (or alpha 0 as fallback) before it is mapped;
+    it maps, lays out and paints every native child window while invisible,
+    and only then is uncloaked in one step.  Returns True when handled
+    (the window is visible afterwards in every case)."""
+    if sys.platform != "win32" or os.environ.get("PIEZO_STARTUP_CLOAK", "1") == "0":
+        return False
+    t0 = time.perf_counter()
+    hwnd = 0
+    try:
+        root.update_idletasks()  # creates the (withdrawn) wrapper window
+        hwnd = _frame_hwnd(root)
+    except Exception:
+        hwnd = 0
+    cloaked = bool(hwnd) and _cloak(hwnd, True)
+    used_alpha = False
+    if not cloaked:
+        try:
+            root.attributes("-alpha", 0.0)
+            used_alpha = True
+        except tk.TclError:
+            pass
+    rounds = events = 0
+    try:
+        root.deiconify()
+        if not hwnd:
+            root.update_idletasks()
+            hwnd = _frame_hwnd(root)
+        limit = t0 + budget_s
+        quiet = 0
+        while hwnd and time.perf_counter() < limit:
+            rounds += 1
+            _flush_native_paint(hwnd, False)
+            n = 0
+            while n < 5000 and root.tk.dooneevent(_WINDOW_EVENTS | _DONT_WAIT):
+                n += 1
+            root.update_idletasks()
+            events += n
+            if n == 0 and not _any_update_pending(hwnd):
+                quiet += 1
+                if quiet >= 2:  # Map-time idle work may queue one more pass
+                    break
+            else:
+                quiet = 0
+        _dwm_flush()
+    except tk.TclError:
+        pass
+    finally:
+        if cloaked:
+            _cloak(hwnd, False)
+        elif used_alpha:
+            try:
+                root.attributes("-alpha", 1.0)
+            except tk.TclError:
+                pass
+    if debug is not None:
+        debug(f"startup reveal: {(time.perf_counter() - t0) * 1000:.1f} ms, "
+              f"{'cloak' if cloaked else ('alpha' if used_alpha else 'plain')}, "
+              f"{rounds} rounds, {events} events")
+    return True
