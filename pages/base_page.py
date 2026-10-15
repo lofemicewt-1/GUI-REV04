@@ -374,15 +374,31 @@ class WrappingGroupBar(ttk.Frame):
         try:
             for group in self._groups:
                 group.grid_remove()
+            # One holder frame per row: groups sharing a grid column across
+            # rows would widen that column to the widest group in *any* row
+            # and push the rest of the row off the right edge (clipped).
+            holders: list[ttk.Frame] = getattr(self, "_row_holders", [])
+            self._row_holders = holders
+            while len(holders) < len(rows):
+                holder = ttk.Frame(self, style=str(self.cget("style")) or "Panel.TFrame")
+                holders.append(holder)
+            for row_index, holder in enumerate(holders):
+                if row_index < len(rows):
+                    holder.grid(row=row_index, column=0, sticky="w", pady=(0, 4))
+                    holder.lift()
+                else:
+                    holder.grid_remove()
             for row_index, row in enumerate(rows):
+                holder = holders[row_index]
                 for column, group in enumerate(row):
                     group.grid(
-                        row=row_index,
+                        in_=holder,
+                        row=0,
                         column=column,
                         sticky="w",
                         padx=(0, self._gap),
-                        pady=(0, 4),
                     )
+                    group.lift(holder)
         finally:
             self._in_reflow = False
 
