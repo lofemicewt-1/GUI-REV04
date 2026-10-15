@@ -204,6 +204,20 @@ def _any_update_pending(hwnd: int) -> bool:
         return False
 
 
+def _cloak(hwnd: int, on: bool) -> bool:
+    """DWMWA_CLOAK: window stays mapped and keeps rendering into its DWM
+    surface, but is not composed on screen."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        val = wintypes.BOOL(1 if on else 0)
+        return ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            wintypes.HWND(hwnd), 13, ctypes.byref(val), ctypes.sizeof(val)) == 0
+    except Exception:
+        return False
+
+
 def _dwm_flush() -> None:
     try:
         import ctypes
@@ -291,9 +305,19 @@ class AtomicSwitch:
             _delete_bitmap(self._bmp)
         self._bmp = bmp
         try:
+            # Bring the overlay in *cloaked*, paint the snapshot, wait until
+            # DWM has composed that paint, then uncloak.  Showing it straight
+            # away displayed its stale DWM surface -- the previous switch's
+            # snapshot -- for one frame before our BitBlt reached the screen
+            # (old/new page flicker on every switch).
+            cloaked = _cloak(self._ov_frame, True)
             _move_window(self._ov_frame, x, y, w, h, show=True)
             _blit_bitmap(self._ov_client, bmp, w, h)
+            if cloaked:
+                _dwm_flush()
+                _cloak(self._ov_frame, False)
         except Exception:
+            _cloak(self._ov_frame, False)
             self.park()
             return False
         self._active = True
