@@ -115,7 +115,7 @@ for(const c of cases.cases) {
     for(const [reg,value] of [[5,initial05],[6,0xDFFF],[0x12,0xBEA5],[0x15,0xF081]])m.regs.set(reg,value);
     assert.equal(m.command(1),0,'Type4 apply result');
     assert.equal(m.writes.filter(w=>w.reg===0x1f).length,1);
-    assert.equal(m.regs.get(0x1f),0xC);
+    assert.equal(m.regs.get(0x1f),0x0808,'Type4 fixed 0x1F write is 0x0808');
     assert.equal(m.regs.get(5),(initial05&~0xEC03)|(c.zero<<13)|2,
       'Type4 forces 0x05[11:10]=00 while retaining Zero Time, other fields, and SRAM mode');
     assert.equal(m.regs.get(5)&0x0C00,0,'Type4 fixed sample update is 4 us');

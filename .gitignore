@@ -19,7 +19,7 @@ vendor/
 .codex/
 .worktrees/
 docs/superpowers/
-progress.md
+*.md
 
 .idea/
 .vscode/

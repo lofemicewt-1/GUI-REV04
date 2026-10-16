@@ -203,6 +203,15 @@ class AWP1221BoardPresetMixin:
         self._board_operation("read")
 
     def _restore_type4_model(self, model: Awp1221PresetModel) -> None:
+        suspend = getattr(self, "_suspend_adc_live_writes", None)
+        restore = type(self)._restore_type4_model_vars
+        if suspend is None:
+            restore(self, model)
+            return
+        with suspend():
+            restore(self, model)
+
+    def _restore_type4_model_vars(self, model: Awp1221PresetModel) -> None:
         from pages.awp1221_page import (
             AWP1221_RETURN_BIT_TIME_OPTIONS, AWP1221_ZERO_TIME_OPTIONS,
             awp1221_format_threshold_signed,
