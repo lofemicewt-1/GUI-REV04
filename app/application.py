@@ -29,6 +29,7 @@ from core.base_tool import (
     parse_gpio_read_response,
 )
 from core.animation import Animator
+from core import animation as anim
 from core.ui_dispatch import UiDispatcher, post_to_ui
 from core import chip_status_cache
 from core.chip_discovery import ChipDiscovery, ChipProbe, discover_first
@@ -3321,6 +3322,13 @@ class PiezoApplication:
 
         self.navigation = Navigation(self.root, self.ctx)
         _span("navigation")
+        from app.micro_anim import MicroAnimations
+
+        _sidebar = str(self.navigation.sidebar)
+        self.micro_anim = MicroAnimations(
+            self.root, self.animator, lambda: self.colors,
+            lambda w: str(w) == _sidebar or str(w).startswith(_sidebar + "."),
+        )
         if self._start_withdrawn:
             self._prepare_offscreen_layout()
         self._emit_startup_progress("home", 1, 1)
@@ -3648,7 +3656,19 @@ class PiezoApplication:
                 self.state.extra["theme_preference"] = preference
             if font_changed:
                 self.state.font_size = next_font_size
+            # 450 ms background cross-fade (CDS DUR_SLOW): freeze the old
+            # theme under the snapshot cover, recolour underneath, fade out.
+            nav = self.navigation
+            covered = theme_changed and self.animator.enabled and nav._atomic_cover()
+            t0 = time.perf_counter()
             self._apply_visual_settings()
+            if covered:
+                try:
+                    self.root.update_idletasks()
+                except tk.TclError:
+                    pass
+                nav._atomic.reveal(anim.DUR_SLOW, self.animator, None)
+            anim.debug_log(f"theme: recolour {(time.perf_counter() - t0) * 1000:.0f} ms (covered={covered})")
 
     def _window_scale(self) -> float:
         width = max(1, self.root.winfo_width())
