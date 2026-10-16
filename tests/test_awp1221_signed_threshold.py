@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from pages.awp1221_page import (
+    AWP1221ModePage,
     AWP1221Page,
     awp1221_en_high_load_value,
     awp1221_format_threshold_signed,
@@ -66,10 +67,18 @@ class Awp1221ThresholdHexHintTests(unittest.TestCase):
         self.assertEqual(awp1221_threshold_hex_hint("0x0a"), "0x00A")
 
 
+class Awp1221SoftwarePresetLoadTests(unittest.TestCase):
+    def test_button_preset_writes_0x1f_as_0x0808(self) -> None:
+        self.assertEqual(
+            AWP1221ModePage._BUTTON_SOFTWARE_PRESET_EXTRA_WRITES,
+            ((0x1F, 0x0808),),
+        )
+
+
 class Awp1221EnHighAdcLoadTests(unittest.TestCase):
-    def test_helper_sets_bit2_and_preserves_bit3(self) -> None:
-        self.assertEqual(awp1221_en_high_load_value(0x0008), 0x000C)
-        self.assertEqual(awp1221_en_high_load_value(0xA000), 0xA004)
+    def test_helper_sets_bit11_and_preserves_bit3(self) -> None:
+        self.assertEqual(awp1221_en_high_load_value(0x0008), 0x0808)
+        self.assertEqual(awp1221_en_high_load_value(0xA000), 0xA800)
 
     def test_en_high_path_updates_chip_and_both_mode_pages(self) -> None:
         writes: list[tuple[int, int, int]] = []
@@ -95,6 +104,6 @@ class Awp1221EnHighAdcLoadTests(unittest.TestCase):
 
         page._set_en_high_adc_load()
 
-        self.assertEqual(writes, [(0x1F, 0x000C, 0x50)])
+        self.assertEqual(writes, [(0x1F, 0x0808, 0x50)])
         self.assertEqual(labels.count("160 uA"), 2)
         self.assertEqual(labels.count("window:160 uA"), 2)

@@ -47,15 +47,15 @@ class Awp1221SampleTimeOptionTests(unittest.TestCase):
 
 
 class Awp1221AdcLoadBitTests(unittest.TestCase):
-    def test_label_uses_bit2(self) -> None:
+    def test_label_uses_bit11(self) -> None:
         self.assertEqual(awp1221_adc_load_label(0x0000), "40 uA")
-        self.assertEqual(awp1221_adc_load_label(1 << 2), "160 uA")
-        self.assertEqual(awp1221_adc_load_label(1 << 11), "40 uA")
+        self.assertEqual(awp1221_adc_load_label(1 << 11), "160 uA")
+        self.assertEqual(awp1221_adc_load_label(1 << 2), "40 uA")
 
-    def test_merge_sets_only_bit2_and_preserves_bit3(self) -> None:
+    def test_merge_sets_only_bit11_and_preserves_bit3(self) -> None:
         current = 0x0008
-        self.assertEqual(awp1221_merge_adc_load(current, "160 uA"), 0x000C)
-        self.assertEqual(awp1221_merge_adc_load(0x000C, "40 uA"), 0x0008)
+        self.assertEqual(awp1221_merge_adc_load(current, "160 uA"), 0x0808)
+        self.assertEqual(awp1221_merge_adc_load(0x0808, "40 uA"), 0x0008)
 
     def test_merge_sample_time_only_bits_11_10(self) -> None:
         current = 0x442E
@@ -146,7 +146,7 @@ class Awp1221QuietRealtimeReadTests(unittest.TestCase):
 
 
 class Awp1221WindowSettingsWriteTests(unittest.TestCase):
-    def test_write_settings_rmw_sample_time_and_load_bit2(self) -> None:
+    def test_write_settings_rmw_sample_time_and_load_bit11(self) -> None:
         writes: list[tuple[int, int]] = []
         page = object.__new__(AWP1221RealtimeMixin)
         page._read_register_value = lambda register, address: {
@@ -170,9 +170,10 @@ class Awp1221WindowSettingsWriteTests(unittest.TestCase):
         )
         self.assertEqual(writes[1][1] & 0x0008, 0x0008)
 
-    def test_load_settings_uses_bit2(self) -> None:
+    def test_load_settings_uses_bit11(self) -> None:
         self.assertEqual(awp1221_adc_load_label(0x0008), "40 uA")
-        self.assertEqual(awp1221_adc_load_label(0x000C), "160 uA")
+        self.assertEqual(awp1221_adc_load_label(0x0808), "160 uA")
+        self.assertEqual(awp1221_adc_load_label(0x070C), "40 uA")
 
 
 class Awp1221RealtimeGpioPreparationTests(unittest.TestCase):
