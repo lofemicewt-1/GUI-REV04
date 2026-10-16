@@ -167,6 +167,9 @@ class AWP1221BoardPresetMixin:
                     self._set_detection_state(False, address)
                     self._set_waveform_play_state(False, address)
                 messagebox.showerror(self.tr("error"), str(error))
+                notify = getattr(self, "_notify_header_done", None)
+                if callable(notify):
+                    notify()
                 return
             if action in ("read", "apply"):
                 self._restore_type4_model(result[1])
@@ -186,6 +189,9 @@ class AWP1221BoardPresetMixin:
                     self.tr("board_preset_saved") if action == "save" else
                     self.tr("board_preset_read").format(slot=slot))
             messagebox.showinfo(self.tr("info"), text)
+            notify = getattr(self, "_notify_header_done", None)
+            if callable(notify):
+                notify()
 
         _run_ui_background_task(self, worker, on_done=finish,
                                 on_error=lambda error: finish(error=error))

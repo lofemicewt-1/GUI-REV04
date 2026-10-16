@@ -1804,11 +1804,46 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             messagebox.showerror(self.tr("error"), str(exc))
 
     def _header_tip(self, text: str) -> str:
-        """Top-section tooltip; Full Mode shares the layout but its actions
-        stay disabled (they operate on Button Mode / Type-4 settings)."""
-        if not text or self.mode_key == "button_mode":
-            return text
-        return f"{text}\n{self.tr('awp1221_full_mode_header_disabled_tip')}"
+        return text
+
+    # Operations that change chip registers; Full Mode re-reads the chip
+    # after them so its own controls show what is now on the chip.
+    _HEADER_CHIP_WRITES = {"apply_software_preset", "import_user_preset_script",
+                           "apply_board_preset", "read_board_preset"}
+
+    def _header_action(self, name: str, *args: Any) -> Any:
+        """Top-section buttons.  The presets, page-settings script and
+        Type-4 board slots are defined on the Button Mode configuration, so
+        Full Mode runs them on the (shared-device) Button Mode page and then
+        re-reads the chip into Full Mode once a chip-writing action finished."""
+        if self.mode_key == "button_mode" or self.host is None:
+            return getattr(self, name)(*args)
+        try:
+            target = self.host.mode_pages["button_mode"]
+        except Exception as exc:
+            messagebox.showerror(self.tr("error"), str(exc))
+            return None
+        if name in self._HEADER_CHIP_WRITES:
+            target._header_done_listener = lambda: self._resync_after_header_action()
+        else:
+            target._header_done_listener = None
+        return getattr(target, name)(*args)
+
+    def _notify_header_done(self) -> None:
+        listener = getattr(self, "_header_done_listener", None)
+        self._header_done_listener = None
+        if callable(listener):
+            try:
+                self.after_idle(listener)
+            except tk.TclError:
+                pass
+
+    def _resync_after_header_action(self) -> None:
+        if self.mode_key != "full_mode" or not self.ctx.serial.is_connected:
+            return
+        for stage_index in range(2):
+            self.read_adc_stage(stage_index)
+        self.read_adc_settings()
 
     def _build_button_preset_header(self) -> None:
         button_mode = self.mode_key == "button_mode"
@@ -1833,11 +1868,11 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         for column, key in enumerate(first_row_keys):
             if key == "button_mode_import_user_preset":
-                command: Callable[[], Any] = self.import_user_preset_script
+                command: Callable[[], Any] = lambda: self._header_action("import_user_preset_script")
             elif key == "button_mode_export_user_preset":
-                command = self.export_user_preset_script
+                command = lambda: self._header_action("export_user_preset_script")
             elif key.startswith("button_mode_preset_"):
-                command = lambda preset_index=column: self.apply_software_preset(preset_index)
+                command = lambda preset_index=column: self._header_action("apply_software_preset", preset_index)
             else:
                 command = self._show_preset_pending
             button = ttk.Button(
@@ -1856,16 +1891,14 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 tip = lambda preset_index=column: self._header_tip(self._software_preset_tooltip_text(preset_index))
             else:
                 tip = lambda tip_key=page_script_tips[key]: self._header_tip(self.tr(tip_key))
-            if not button_mode:
-                button.state(["disabled"])
-            self._tooltips.append(SimpleTooltip(button, tip, show_disabled=True))
+            self._tooltips.append(SimpleTooltip(button, tip))
 
         slot_cell = ttk.Frame(preset_frame, style="App.TFrame")
         slot_cell.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         slot_label = ttk.Label(slot_cell, style="App.TLabel")
         slot_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._register_text(slot_label, "board_slot")
-        self._tooltips.append(SimpleTooltip(slot_label, lambda: self._header_tip(self.tr("awp1221_board_slot_tip")), show_disabled=True))
+        self._tooltips.append(SimpleTooltip(slot_label, lambda: self._header_tip(self.tr("awp1221_board_slot_tip"))))
         slot_combo = ttk.Combobox(
             slot_cell,
             textvariable=self.board_slot_var,
@@ -1874,10 +1907,12 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             width=4,
         )
         slot_combo.grid(row=0, column=1, sticky="w")
-        self._tooltips.append(SimpleTooltip(slot_combo, lambda: self._header_tip(self.tr("awp1221_board_slot_tip")), show_disabled=True))
+        self._tooltips.append(SimpleTooltip(slot_combo, lambda: self._header_tip(self.tr("awp1221_board_slot_tip"))))
 
-        board_actions = (self.save_board_preset, self.set_board_preset_active,
-                         self.apply_board_preset, self.read_board_preset)
+        board_actions = tuple(
+            (lambda name=name: self._header_action(name))
+            for name in ("save_board_preset", "set_board_preset_active", "apply_board_preset", "read_board_preset")
+        )
         for column, key in enumerate(("save_to_board", "set_active", "apply_slot", "read_slot"), start=1):
             button = ttk.Button(
                 preset_frame,
@@ -1886,11 +1921,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             )
             button.grid(row=1, column=column, sticky="ew", pady=(8, 0), padx=(6, 0))
             self._buttons[key] = button
-            if not button_mode:
-                button.state(["disabled"])
             self._tooltips.append(SimpleTooltip(
                 button, lambda action=key: self._header_tip(self.tr(f"awp1221_type4_{action}_tip")),
-                show_disabled=True,
             ))
 
     def _show_preset_pending(self) -> None:
@@ -1964,8 +1996,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 self._apply_page_script_snapshot(snapshot, operations[0].device_addr)
             except Exception as exc:
                 messagebox.showerror(self.tr("error"), str(exc))
+                self._notify_header_done()
                 return
         messagebox.showinfo(self.tr("info"), self.tr("register_script_import_success"))
+        self._notify_header_done()
 
     def _set_page_script_buttons_state(self, state: str) -> None:
         for key in ("button_mode_import_user_preset", "button_mode_export_user_preset"):
@@ -2290,20 +2324,20 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 settings_config,
                 extra_writes,
             ),
-            on_done=lambda _result: self._finish_sinc_write(
+            on_done=lambda _result: (self._finish_sinc_write(
                 None,
                 plan,
                 device_addr,
                 shared_state=shared_state,
                 revision=revision,
-            ),
-            on_error=lambda error: self._finish_sinc_write(
+            ), self._notify_header_done()),
+            on_error=lambda error: (self._finish_sinc_write(
                 str(error),
                 plan,
                 device_addr,
                 shared_state=shared_state,
                 revision=revision,
-            ),
+            ), self._notify_header_done()),
         )
         return True
 
