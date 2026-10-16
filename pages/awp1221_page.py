@@ -1,12 +1,19 @@
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import math
+from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
 
-from core.awp1221_command_gate import ensure_awp1221_cmd_gate
+from core.awp1221_command_gate import AWP1221_CMD_GATE_BIT, ensure_awp1221_cmd_gate
+from core.awp1221_page_script import (
+    Awp1221PageScript,
+    Awp1221StageScript,
+    build_awp1221_page_script_operations,
+    extract_awp1221_page_script,
+)
 from core.awp1221_sinc import (
     awp1221_sinc_duration_us,
     awp1221_sinc_parse_params,
@@ -30,6 +37,9 @@ from core.base_tool import (
     GPIO_MODE_DETECT,
     GPIO_MODE_HIGH,
     GPIO_MODE_LOW,
+    execute_register_script_operations,
+    format_register_script,
+    parse_register_script,
     run_async_write,
 )
 from pages.base_page import BasePage, SimpleTooltip, lazy_mode_pages
@@ -343,6 +353,95 @@ def encode_awp1221_adc_settings_registers(
     if sleep_sensitivity:
         register_06 |= AWP1221_SLEEP_SENSITIVITY_MASK
     return register_05, register_06
+
+
+AWP1221_SETTINGS_REGISTERS = (
+    AWP1221_ADC_SETTINGS_REGISTER,
+    AWP1221_RETURN_BIT_REGISTER,
+    AWP1221_DEBOUNCE_REGISTER,
+    AWP1221_ADC_LOAD_REGISTER,
+)
+
+
+def awp1221_settings_target_words(current: dict[int, int], settings: dict[str, Any]) -> dict[int, int]:
+    """Words the ADC settings writer would store, preserving bits it does not own."""
+    register_05, register_06 = encode_awp1221_adc_settings_registers(
+        current[AWP1221_ADC_SETTINGS_REGISTER],
+        current[AWP1221_RETURN_BIT_REGISTER],
+        sample_update=settings["sample_update"],
+        zero_time=settings["zero_time"],
+        press_return_bit_time=settings["press_return_bit_time"],
+        release_return_bit_time=settings["release_return_bit_time"],
+        zps_enabled=settings["zps_enabled"],
+        zps_detect=settings["zps_detect"],
+        sleep_sensitivity=settings["sleep_sensitivity"],
+    )
+    if settings["auto_serial"]:
+        register_05 |= AWP1221_AUTO_SERIAL_MASK
+    else:
+        register_05 &= ~AWP1221_AUTO_SERIAL_MASK
+    debounce_value = (
+        int(current[AWP1221_DEBOUNCE_REGISTER]) & ~AWP1221_DEBOUNCE_MASK
+    ) | int(settings["debounce_code"])
+    load_value = awp1221_merge_adc_load(
+        current[AWP1221_ADC_LOAD_REGISTER],
+        settings.get("adc_ldo", "40 uA"),
+    )
+    return {
+        AWP1221_ADC_SETTINGS_REGISTER: register_05 & 0xFFFF,
+        AWP1221_RETURN_BIT_REGISTER: register_06 & 0xFFFF,
+        AWP1221_DEBOUNCE_REGISTER: debounce_value & 0xFFFF,
+        AWP1221_ADC_LOAD_REGISTER: load_value & 0xFFFF,
+    }
+
+
+def awp1221_full_stage_words(
+    registers: tuple[int, int, int, int, int],
+    values: tuple[int, int, int, int, int],
+    current: dict[int, int],
+    event_mode: str,
+) -> dict[int, int]:
+    """Full-mode stage words, keeping the inactive threshold precision bit."""
+    words = [int(value) & 0xFFFF for value in values]
+    if event_mode in {"press", "release"}:
+        inactive = 2 if event_mode == "press" else 1
+        register = registers[inactive]
+        words[inactive] = (
+            words[inactive] & ~AWP1221_ADC_THRESHOLD_PRECISION_MASK
+        ) | (int(current[register]) & AWP1221_ADC_THRESHOLD_PRECISION_MASK)
+    return {register: word for register, word in zip(registers, words)}
+
+
+def awp1221_stage_compare_registers(mode: str, stage_index: int) -> tuple[int, ...]:
+    registers = (
+        (0x08, 0x09, 0x0A, 0x0B, 0x0C),
+        (0x0D, 0x0E, 0x0F, 0x10, 0x11),
+    )[stage_index]
+    if mode == "button_mode":
+        return (registers[0], registers[1], registers[2], registers[4])
+    return registers
+
+
+def awp1221_mismatch_groups(
+    current: dict[int, int],
+    expected: dict[int, int],
+    groups: dict[str, tuple[int, ...]],
+) -> tuple[str, ...]:
+    found: list[str] = []
+    for name, registers in groups.items():
+        if any((int(current[register]) & 0xFFFF) != (int(expected[register]) & 0xFFFF) for register in registers):
+            found.append(name)
+    return tuple(found)
+
+
+def awp1221_verified_start_plan(mismatches: tuple[str, ...], choice: str | None) -> str:
+    if not mismatches:
+        return "command"
+    if choice == "rewrite":
+        return "rewrite-then-command"
+    if choice == "start":
+        return "command"
+    return "abort"
 
 
 def decode_awp1221_adc_settings_registers(register_05: int, register_06: int) -> dict[str, Any]:
@@ -846,7 +945,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         "zps_detect": True,
         "sleep_sensitivity": False,
     }
-    _BUTTON_SOFTWARE_PRESET_EXTRA_WRITES = ((0x1F, 0x070C),)
+    _BUTTON_SOFTWARE_PRESET_EXTRA_WRITES = ((0x1F, 0x0808),)
     BUTTON_SOFTWARE_PRESETS: tuple[dict[str, Any], ...] = (
         {
             "stages": (
@@ -854,7 +953,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                     "ovv_time": "500 us",
                     "jump_target": "Stage1",
                     "event_mode": "press",
-                    "threshold": "400",
+                    "threshold": "300",
                     "debounce": False,
                     "use_high_12_bits": True,
                     "wave": "slice18",
@@ -864,7 +963,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                     "ovv_time": "500 us",
                     "jump_target": "Stage0",
                     "event_mode": "release",
-                    "threshold": "350",
+                    "threshold": "200",
                     "debounce": False,
                     "use_high_12_bits": True,
                     "wave": "slice18",
@@ -875,8 +974,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 "debounce_time": "100",
                 "sample_update": "4 us",
                 "zero_time": "32 ms",
-                "press_return_bit_time": "1600 us",
-                "release_return_bit_time": "1600 us",
+                "press_return_bit_time": "800 us",
+                "release_return_bit_time": "800 us",
                 "zps_enabled": True,
                 "zps_detect": True,
                 "sleep_sensitivity": False,
@@ -886,9 +985,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 "serial": AWP1221_SINC_SERIAL_OPTIONS[0],
                 "waveform": "SINC",
                 "depth": "512",
-                "max_voltage": "100",
+                "max_voltage": "85",
                 "min_voltage": "12",
-                "times_us": ("8", "10", "50"),
+                "times_us": ("7", "7", "40"),
                 "sin_repeat": 1,
             },
             "extra_register_writes": _BUTTON_SOFTWARE_PRESET_EXTRA_WRITES,
@@ -1004,6 +1103,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._waveform_play_active = False
         self._adc_read_in_flight = False
         self._adc_lifecycle_generation = 0
+        self._adc_live_write_depth = 0
+        self._verified_start_busy = False
         self.rom_slice_var = tk.StringVar(value="slice0")
         self.rom_source_var = tk.StringVar(value=self.WAVEFORM_SOURCES[0])
         self.rom_micro_bias_var = tk.StringVar(value=self.MICRO_BIAS_OPTIONS[0])
@@ -1446,24 +1547,32 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._button_stage_vars.append(variables)
         variables["use_high_12_bits"].trace_add("write", lambda *_: self._refresh_adc_bits())
 
+        commit_stage = lambda index=stage_index: self._commit_live_stage(index)
         self._form_label(parent, "awp1221_ovv_time", row=0, column=0)
-        ttk.Combobox(
+        ovv_combo = ttk.Combobox(
             parent,
             textvariable=variables["ovv_time"],
             values=AWP1221_ADC_TIME_LABELS,
             state="readonly",
-        ).grid(row=0, column=1, sticky="ew", pady=5)
+        )
+        ovv_combo.grid(row=0, column=1, sticky="ew", pady=5)
+        self._bind_live_choice(ovv_combo, commit_stage)
 
         self._form_label(parent, "awp1221_jump_target", row=0, column=2)
-        ttk.Combobox(
+        jump_combo = ttk.Combobox(
             parent,
             textvariable=variables["jump_target"],
             values=("Stage0", "Stage1"),
             state="readonly",
-        ).grid(row=0, column=3, sticky="ew", pady=5)
+        )
+        jump_combo.grid(row=0, column=3, sticky="ew", pady=5)
+        self._bind_live_choice(jump_combo, commit_stage)
 
         self._form_label(parent, "awp1221_detection_threshold", row=1, column=0)
-        self._threshold_entry_with_hint(parent, variables["threshold"], row=1, column=1)
+        self._bind_live_text(
+            self._threshold_entry_with_hint(parent, variables["threshold"], row=1, column=1),
+            commit_stage,
+        )
 
         self._form_label(parent, "awp1221_adc_event_mode", row=1, column=2)
         # Same layout/style as the AWP1018 Diff Mode jump condition
@@ -1477,6 +1586,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             variable=variables["event_mode"],
             value="press",
             style="Check.TRadiobutton",
+            command=commit_stage,
         )
         press_radio.grid(row=0, column=0, sticky="w")
         self._register_text(press_radio, "awp1221_press_mode")
@@ -1485,6 +1595,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             variable=variables["event_mode"],
             value="release",
             style="Check.TRadiobutton",
+            command=commit_stage,
         )
         release_radio.grid(row=0, column=1, sticky="w", padx=(14, 0))
         self._register_text(release_radio, "awp1221_release_mode")
@@ -1497,16 +1608,27 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             state="readonly",
         )
         wave_combo.grid(row=3, column=1, sticky="ew", pady=5)
+        self._bind_live_choice(wave_combo, commit_stage)
         self._button_wave_combos.append(wave_combo)
         self._form_label(parent, "awp1221_event_repeat", row=3, column=2)
-        ttk.Combobox(
+        repeat_combo = ttk.Combobox(
             parent,
             textvariable=variables["repeat"],
             values=tuple(str(value) for value in range(8)),
             state="readonly",
-        ).grid(row=3, column=3, sticky="ew", pady=5)
+        )
+        repeat_combo.grid(row=3, column=3, sticky="ew", pady=5)
+        self._bind_live_choice(repeat_combo, commit_stage)
 
-        self._form_check(parent, "awp1221_debounce_enable", variables["debounce"], row=4, column=0, columnspan=2)
+        self._form_check(
+            parent,
+            "awp1221_debounce_enable",
+            variables["debounce"],
+            row=4,
+            column=0,
+            columnspan=2,
+            command=commit_stage,
+        )
         self._form_check_with_help(
             parent,
             "awp1221_adc_precision",
@@ -1515,6 +1637,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             row=4,
             column=2,
             columnspan=2,
+            command=commit_stage,
         )
 
     def _show_button_stage(self, stage_index: int) -> None:
@@ -1660,22 +1783,23 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             release_selected = control["flags"]["t_r"] and control["flags"]["trigger_r"]
             mode = "release" if release_selected and not press_selected else "press"
             variables = self._button_stage_vars[stage_index]
-            variables["event_mode"].set(mode)
-            variables["ovv_time"].set(awp1221_adc_time_label(control["press_time"]))
-            active_threshold = values[press_reg] if mode == "press" else values[release_reg]
-            variables["threshold"].set(awp1221_format_threshold_signed(active_threshold))
-            variables["jump_target"].set(f"Stage{(active_threshold >> 13) & 0x1}")
-            variables["debounce"].set(bool(values[press_reg] & 0x8000) and bool(values[release_reg] & 0x8000))
-            variables["use_high_12_bits"].set(
-                bool(
-                    (values[press_reg] if mode == "press" else values[release_reg])
-                    & AWP1221_ADC_THRESHOLD_PRECISION_MASK
-                )
-            )
             wave = decode_awp1221_adc_wave(values[wave_reg])
             slice_index = wave["press_wave" if mode == "press" else "release_wave"]
-            variables["wave"].set(self._format_trigger_waveform(slice_index))
-            variables["repeat"].set(str(wave["press_repeat" if mode == "press" else "release_repeat"]))
+            with self._suspend_adc_live_writes():
+                variables["event_mode"].set(mode)
+                variables["ovv_time"].set(awp1221_adc_time_label(control["press_time"]))
+                active_threshold = values[press_reg] if mode == "press" else values[release_reg]
+                variables["threshold"].set(awp1221_format_threshold_signed(active_threshold))
+                variables["jump_target"].set(f"Stage{(active_threshold >> 13) & 0x1}")
+                variables["debounce"].set(bool(values[press_reg] & 0x8000) and bool(values[release_reg] & 0x8000))
+                variables["use_high_12_bits"].set(
+                    bool(
+                        (values[press_reg] if mode == "press" else values[release_reg])
+                        & AWP1221_ADC_THRESHOLD_PRECISION_MASK
+                    )
+                )
+                variables["wave"].set(self._format_trigger_waveform(slice_index))
+                variables["repeat"].set(str(wave["press_repeat" if mode == "press" else "release_repeat"]))
         except Exception as exc:
             messagebox.showerror(self.tr("error"), str(exc))
 
@@ -1708,10 +1832,12 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             "button_mode_export_user_preset",
         )
         for column, key in enumerate(first_row_keys):
-            if key.startswith("button_mode_preset_"):
-                command: Callable[[], Any] = (
-                    lambda preset_index=column: self.apply_software_preset(preset_index)
-                )
+            if key == "button_mode_import_user_preset":
+                command: Callable[[], Any] = self.import_user_preset_script
+            elif key == "button_mode_export_user_preset":
+                command = self.export_user_preset_script
+            elif key.startswith("button_mode_preset_"):
+                command = lambda preset_index=column: self.apply_software_preset(preset_index)
             else:
                 command = self._show_preset_pending
             button = ttk.Button(
@@ -1721,10 +1847,15 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             )
             button.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 6, 0))
             self._buttons[key] = button
+            # master's page-settings import/export texts (same keys as AWP192x)
+            page_script_tips = {
+                "button_mode_import_user_preset": "button_mode_import_page_settings_tooltip",
+                "button_mode_export_user_preset": "button_mode_export_page_settings_tooltip",
+            }
             if key.startswith("button_mode_preset_"):
                 tip = lambda preset_index=column: self._header_tip(self._software_preset_tooltip_text(preset_index))
             else:
-                tip = lambda action=key: self._header_tip(self.tr(f"awp1221_{action}_tip"))
+                tip = lambda tip_key=page_script_tips[key]: self._header_tip(self.tr(tip_key))
             if not button_mode:
                 button.state(["disabled"])
             self._tooltips.append(SimpleTooltip(button, tip, show_disabled=True))
@@ -1767,6 +1898,337 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self.tr("error"),
             "This operation is not implemented yet.",
         )
+
+    def export_user_preset_script(self) -> None:
+        try:
+            content = format_register_script(self._build_current_register_script_operations())
+        except Exception as exc:
+            messagebox.showerror(self.tr("error"), f"{self.tr('invalid_input')}\n{exc}")
+            return
+        path = filedialog.asksaveasfilename(
+            title=self.tr("button_mode_export_user_preset"),
+            defaultextension=".txt",
+            initialfile="awp1221_page_settings.txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text(content, encoding="utf-8")
+        except Exception as exc:
+            messagebox.showerror(self.tr("error"), str(exc))
+            return
+        messagebox.showinfo(self.tr("info"), self.tr("register_script_export_success"))
+
+    def import_user_preset_script(self) -> None:
+        path = filedialog.askopenfilename(
+            title=self.tr("button_mode_import_user_preset"),
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            operations = parse_register_script(Path(path).read_text(encoding="utf-8-sig"))
+        except Exception as exc:
+            messagebox.showerror(self.tr("error"), f"{self.tr('invalid_input')}\n{exc}")
+            return
+        if not operations:
+            messagebox.showerror(self.tr("error"), self.tr("register_script_empty"))
+            return
+        if not self.ctx.serial.is_connected:
+            messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
+            return
+        self._set_page_script_buttons_state("disabled")
+
+        def worker() -> None:
+            with _serial_batch(self.ctx.serial):
+                error = self._execute_page_script_operations(operations)
+            if error:
+                raise RuntimeError(error)
+
+        _run_ui_background_task(
+            self,
+            worker,
+            on_done=lambda _result: self._finish_page_script_import(None, operations),
+            on_error=lambda error: self._finish_page_script_import(str(error), operations),
+        )
+
+    def _finish_page_script_import(self, error: str | None, operations: list[Any]) -> None:
+        self._set_page_script_buttons_state("normal")
+        if error:
+            messagebox.showerror(self.tr("error"), error)
+            return
+        snapshot = extract_awp1221_page_script(operations)
+        if snapshot is not None:
+            try:
+                self._apply_page_script_snapshot(snapshot, operations[0].device_addr)
+            except Exception as exc:
+                messagebox.showerror(self.tr("error"), str(exc))
+                return
+        messagebox.showinfo(self.tr("info"), self.tr("register_script_import_success"))
+
+    def _set_page_script_buttons_state(self, state: str) -> None:
+        for key in ("button_mode_import_user_preset", "button_mode_export_user_preset"):
+            button = self._buttons.get(key)
+            if button is not None:
+                button.configure(state=state)
+
+    def _execute_page_script_operations(self, operations: list[Any]) -> str | None:
+        addresses = {
+            int(operation.device_addr)
+            for operation in operations
+            if operation.action == "WRITE"
+        }
+        try:
+            for address in addresses:
+                self._prepare_device_for_sram_write(address)
+                self._ensure_reg_1f_bit3(address)
+        except Exception as exc:
+            return str(exc)
+
+        def transport(operation: Any):
+            if operation.action == "READ":
+                return self.ctx.serial.read_register_value(
+                    operation.device_addr,
+                    operation.reg_addr,
+                    bits=16,
+                )
+            if operation.action == "WRITE":
+                return self.ctx.serial.write_register_value(
+                    operation.device_addr,
+                    operation.reg_addr,
+                    operation.value or 0,
+                    bits=16,
+                )
+            raise ValueError(f"unsupported operation {operation.action}")
+
+        return execute_register_script_operations(operations, transport)
+
+    def _build_current_register_script_operations(self) -> list[Any]:
+        snapshot, sram_slices, play_slice = self._capture_page_script_waveform()
+        stage_words = tuple(
+            self._button_stage_values_from_config(
+                stage_index,
+                {register: 0 for register in self.STAGE_REGISTER_RANGES[stage_index]},
+                self._button_stage_config(stage_index),
+            )
+            for stage_index in range(2)
+        )
+        settings_words = awp1221_settings_target_words(
+            {
+                AWP1221_ADC_SETTINGS_REGISTER: AWP1221_INTERFACE_CONFIG_0_DEFAULT,
+                AWP1221_RETURN_BIT_REGISTER: 0,
+                AWP1221_DEBOUNCE_REGISTER: 0,
+                AWP1221_ADC_LOAD_REGISTER: AWP1221_CMD_GATE_BIT,
+            },
+            self._adc_settings_config(),
+        )
+        return build_awp1221_page_script_operations(
+            self.device_addr(),
+            snapshot,
+            sram_slices=sram_slices,
+            stage_words=stage_words,
+            settings_words=settings_words,
+            play_slice=play_slice,
+        )
+
+    def _capture_page_script_waveform(
+        self,
+    ) -> tuple[Awp1221PageScript, tuple[tuple[int, tuple[int, ...]], ...], int]:
+        if self._sinc_selected():
+            plan = self._build_current_sinc_plan()
+            if not plan.writable:
+                raise ValueError(self._sinc_reason_message(plan.reason))
+            grouped: dict[int, list[int]] = {}
+            order: list[int] = []
+            for address, value in awp1221_sinc_write_words(plan, {}):
+                slice_index = int(address) // AWP1221_WAVEFORM_WORDS_PER_SLICE
+                if slice_index not in grouped:
+                    order.append(slice_index)
+                    grouped[slice_index] = []
+                grouped[slice_index].append(int(value) & 0xFFFF)
+            sram_slices = tuple((index, tuple(grouped[index])) for index in order)
+            play_slice = int(plan.slices[0])
+            kind = "sinc"
+            waveform = self.SINC_WAVEFORM
+        else:
+            if str(self.rom_source_var.get()) == "RAM":
+                raise ValueError(self.tr("awp1221_page_settings_ram_unsupported"))
+            play_slice = self._parse_waveform_slice(self.rom_slice_var.get())
+            descriptor = encode_awp1221_waveform_descriptor(
+                source_code=self.WAVEFORM_SOURCE_CODES[self.rom_source_var.get()],
+                micro_bias_code=self._parse_binary_option(self.rom_micro_bias_var.get()),
+                waveform_code=self.ROM_WAVEFORM_CODES[self.rom_waveform_var.get()],
+                depth_code=awp1221_waveform_depth_code(self.rom_depth_var.get()),
+                half_cycle_code=self._parse_binary_option(self.rom_half_cycle_var.get()),
+                phase_code=self._parse_binary_option(self.rom_phase_var.get()),
+                point_time=int(self.rom_point_time_var.get().strip(), 0),
+                repeat_count=int(self.rom_repeat_var.get().strip(), 0),
+                infinite_loop=bool(self.rom_infinite_loop_var.get()),
+            )
+            word3 = merge_awp1221_waveform_word3(
+                0,
+                self._parse_binary_option(self.rom_offset_var.get()),
+                self._parse_binary_option(self.rom_vpk_var.get()),
+            )
+            sram_slices = ((play_slice, (*descriptor, word3)),)
+            kind = "rom"
+            waveform = str(self.rom_waveform_var.get())
+        serial, _start, _end = awp1221_sinc_serial_group(self.sinc_serial_var.get())
+        times = tuple(str(variable.get()).strip() for variable in self._sinc_time_variables())
+        if len(times) < 4:
+            times = (*times, *("1",) * (4 - len(times)))
+        stages = tuple(self._page_script_stage(index) for index in range(2))
+        settings = self._adc_settings_config()
+        snapshot = Awp1221PageScript(
+            kind=kind,
+            auto_serial=self._auto_serial_enabled(),
+            serial=serial,
+            depth=self._sinc_depth_value() if kind == "sinc" else str(self.rom_depth_var.get()).strip(),
+            window_index=self._sinc_window_index(serial),
+            max_voltage=str(self.sinc_max_voltage_var.get()).strip(),
+            min_voltage=str(self.sinc_min_voltage_var.get()).strip(),
+            times_us=(times[0], times[1], times[2], times[3]),
+            sin_repeat=str(self.sinc_sin_repeat_var.get()).strip() or "1",
+            slice_index=self._parse_waveform_slice(self.rom_slice_var.get()),
+            source=str(self.rom_source_var.get()),
+            waveform=waveform,
+            fine=self._parse_binary_option(self.rom_micro_bias_var.get()),
+            coarse=self._parse_binary_option(self.rom_vpk_var.get()),
+            offset=self._parse_binary_option(self.rom_offset_var.get()),
+            half=self._parse_binary_option(self.rom_half_cycle_var.get()),
+            phase=self._parse_binary_option(self.rom_phase_var.get()),
+            point_time=str(self.rom_point_time_var.get()).strip(),
+            rom_repeat=str(self.rom_repeat_var.get()).strip(),
+            infinite=bool(self.rom_infinite_loop_var.get()),
+            stages=stages,
+            debounce_ms=str(self.debounce_time_var.get()).strip(),
+            sample_index=AWP1221_ADC_SAMPLE_UPDATE_OPTIONS.index(settings["sample_update"]),
+            zero_index=AWP1221_ZERO_TIME_OPTIONS.index(settings["zero_time"]),
+            press_return_index=AWP1221_RETURN_BIT_TIME_OPTIONS.index(settings["press_return_bit_time"]),
+            release_return_index=AWP1221_RETURN_BIT_TIME_OPTIONS.index(settings["release_return_bit_time"]),
+            zps_enabled=bool(settings["zps_enabled"]),
+            zps_detect=bool(settings["zps_detect"]),
+            sleep_sensitivity=bool(settings["sleep_sensitivity"]),
+            ldo_index=AWP1221_ADC_LDO_OPTIONS.index(settings["adc_ldo"]),
+        )
+        return snapshot, sram_slices, play_slice
+
+    def _page_script_stage(self, stage_index: int) -> Awp1221StageScript:
+        variables = self._button_stage_vars[stage_index]
+        config = self._button_stage_config(stage_index)
+        threshold = str(variables["threshold"].get()).strip()
+        awp1221_parse_threshold_text(threshold)
+        return Awp1221StageScript(
+            mode=config["mode"],
+            ovv_code=config["time_code"],
+            jump=config["target"],
+            threshold=threshold,
+            debounce=bool(config["debounce"]),
+            use_high_12_bits=bool(config["use_high_12_bits"]),
+            wave=config["wave"],
+            repeat=config["repeat"],
+        )
+
+    def _apply_page_script_snapshot(self, snapshot: Awp1221PageScript, device_addr: int) -> None:
+        serial_label = next(
+            awp1221_sinc_serial_group_label(serial, start, end)
+            for serial, start, end in AWP1221_SINC_SERIAL_GROUPS
+            if serial == snapshot.serial
+        )
+        window_options = self._sinc_window_options(snapshot.serial)
+        window_label = window_options[min(snapshot.window_index, len(window_options) - 1)]
+        group = (
+            snapshot.max_voltage,
+            snapshot.min_voltage,
+            *snapshot.times_us,
+            snapshot.sin_repeat,
+            snapshot.depth,
+            window_label,
+        )
+        suspend = getattr(self, "_suspend_adc_live_writes", None)
+        with suspend() if suspend is not None else nullcontext():
+            self._board_rom_loading = True
+            self._sinc_loading_group = True
+            try:
+                self.auto_serial_var.set(snapshot.auto_serial)
+                self._sinc_group_values[snapshot.serial] = group
+                self._sinc_active_group = snapshot.serial
+                if self.sinc_serial_var.get() != serial_label:
+                    self.sinc_serial_var.set(serial_label)
+                else:
+                    for variable, value in zip(
+                        (
+                            self.sinc_max_voltage_var,
+                            self.sinc_min_voltage_var,
+                            *self._sinc_time_variables(),
+                            self.sinc_sin_repeat_var,
+                            self.sinc_depth_var,
+                            self.sinc_window_var,
+                        ),
+                        group,
+                    ):
+                        variable.set(value)
+                self.rom_waveform_var.set(snapshot.waveform)
+                self.rom_source_var.set(snapshot.source)
+                self.rom_slice_var.set(f"slice{snapshot.slice_index}")
+                self.rom_depth_var.set(snapshot.depth)
+                self.sinc_depth_var.set(snapshot.depth)
+                self.rom_micro_bias_var.set(self.MICRO_BIAS_OPTIONS[snapshot.fine])
+                self.rom_vpk_var.set(self.VPK_OPTIONS[snapshot.coarse])
+                self.rom_offset_var.set(self.OFFSET_OPTIONS[snapshot.offset])
+                half_options = self._half_cycle_options_for_waveform()
+                self.rom_half_cycle_var.set(half_options[min(snapshot.half, len(half_options) - 1)])
+                phase_options = awp1221_phase_options(snapshot.waveform, snapshot.half)
+                self.rom_phase_var.set(phase_options[min(snapshot.phase, len(phase_options) - 1)])
+                self.rom_point_time_var.set(snapshot.point_time)
+                self.rom_repeat_var.set(snapshot.rom_repeat)
+                self.rom_infinite_loop_var.set(snapshot.infinite)
+                for stage_index, stage in enumerate(snapshot.stages):
+                    variables = self._button_stage_vars[stage_index]
+                    variables["event_mode"].set(stage.mode)
+                    variables["ovv_time"].set(awp1221_adc_time_label(stage.ovv_code))
+                    variables["jump_target"].set(f"Stage{stage.jump}")
+                    variables["threshold"].set(stage.threshold)
+                    variables["debounce"].set(stage.debounce)
+                    variables["use_high_12_bits"].set(stage.use_high_12_bits)
+                    variables["wave"].set(self._format_trigger_waveform(stage.wave))
+                    variables["repeat"].set(str(stage.repeat))
+                self.debounce_time_var.set(snapshot.debounce_ms)
+                self.adc_sample_update_var.set(AWP1221_ADC_SAMPLE_UPDATE_OPTIONS[snapshot.sample_index])
+                self.zero_time_var.set(AWP1221_ZERO_TIME_OPTIONS[snapshot.zero_index])
+                self.press_return_bit_time_var.set(
+                    AWP1221_RETURN_BIT_TIME_OPTIONS[snapshot.press_return_index]
+                )
+                self.release_return_bit_time_var.set(
+                    AWP1221_RETURN_BIT_TIME_OPTIONS[snapshot.release_return_index]
+                )
+                self.zps_enabled_var.set(snapshot.zps_enabled)
+                self.zps_detect_var.set(snapshot.zps_detect)
+                self.sleep_sensitivity_var.set(snapshot.sleep_sensitivity)
+                self.adc_ldo_var.set(AWP1221_ADC_LDO_OPTIONS[snapshot.ldo_index])
+            finally:
+                self._board_rom_loading = False
+                self._sinc_loading_group = False
+        if snapshot.kind != "sinc":
+            self._board_rom_slice = snapshot.slice_index
+            self._remember_board_rom()
+        self._sync_auto_serial_page_state()
+        self._refresh_waveform_controls()
+        self._draw_button_rom_preview()
+        if snapshot.kind != "sinc" or int(device_addr) != self.device_addr():
+            return
+        try:
+            plan = self._build_current_sinc_plan()
+        except (TypeError, ValueError, AttributeError):
+            return
+        if not plan.writable:
+            return
+        key = awp1221_sinc_plan_key(plan, int(device_addr))
+        self._sinc_verified_key = key
+        shared = self._shared_state_for(int(device_addr))
+        if shared is not None:
+            shared.sinc_key = key
 
     def _software_preset_tooltip_text(self, preset_index: int) -> str:
         if not 0 <= preset_index < len(self.BUTTON_SOFTWARE_PRESETS):
@@ -1846,6 +2308,15 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         return True
 
     def _load_button_software_preset(self, preset: dict[str, Any]) -> None:
+        suspend = getattr(self, "_suspend_adc_live_writes", None)
+        load = AWP1221ModePage._load_button_software_preset_vars
+        if suspend is None:
+            load(self, preset)
+            return
+        with suspend():
+            load(self, preset)
+
+    def _load_button_software_preset_vars(self, preset: dict[str, Any]) -> None:
         waveform = preset["waveform"]
         serial, _start_slice, _end_slice = awp1221_sinc_serial_group(waveform["serial"])
         times = tuple(waveform["times_us"])
@@ -2617,18 +3088,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
     def _on_auto_serial_changed(self) -> None:
         self._sync_auto_serial_page_state()
-        if self._sinc_selected():
-            return
-        if not self.ctx.serial.is_connected:
-            return
-        try:
-            current = self._read_register_value(AWP1221_ADC_SETTINGS_REGISTER)
-            self._write_register_value(
-                AWP1221_ADC_SETTINGS_REGISTER,
-                self._apply_auto_serial_bit(current),
-            )
-        except Exception as exc:
-            messagebox.showerror(self.tr("error"), str(exc))
+        self._commit_live_settings()
 
     @staticmethod
     def _parse_waveform_slice(value: str) -> int:
@@ -3263,8 +3723,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         row: int,
         column: int,
         columnspan: int = 1,
+        command: Callable[[], None] | None = None,
     ) -> ttk.Checkbutton:
-        check = ttk.Checkbutton(parent, variable=variable)
+        check = ttk.Checkbutton(parent, variable=variable, command=command)
         check.grid(
             row=row,
             column=column,
@@ -3286,10 +3747,11 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         row: int,
         column: int,
         columnspan: int = 1,
+        command: Callable[[], None] | None = None,
     ) -> ttk.Frame:
         holder = ttk.Frame(parent, style="Panel.TFrame")
         holder.grid(row=row, column=column, columnspan=columnspan, sticky="w", pady=5)
-        self._form_check(holder, key, variable, row=0, column=0)
+        self._form_check(holder, key, variable, row=0, column=0, command=command)
         self._add_help_button(holder, 0, 1, help_key)
         return holder
 
@@ -3341,48 +3803,59 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             }
         )
 
+        commit_stage = lambda index=stage_index: self._commit_live_stage(index)
         self._form_label(parent, "awp1221_press_ovv_time", row=0, column=0)
-        ttk.Combobox(
+        press_time_combo = ttk.Combobox(
             parent,
             textvariable=press_var,
             values=AWP1221_ADC_TIME_LABELS,
             state="readonly",
             width=16,
-        ).grid(row=0, column=1, sticky="ew", pady=5)
+        )
+        press_time_combo.grid(row=0, column=1, sticky="ew", pady=5)
+        self._bind_live_choice(press_time_combo, commit_stage)
         self._form_label(parent, "awp1221_release_ovv_time", row=0, column=2)
-        ttk.Combobox(
+        release_time_combo = ttk.Combobox(
             parent,
             textvariable=release_var,
             values=AWP1221_ADC_TIME_LABELS,
             state="readonly",
             width=16,
-        ).grid(row=0, column=3, sticky="ew", pady=5)
+        )
+        release_time_combo.grid(row=0, column=3, sticky="ew", pady=5)
+        self._bind_live_choice(release_time_combo, commit_stage)
 
         self._form_label(parent, "awp1221_press_jump_target", row=1, column=0)
-        ttk.Combobox(
+        press_jump_combo = ttk.Combobox(
             parent,
             textvariable=press_threshold["next_config"],
             values=("Stage0", "Stage1"),
             state="readonly",
             width=12,
-        ).grid(row=1, column=1, sticky="ew", pady=5)
+        )
+        press_jump_combo.grid(row=1, column=1, sticky="ew", pady=5)
+        self._bind_live_choice(press_jump_combo, commit_stage)
         self._form_label(parent, "awp1221_release_jump_target", row=1, column=2)
-        ttk.Combobox(
+        release_jump_combo = ttk.Combobox(
             parent,
             textvariable=release_threshold["next_config"],
             values=("Stage0", "Stage1"),
             state="readonly",
             width=12,
-        ).grid(row=1, column=3, sticky="ew", pady=5)
+        )
+        release_jump_combo.grid(row=1, column=3, sticky="ew", pady=5)
+        self._bind_live_choice(release_jump_combo, commit_stage)
 
         self._form_label(parent, "awp1221_press_threshold", row=2, column=0)
         threshold_entries["press"] = self._threshold_entry_with_hint(
             parent, press_threshold["threshold"], row=2, column=1
         )
+        self._bind_live_text(threshold_entries["press"], commit_stage)
         self._form_label(parent, "awp1221_release_threshold", row=2, column=2)
         threshold_entries["release"] = self._threshold_entry_with_hint(
             parent, release_threshold["threshold"], row=2, column=3
         )
+        self._bind_live_text(threshold_entries["release"], commit_stage)
 
         self._form_label(parent, "awp1221_press_waveform", row=3, column=0)
         press_wave_combo = ttk.Combobox(
@@ -3393,6 +3866,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             width=12,
         )
         press_wave_combo.grid(row=3, column=1, sticky="ew", pady=5)
+        self._bind_live_choice(press_wave_combo, commit_stage)
         self._full_wave_combos.append(press_wave_combo)
         self._form_label(parent, "awp1221_release_waveform", row=3, column=2)
         release_wave_combo = ttk.Combobox(
@@ -3403,25 +3877,30 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             width=12,
         )
         release_wave_combo.grid(row=3, column=3, sticky="ew", pady=5)
+        self._bind_live_choice(release_wave_combo, commit_stage)
         self._full_wave_combos.append(release_wave_combo)
 
         repeat_values = tuple(str(value) for value in range(8))
         self._form_label(parent, "awp1221_press_repeat", row=4, column=0)
-        ttk.Combobox(
+        press_repeat_combo = ttk.Combobox(
             parent,
             textvariable=wave_vars["press_repeat"],
             values=repeat_values,
             state="readonly",
             width=12,
-        ).grid(row=4, column=1, sticky="ew", pady=5)
+        )
+        press_repeat_combo.grid(row=4, column=1, sticky="ew", pady=5)
+        self._bind_live_choice(press_repeat_combo, commit_stage)
         self._form_label(parent, "awp1221_release_repeat", row=4, column=2)
-        ttk.Combobox(
+        release_repeat_combo = ttk.Combobox(
             parent,
             textvariable=wave_vars["release_repeat"],
             values=repeat_values,
             state="readonly",
             width=12,
-        ).grid(row=4, column=3, sticky="ew", pady=5)
+        )
+        release_repeat_combo.grid(row=4, column=3, sticky="ew", pady=5)
+        self._bind_live_choice(release_repeat_combo, commit_stage)
 
         debounce_row = ttk.Frame(parent, style="Panel.TFrame")
         debounce_row.grid(row=5, column=0, columnspan=4, sticky="ew", pady=5)
@@ -3433,6 +3912,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             press_threshold["debounce_enabled"],
             row=0,
             column=0,
+            command=commit_stage,
         )
         self._form_check(
             debounce_row,
@@ -3440,6 +3920,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             release_threshold["debounce_enabled"],
             row=0,
             column=1,
+            command=commit_stage,
         )
         self._form_check_with_help(
             debounce_row,
@@ -3448,9 +3929,26 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             "awp1221_adc_precision_tip",
             row=0,
             column=2,
+            command=commit_stage,
         )
-        self._form_check(parent, "awp1221_press_below_threshold", press_threshold["below_threshold"], row=6, column=0, columnspan=2)
-        self._form_check(parent, "awp1221_release_below_threshold", release_threshold["below_threshold"], row=6, column=2, columnspan=2)
+        self._form_check(
+            parent,
+            "awp1221_press_below_threshold",
+            press_threshold["below_threshold"],
+            row=6,
+            column=0,
+            columnspan=2,
+            command=commit_stage,
+        )
+        self._form_check(
+            parent,
+            "awp1221_release_below_threshold",
+            release_threshold["below_threshold"],
+            row=6,
+            column=2,
+            columnspan=2,
+            command=commit_stage,
+        )
         # Same layout/style as the AWP1018 Diff Mode jump condition.
         self._form_label(parent, "awp1221_adc_event_mode", row=7, column=0)
         event_mode_frame = ttk.Frame(parent, style="Panel.TFrame")
@@ -3462,7 +3960,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             variable=event_mode_var,
             value="press",
             style="Check.TRadiobutton",
-            command=lambda index=stage_index: self._sync_full_event_mode(index),
+            command=lambda index=stage_index: self._on_full_event_mode(index),
         )
         press_mode_radio.grid(row=0, column=0, sticky="w")
         self._register_text(press_mode_radio, "awp1221_press_mode")
@@ -3471,7 +3969,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             variable=event_mode_var,
             value="release",
             style="Check.TRadiobutton",
-            command=lambda index=stage_index: self._sync_full_event_mode(index),
+            command=lambda index=stage_index: self._on_full_event_mode(index),
         )
         release_mode_radio.grid(row=0, column=1, sticky="w", padx=(14, 0))
         self._register_text(release_mode_radio, "awp1221_release_mode")
@@ -3481,15 +3979,49 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         press_actions.grid(row=11, column=0, columnspan=2, sticky="ew")
         release_actions = ttk.Frame(parent, style="Panel.TFrame")
         release_actions.grid(row=11, column=2, columnspan=2, sticky="ew", padx=(12, 0))
-        self._form_check(press_actions, "awp1221_press_stop_adc", flag_vars["stop_p"], row=0, column=0)
-        self._form_check(release_actions, "awp1221_release_stop_adc", flag_vars["stop_r"], row=0, column=0)
+        self._form_check(
+            press_actions,
+            "awp1221_press_stop_adc",
+            flag_vars["stop_p"],
+            row=0,
+            column=0,
+            command=commit_stage,
+        )
+        self._form_check(
+            release_actions,
+            "awp1221_release_stop_adc",
+            flag_vars["stop_r"],
+            row=0,
+            column=0,
+            command=commit_stage,
+        )
 
         self._form_label(parent, "awp1221_press_slope_threshold", row=12, column=0)
-        ttk.Entry(parent, textvariable=slope_vars["press_slope"], width=12).grid(row=12, column=1, sticky="ew", pady=5)
+        press_slope_entry = ttk.Entry(parent, textvariable=slope_vars["press_slope"], width=12)
+        press_slope_entry.grid(row=12, column=1, sticky="ew", pady=5)
+        self._bind_live_text(press_slope_entry, commit_stage)
         self._form_label(parent, "awp1221_release_slope_threshold", row=12, column=2)
-        ttk.Entry(parent, textvariable=slope_vars["release_slope"], width=12).grid(row=12, column=3, sticky="ew", pady=5)
-        self._form_check(parent, "awp1221_press_slope_below", slope_vars["press_below"], row=13, column=0, columnspan=2)
-        self._form_check(parent, "awp1221_release_slope_below", slope_vars["release_below"], row=13, column=2, columnspan=2)
+        release_slope_entry = ttk.Entry(parent, textvariable=slope_vars["release_slope"], width=12)
+        release_slope_entry.grid(row=12, column=3, sticky="ew", pady=5)
+        self._bind_live_text(release_slope_entry, commit_stage)
+        self._form_check(
+            parent,
+            "awp1221_press_slope_below",
+            slope_vars["press_below"],
+            row=13,
+            column=0,
+            columnspan=2,
+            command=commit_stage,
+        )
+        self._form_check(
+            parent,
+            "awp1221_release_slope_below",
+            slope_vars["release_below"],
+            row=13,
+            column=2,
+            columnspan=2,
+            command=commit_stage,
+        )
 
         self._sync_full_event_mode(stage_index)
 
@@ -3521,6 +4053,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         variable.trace_add("write", lambda *_: hint_var.set(awp1221_threshold_hex_hint(variable.get())))
         return entry
+
+    def _on_full_event_mode(self, stage_index: int) -> None:
+        self._sync_full_event_mode(stage_index)
+        self._commit_live_stage(stage_index)
 
     def _sync_full_event_mode(self, stage_index: int) -> None:
         variables = self._stage_vars[stage_index]
@@ -3668,66 +4204,88 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         debounce_text.grid(row=0, column=0, sticky="w")
         self._register_text(debounce_text, "awp1221_debounce_time")
         self._add_help_button(debounce_label, 0, 1, "awp1221_debounce_time_help")
-        ttk.Entry(section, textvariable=self.debounce_time_var, width=16).grid(
-            row=1, column=1, sticky="ew", pady=5
-        )
+        debounce_entry = ttk.Entry(section, textvariable=self.debounce_time_var, width=16)
+        debounce_entry.grid(row=1, column=1, sticky="ew", pady=5)
+        self._bind_live_text(debounce_entry, self._commit_live_settings)
 
         self._form_label(section, "awp1221_adc_sample_update", row=1, column=2)
-        ttk.Combobox(
+        sample_combo = ttk.Combobox(
             section,
             textvariable=self.adc_sample_update_var,
             values=AWP1221_ADC_SAMPLE_UPDATE_OPTIONS,
             state="readonly",
             width=16,
-        ).grid(row=1, column=3, sticky="ew", pady=5)
+        )
+        sample_combo.grid(row=1, column=3, sticky="ew", pady=5)
+        self._bind_live_choice(sample_combo, self._commit_live_settings)
 
         self._form_label(section, "awp1221_zero_time", row=2, column=0)
-        ttk.Combobox(
+        zero_combo = ttk.Combobox(
             section,
             textvariable=self.zero_time_var,
             values=AWP1221_ZERO_TIME_OPTIONS,
             state="readonly",
             width=16,
-        ).grid(row=2, column=1, sticky="ew", pady=5)
+        )
+        zero_combo.grid(row=2, column=1, sticky="ew", pady=5)
+        self._bind_live_choice(zero_combo, self._commit_live_settings)
 
         self._form_label(section, "awp1221_adc_ldo", row=2, column=2)
-        ttk.Combobox(
+        ldo_combo = ttk.Combobox(
             section,
             textvariable=self.adc_ldo_var,
             values=AWP1221_ADC_LDO_OPTIONS,
             state="readonly",
             width=16,
-        ).grid(row=2, column=3, sticky="ew", pady=5)
+        )
+        ldo_combo.grid(row=2, column=3, sticky="ew", pady=5)
+        self._bind_live_choice(ldo_combo, self._commit_live_settings)
 
         self._form_label(section, "awp1221_press_return_bit_time", row=3, column=0)
-        ttk.Combobox(
+        press_return_combo = ttk.Combobox(
             section,
             textvariable=self.press_return_bit_time_var,
             values=AWP1221_RETURN_BIT_TIME_OPTIONS,
             state="readonly",
             width=16,
-        ).grid(row=3, column=1, sticky="ew", pady=5)
+        )
+        press_return_combo.grid(row=3, column=1, sticky="ew", pady=5)
+        self._bind_live_choice(press_return_combo, self._commit_live_settings)
 
         self._form_label(section, "awp1221_release_return_bit_time", row=3, column=2)
-        ttk.Combobox(
+        release_return_combo = ttk.Combobox(
             section,
             textvariable=self.release_return_bit_time_var,
             values=AWP1221_RETURN_BIT_TIME_OPTIONS,
             state="readonly",
             width=16,
-        ).grid(row=3, column=3, sticky="ew", pady=5)
+        )
+        release_return_combo.grid(row=3, column=3, sticky="ew", pady=5)
+        self._bind_live_choice(release_return_combo, self._commit_live_settings)
 
         zps_frame = ttk.Frame(section, style="Panel.TFrame")
         zps_frame.grid(row=4, column=0, columnspan=4, sticky="w", pady=(8, 0))
-        zps_check = ttk.Checkbutton(zps_frame, variable=self.zps_enabled_var)
+        zps_check = ttk.Checkbutton(
+            zps_frame,
+            variable=self.zps_enabled_var,
+            command=self._commit_live_settings,
+        )
         zps_check.grid(row=0, column=0, sticky="w")
         self._register_text(zps_check, "awp1221_zps_enable")
         self._add_help_button(zps_frame, 0, 1, "awp1221_zps_enable_help")
-        zps_detect_check = ttk.Checkbutton(zps_frame, variable=self.zps_detect_var)
+        zps_detect_check = ttk.Checkbutton(
+            zps_frame,
+            variable=self.zps_detect_var,
+            command=self._commit_live_settings,
+        )
         zps_detect_check.grid(row=0, column=2, sticky="w", padx=(14, 0))
         self._register_text(zps_detect_check, "awp1221_zps_detect")
         self._add_help_button(zps_frame, 0, 3, "awp1221_zps_detect_help")
-        sleep_sensitivity_check = ttk.Checkbutton(zps_frame, variable=self.sleep_sensitivity_var)
+        sleep_sensitivity_check = ttk.Checkbutton(
+            zps_frame,
+            variable=self.sleep_sensitivity_var,
+            command=self._commit_live_settings,
+        )
         sleep_sensitivity_check.grid(row=0, column=4, sticky="w", padx=(14, 0))
         self._register_text(sleep_sensitivity_check, "awp1221_sleep_sensitivity")
         self._add_help_button(zps_frame, 0, 5, "awp1221_sleep_sensitivity_help")
@@ -4235,34 +4793,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 raise ValueError(resp.data or f"invalid register 0x{register:02X} response")
             current_values[register] = current
 
-        register_05, register_06 = encode_awp1221_adc_settings_registers(
-            current_values[AWP1221_ADC_SETTINGS_REGISTER],
-            current_values[AWP1221_RETURN_BIT_REGISTER],
-            sample_update=settings["sample_update"],
-            zero_time=settings["zero_time"],
-            press_return_bit_time=settings["press_return_bit_time"],
-            release_return_bit_time=settings["release_return_bit_time"],
-            zps_enabled=settings["zps_enabled"],
-            zps_detect=settings["zps_detect"],
-            sleep_sensitivity=settings["sleep_sensitivity"],
-        )
-        if settings["auto_serial"]:
-            register_05 |= AWP1221_AUTO_SERIAL_MASK
-        else:
-            register_05 &= ~AWP1221_AUTO_SERIAL_MASK
-        debounce_value = (
-            current_values[AWP1221_DEBOUNCE_REGISTER] & ~AWP1221_DEBOUNCE_MASK
-        ) | settings["debounce_code"]
-        load_value = awp1221_merge_adc_load(
-            current_values[AWP1221_ADC_LOAD_REGISTER],
-            settings.get("adc_ldo", self.adc_ldo_var.get()),
-        )
-        for register, value in (
-            (AWP1221_ADC_SETTINGS_REGISTER, register_05),
-            (AWP1221_RETURN_BIT_REGISTER, register_06),
-            (AWP1221_DEBOUNCE_REGISTER, debounce_value),
-            (AWP1221_ADC_LOAD_REGISTER, load_value),
-        ):
+        targets = awp1221_settings_target_words(current_values, settings)
+        for register, value in targets.items():
             resp = self.ctx.serial.write_register_value(address, register, value, bits=16)
             if not resp.ok:
                 raise ValueError(resp.error)
@@ -4344,46 +4876,286 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if error:
             messagebox.showerror(self.tr("error"), error)
 
-    def start_detection(self) -> None:
-        if not self._ensure_connected():
+    @contextmanager
+    def _suspend_adc_live_writes(self):
+        self._adc_live_write_depth = getattr(self, "_adc_live_write_depth", 0) + 1
+        try:
+            yield
+        finally:
+            self._adc_live_write_depth -= 1
+
+    def _live_write_allowed(self) -> bool:
+        if getattr(self, "_adc_live_write_depth", 0):
+            return False
+        serial = getattr(self.ctx, "serial", None)
+        return bool(serial is not None and getattr(serial, "is_connected", False))
+
+    def _show_live_write_error(self, exc: Exception) -> None:
+        messagebox.showerror(self.tr("error"), str(exc))
+
+    def _commit_live_settings(self) -> None:
+        if not self._live_write_allowed():
             return
         try:
-            device_addr = self.device_addr()
-            if self.mode_key == "button_mode":
-                stage_configs = tuple(
-                    self._button_stage_config(stage_index)
-                    for stage_index in range(2)
-                )
-            else:
-                stage_configs = tuple(
-                    self._stage_values(stage_index)
-                    for stage_index in range(2)
-                )
-            settings_config = self._adc_settings_config()
+            self._write_adc_settings()
+            self._sync_realtime_adc_load()
         except Exception as exc:
-            messagebox.showerror(self.tr("error"), str(exc))
-            return
+            self._show_live_write_error(exc)
 
+    def _commit_live_stage(self, stage_index: int) -> None:
+        if not self._live_write_allowed():
+            return
+        try:
+            if self.mode_key == "button_mode":
+                self._write_button_adc_stage(stage_index)
+            else:
+                self._write_adc_stage(stage_index)
+        except Exception as exc:
+            self._show_live_write_error(exc)
+
+    def _bind_live_choice(self, widget: tk.Widget, callback: Callable[[], None]) -> None:
+        widget.bind("<<ComboboxSelected>>", lambda _event: callback(), add="+")
+
+    def _bind_live_text(self, widget: tk.Widget, callback: Callable[[], None]) -> None:
+        widget.bind("<FocusOut>", lambda _event: callback(), add="+")
+        widget.bind("<Return>", lambda _event: callback(), add="+")
+
+    def _capture_owned_snapshot(self) -> dict[str, Any]:
+        device_addr = self.device_addr()
+        if self.mode_key == "button_mode":
+            stages = tuple(self._button_stage_config(index) for index in range(2))
+            event_modes = None
+        else:
+            stages = tuple(self._stage_values(index) for index in range(2))
+            event_modes = tuple(self._stage_vars[index]["event_mode"].get() for index in range(2))
+        return {
+            "device_addr": device_addr,
+            "mode": self.mode_key,
+            "settings": self._adc_settings_config(),
+            "stages": stages,
+            "event_modes": event_modes,
+        }
+
+    def _owned_compare_groups(self, mode: str) -> dict[str, tuple[int, ...]]:
+        groups = {"settings": AWP1221_SETTINGS_REGISTERS}
+        for index in range(2):
+            groups[f"stage{index}"] = awp1221_stage_compare_registers(mode, index)
+        return groups
+
+    def _expected_owned_words(self, current: dict[int, int], snapshot: dict[str, Any]) -> dict[int, int]:
+        expected = awp1221_settings_target_words(current, snapshot["settings"])
+        if snapshot["mode"] == "button_mode":
+            for index, config in enumerate(snapshot["stages"]):
+                expected.update(self._button_stage_values_from_config(index, current, config))
+            return expected
+        for index, values in enumerate(snapshot["stages"]):
+            expected.update(
+                awp1221_full_stage_words(
+                    self.STAGE_REGISTER_RANGES[index],
+                    values,
+                    current,
+                    snapshot["event_modes"][index],
+                )
+            )
+        return expected
+
+    def _read_owned_mismatches(self, device_addr: int, snapshot: dict[str, Any]) -> tuple[str, ...]:
+        self._ensure_reg_1f_bit3(device_addr)
+        registers = []
+        for group in self._owned_compare_groups(snapshot["mode"]).values():
+            registers.extend(group)
+        current = {
+            register: self._read_register_value(register, device_addr)
+            for register in dict.fromkeys(registers)
+        }
+        expected = self._expected_owned_words(current, snapshot)
+        return awp1221_mismatch_groups(
+            current,
+            expected,
+            self._owned_compare_groups(snapshot["mode"]),
+        )
+
+    def _write_mismatched_groups(self, snapshot: dict[str, Any], mismatches: tuple[str, ...]) -> None:
+        address = snapshot["device_addr"]
+        if "settings" in mismatches:
+            self._write_adc_settings(snapshot["settings"], address)
+        for index, config in enumerate(snapshot["stages"]):
+            if f"stage{index}" not in mismatches:
+                continue
+            if snapshot["mode"] == "button_mode":
+                self._write_button_adc_stage(index, config, address)
+            else:
+                self._write_adc_stage(
+                    index,
+                    config,
+                    address,
+                    event_mode=snapshot["event_modes"][index],
+                )
+
+    def _apply_verified_start(
+        self,
+        command_key: str,
+        snapshot: dict[str, Any],
+        mismatches: tuple[str, ...],
+        choice: str | None,
+    ) -> None:
+        plan = awp1221_verified_start_plan(mismatches, choice)
+        if plan == "abort":
+            return
+        with _serial_batch(self.ctx.serial):
+            if plan == "rewrite-then-command":
+                self._write_mismatched_groups(snapshot, mismatches)
+            self._write_control_command(command_key, snapshot["device_addr"])
+
+    def _mismatch_group_label(self, group: str) -> str:
+        if group == "settings":
+            return self.tr("awp1221_mismatch_settings")
+        return self.tr("awp1221_mismatch_stage").format(index=group.removeprefix("stage"))
+
+    def _ask_register_mismatch(self, groups: tuple[str, ...]) -> str:
+        chooser = getattr(self, "_mismatch_chooser", None)
+        if callable(chooser):
+            return str(chooser(groups))
+        choice = {"value": "cancel"}
+        window = tk.Toplevel(self)
+        window.title(self.tr("awp1221_register_mismatch_title"))
+        window.transient(self.winfo_toplevel())
+        window.resizable(False, False)
+        names = "\n".join(self._mismatch_group_label(group) for group in groups)
+        ttk.Label(
+            window,
+            text=self.tr("awp1221_register_mismatch_body").format(groups=names),
+            wraplength=420,
+            justify="left",
+        ).grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
+        buttons = ttk.Frame(window)
+        buttons.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 16))
+
+        def pick(value: str) -> None:
+            choice["value"] = value
+            window.destroy()
+
+        window.protocol("WM_DELETE_WINDOW", lambda: pick("cancel"))
+        for column, (key, value) in enumerate(
+            (
+                ("awp1221_mismatch_rewrite_start", "rewrite"),
+                ("awp1221_mismatch_start_only", "start"),
+                ("awp1221_mismatch_cancel", "cancel"),
+            )
+        ):
+            ttk.Button(buttons, text=self.tr(key), command=lambda picked=value: pick(picked)).grid(
+                row=0, column=column, padx=(0 if column == 0 else 8, 0)
+            )
+        window.grab_set()
+        window.wait_window()
+        return choice["value"]
+
+    def _begin_verified_command(self, command_key: str, snapshot: dict[str, Any]) -> None:
+        if getattr(self, "_verified_start_busy", False):
+            return
+        self._verified_start_busy = True
+        device_addr = snapshot["device_addr"]
         generation = getattr(self, "_adc_lifecycle_generation", 0)
-        self._set_start_detection_busy(True)
+        if command_key == "start_detection":
+            self._set_start_detection_busy(True)
         _run_ui_background_task(
             self,
-            lambda: self._write_start_detection(
-                device_addr,
-                stage_configs,
-                settings_config,
+            lambda: self._read_owned_mismatches(device_addr, snapshot),
+            on_done=lambda mismatches: self._prompt_verified_command(
+                command_key,
+                snapshot,
+                tuple(mismatches),
+                generation,
             ),
-            on_done=lambda _result: self._finish_start_detection(
-                None,
-                device_addr=device_addr,
-                generation=generation,
-            ),
-            on_error=lambda error: self._finish_start_detection(
+            on_error=lambda error: self._finish_verified_command(
+                command_key,
                 str(error),
+                started=False,
                 device_addr=device_addr,
                 generation=generation,
             ),
         )
+
+    def _prompt_verified_command(
+        self,
+        command_key: str,
+        snapshot: dict[str, Any],
+        mismatches: tuple[str, ...],
+        generation: int,
+    ) -> None:
+        if generation != getattr(self, "_adc_lifecycle_generation", 0):
+            self._finish_verified_command(
+                command_key,
+                None,
+                started=False,
+                device_addr=snapshot["device_addr"],
+                generation=generation,
+            )
+            return
+        choice = None if not mismatches else self._ask_register_mismatch(mismatches)
+        plan = awp1221_verified_start_plan(mismatches, choice)
+        if plan == "abort":
+            self._finish_verified_command(
+                command_key,
+                None,
+                started=False,
+                device_addr=snapshot["device_addr"],
+                generation=generation,
+            )
+            return
+        device_addr = snapshot["device_addr"]
+        _run_ui_background_task(
+            self,
+            lambda: self._apply_verified_start(command_key, snapshot, mismatches, choice),
+            on_done=lambda _result: self._finish_verified_command(
+                command_key,
+                None,
+                started=True,
+                device_addr=device_addr,
+                generation=generation,
+            ),
+            on_error=lambda error: self._finish_verified_command(
+                command_key,
+                str(error),
+                started=False,
+                device_addr=device_addr,
+                generation=generation,
+            ),
+        )
+
+    def _finish_verified_command(
+        self,
+        command_key: str,
+        error: str | None,
+        *,
+        started: bool,
+        device_addr: int,
+        generation: int,
+    ) -> None:
+        self._verified_start_busy = False
+        self._set_start_detection_busy(False)
+        if generation != getattr(self, "_adc_lifecycle_generation", 0):
+            return
+        if error:
+            messagebox.showerror(self.tr("error"), error)
+            return
+        if not started:
+            return
+        if command_key == "start_detection":
+            self._set_detection_state(True, device_addr)
+            self._sync_realtime_adc_load()
+        elif command_key == "start_play":
+            self._set_waveform_play_state(True, device_addr)
+
+    def start_detection(self) -> None:
+        if not self._ensure_connected():
+            return
+        try:
+            snapshot = self._capture_owned_snapshot()
+        except Exception as exc:
+            messagebox.showerror(self.tr("error"), str(exc))
+            return
+        self._begin_verified_command("start_detection", snapshot)
 
     def _send_control_command(self, command_key: str) -> bool:
         if not self._ensure_connected():
@@ -4404,8 +5176,14 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if self._sinc_selected() and not self._sinc_play_allowed():
             messagebox.showinfo(self.tr("info"), self._sinc_reason_message("not_verified"))
             return
-        if self._send_control_command("start_play"):
-            self._set_waveform_play_state(True)
+        if not self._ensure_connected():
+            return
+        try:
+            snapshot = self._capture_owned_snapshot()
+        except Exception as exc:
+            messagebox.showerror(self.tr("error"), str(exc))
+            return
+        self._begin_verified_command("start_play", snapshot)
 
     def stop_play(self) -> None:
         if self._send_control_command("stop_play"):
@@ -4445,22 +5223,23 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 values[AWP1221_ADC_SETTINGS_REGISTER],
                 values[AWP1221_RETURN_BIT_REGISTER],
             )
-            if hasattr(self, "auto_serial_var"):
-                self.auto_serial_var.set(
-                    bool(values[AWP1221_ADC_SETTINGS_REGISTER] & AWP1221_AUTO_SERIAL_MASK)
+            with self._suspend_adc_live_writes():
+                if hasattr(self, "auto_serial_var"):
+                    self.auto_serial_var.set(
+                        bool(values[AWP1221_ADC_SETTINGS_REGISTER] & AWP1221_AUTO_SERIAL_MASK)
+                    )
+                    self._sync_auto_serial_page_state()
+                self.adc_sample_update_var.set(settings["sample_update"])
+                self.zero_time_var.set(settings["zero_time"])
+                self.press_return_bit_time_var.set(settings["press_return_bit_time"])
+                self.release_return_bit_time_var.set(settings["release_return_bit_time"])
+                self.zps_enabled_var.set(settings["zps_enabled"])
+                self.zps_detect_var.set(settings["zps_detect"])
+                self.sleep_sensitivity_var.set(settings["sleep_sensitivity"])
+                self.adc_ldo_var.set(awp1221_adc_load_label(values[AWP1221_ADC_LOAD_REGISTER]))
+                self.debounce_time_var.set(
+                    str(decode_awp1221_debounce_time(values[AWP1221_DEBOUNCE_REGISTER]))
                 )
-                self._sync_auto_serial_page_state()
-            self.adc_sample_update_var.set(settings["sample_update"])
-            self.zero_time_var.set(settings["zero_time"])
-            self.press_return_bit_time_var.set(settings["press_return_bit_time"])
-            self.release_return_bit_time_var.set(settings["release_return_bit_time"])
-            self.zps_enabled_var.set(settings["zps_enabled"])
-            self.zps_detect_var.set(settings["zps_detect"])
-            self.sleep_sensitivity_var.set(settings["sleep_sensitivity"])
-            self.adc_ldo_var.set(awp1221_adc_load_label(values[AWP1221_ADC_LOAD_REGISTER]))
-            self.debounce_time_var.set(
-                str(decode_awp1221_debounce_time(values[AWP1221_DEBOUNCE_REGISTER]))
-            )
         except Exception as exc:
             messagebox.showerror(self.tr("error"), str(exc))
 
@@ -4469,31 +5248,31 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         stage_index: int,
         stage_values: tuple[int, int, int, int, int] | None = None,
         device_addr: int | None = None,
+        event_mode: str | None = None,
     ) -> None:
         address = self.device_addr() if device_addr is None else device_addr
-        values = list(
+        values = tuple(
             stage_values if stage_values is not None else self._stage_values(stage_index)
         )
         registers = self.STAGE_REGISTER_RANGES[stage_index]
-        all_stage_variables = getattr(self, "_stage_vars", ())
-        stage_variables = (
-            all_stage_variables[stage_index]
-            if stage_index < len(all_stage_variables)
-            else {}
-        )
-        shared_precision = stage_variables.get("use_high_12_bits")
-        event_mode = stage_variables.get("event_mode")
-        event_mode = event_mode.get() if event_mode is not None else None
-        if shared_precision is not None and event_mode in {"press", "release"}:
-            inactive_offset = 2 if event_mode == "press" else 1
-            current = self._read_adc_value(registers[inactive_offset], address)
-            values[inactive_offset] = (
-                values[inactive_offset] & ~AWP1221_ADC_THRESHOLD_PRECISION_MASK
-            ) | (current & AWP1221_ADC_THRESHOLD_PRECISION_MASK)
+        if event_mode is None:
+            all_stage_variables = getattr(self, "_stage_vars", ())
+            stage_variables = (
+                all_stage_variables[stage_index]
+                if stage_index < len(all_stage_variables)
+                else {}
+            )
+            live_mode = stage_variables.get("event_mode")
+            event_mode = live_mode.get() if live_mode is not None else ""
+        inactive = 2 if event_mode == "press" else 1 if event_mode == "release" else None
+        current = {}
+        if inactive is not None:
+            current[registers[inactive]] = self._read_adc_value(registers[inactive], address)
+        words = awp1221_full_stage_words(registers, values, current, event_mode)
         resp = self.ctx.serial.write_register_values(
             address,
             self.STAGE_REGISTERS[stage_index],
-            values,
+            [words[register] for register in registers],
             bits=16,
         )
         if not resp.ok:
@@ -4527,7 +5306,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 if value is None:
                     raise ValueError(resp.data or f"invalid ADC register 0x{reg:02X} response")
                 values.append(value)
-            self._set_stage_values(stage_index, tuple(values))
+            with self._suspend_adc_live_writes():
+                self._set_stage_values(stage_index, tuple(values))
         except Exception as exc:
             messagebox.showerror(self.tr("error"), str(exc))
 
