@@ -12,6 +12,7 @@ from config.languages import t
 from styles.fonts import sidebar_brand_font_spec
 import os
 import time
+import sys
 
 # Stacked pages (opt-in, PIEZO_PAGE_STACK=1): see Navigation.show.
 # Off by default: on Windows, mapped-but-covered pages made every layout
@@ -949,7 +950,13 @@ class Navigation:
         current_page = self.ctx.state.current_page
         for name, btn in self.buttons.items():
             selected = name == current_page and not self._tree_children.get(name)
-            btn.configure(style="SidebarSelected.TButton" if selected else "Sidebar.TButton")
+            if selected:
+                style = "SidebarSelected.TButton"
+            elif name == current_page:
+                style = "SidebarParentSelected.TButton"  # chip with mode children
+            else:
+                style = "Sidebar.TButton"
+            btn.configure(style=style)
         self._refresh_settings_button()
         if self._nav_hover_name == self._selected_nav_name():
             self._nav_hover(self._nav_hover_name, False)
@@ -1183,13 +1190,13 @@ class Navigation:
             return
         if self._tree_job is not None:
             return
-        animator = self._animator()
         sw = getattr(self, "_atomic", None)
-        if animator is not None and animator.enabled and sw is not None and sw.active:
-            try:
-                self._tree_job = self.root.after(atomic_paint.FADE_MS + 20, self._tree_after_cover)
-            except tk.TclError:
-                self._tree_job = None
+        if (sw is not None and sw.active) or sys.platform == "win32":
+            # Windows: animating the clip height relayouts every native child
+            # of the sidebar per frame (laggy).  Do the layout change once,
+            # instantly -- under the page-switch cover when it is up, so it is
+            # revealed together with the page by the cover's cheap cross-fade.
+            self._run_tree_expansion(target, instant=True)
             return
         self._run_tree_expansion(target)
 
@@ -1204,7 +1211,7 @@ class Navigation:
             return
         self._run_tree_expansion(self._tree_target())
 
-    def _run_tree_expansion(self, target: str | None) -> None:
+    def _run_tree_expansion(self, target: str | None, instant: bool = False) -> None:
         self._tree_open = target
         starts = dict(self._tree_heights)
         ends = {c: (self._tree_full_height(c) if c == target else 0.0) for c in self._tree_clips}
@@ -1224,7 +1231,8 @@ class Navigation:
 
         if not moving:
             return
-        if animator is None or not animator.enabled:
+        if instant or animator is None or not animator.enabled:
+            animator is not None and animator.cancel("nav-tree")
             done()
             return
         self._tree_anim = True

@@ -170,7 +170,7 @@ class MicroAnimations:
                 after = str(w.cget("style"))
             except tk.TclError:
                 return
-            if after != before and after.endswith("Selected.TButton") and after != "SidebarSelected.TButton":
+            if after != before and after.endswith("Selected.TButton") and after not in ("SidebarSelected.TButton", "SidebarParentSelected.TButton"):
                 self.toggle_pulse(w)
 
         self.root.after_idle(check)

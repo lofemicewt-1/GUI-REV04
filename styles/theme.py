@@ -145,6 +145,7 @@ def _flash_button(event: tk.Event) -> None:
             "SidebarSelected.TButton",
             "SidebarMode.TButton",
             "SidebarModeSelected.TButton",
+            "SidebarParentSelected.TButton",
         }:
             return
         flash_style = "Flash.TButton"
@@ -407,6 +408,21 @@ def _configure_rounded_button_styles(
         setattr(root, "_rounded_button_images", image_store)
 
     store = image_store[theme]
+    def _mix(a: str, b: str, t: float) -> str:
+        ca = [int(a[i:i + 2], 16) for i in (1, 3, 5)]
+        cb = [int(b[i:i + 2], 16) for i in (1, 3, 5)]
+        return "#" + "".join(f"{round(x + (y - x) * t):02X}" for x, y in zip(ca, cb))
+
+    # selected chip parent: a soft tint of the selected-mode blue
+    parent_fill = _mix(colors["panel_alt"], sidebar_selected_fill, 0.16 if theme != "dark" else 0.22)
+    parent_edge = _mix(colors["panel_alt"], sidebar_selected_fill, 0.45)
+    parent_text = _mix(colors["text"], sidebar_selected_fill, 0.55 if theme != "dark" else 0.25)
+    if "sidebar_parent" not in store:
+        tint = _make_rounded_button_image(
+            root, fill=parent_fill, border=parent_edge, corner=colors["panel_alt"],
+            size=32, radius=radius, shadow=0.0,
+        )
+        store["sidebar_parent"] = {"normal": tint, "pressed": tint, "disabled": tint}
     if "sidebar_mode" not in store:
         store["sidebar_mode"] = make_mode_set(colors["mode_idle"], pressed_accent)
         selected_image = store["sidebar"]["pressed"]
@@ -439,6 +455,7 @@ def _configure_rounded_button_styles(
     sidebar_selected_element = f"{theme}.SidebarSelected.Button.button"
     sidebar_mode_element = f"{theme}.SidebarMode.Button.button"
     sidebar_mode_selected_element = f"{theme}.SidebarModeSelected.Button.button"
+    sidebar_parent_element = f"{theme}.SidebarParentSelected.Button.button"
 
     def ensure_element(name: str, images: dict[str, tk.PhotoImage], *, selected: bool) -> None:
         if name in style.element_names():
@@ -476,6 +493,7 @@ def _configure_rounded_button_styles(
     ensure_element(sidebar_selected_element, sidebar_images, selected=True)
     ensure_element(sidebar_mode_element, sidebar_mode_images, selected=False)
     ensure_element(sidebar_mode_selected_element, sidebar_mode_selected_images, selected=True)
+    ensure_element(sidebar_parent_element, store["sidebar_parent"], selected=True)
 
     pad = (0, _scaled(3, scale))
     font = ("Microsoft YaHei UI", body_size)
@@ -634,6 +652,13 @@ def _configure_rounded_button_styles(
     configure_plain("SidebarMode.TButton", sidebar_element, colors["panel_alt"], colors["text"])
     for option, spec in style.map("Sidebar.TButton").items():
         style.map("SidebarMode.TButton", **{option: spec})
+    configure_plain("SidebarParentSelected.TButton", sidebar_parent_element, colors["panel_alt"], parent_text)
+    style.map(
+        "SidebarParentSelected.TButton",
+        background=[("disabled", colors["panel_alt"]), ("active", parent_fill), ("pressed", parent_fill)],
+        foreground=[("disabled", colors["muted"]), ("pressed", parent_text), ("active", parent_text)],
+        relief=[("disabled", "flat"), ("!disabled", "flat")],
+    )
     configure_plain("SidebarModeSelected.TButton", sidebar_mode_selected_element, colors["panel_alt"], sidebar_selected_text)
     style.map(
         "SidebarModeSelected.TButton",
