@@ -262,6 +262,11 @@ FADE_BUDGET_S = float(os.environ.get("PIEZO_ATOMIC_FADE_BUDGET_MS", "1000")) / 1
 
 # Cover is dropped at the latest this long after the click.
 COVER_CAP_S = float(os.environ.get("PIEZO_ATOMIC_CAP_MS", "700")) / 1000.0
+# Paint-drain budget guaranteed AFTER layout finished: on slow machines the
+# synchronous layout alone can exceed COVER_CAP_S (seen: 1221 Button Mode,
+# ~900 ms), which used to drop the cover with 0 paint rounds -> the page
+# (e.g. its title) painted visibly in stages.
+FLUSH_MIN_S = float(os.environ.get("PIEZO_ATOMIC_FLUSH_MIN_MS", "400")) / 1000.0
 _PARK = -30000
 
 
@@ -391,12 +396,13 @@ class AtomicSwitch:
             return
         token = self._token
         t_reveal = time.perf_counter()
-        limit = (started if started is not None else t_reveal) + COVER_CAP_S
+        limit_click = (started if started is not None else t_reveal) + COVER_CAP_S
 
         def finish_paint() -> None:
             if token != self._token or not self._active:
                 return
             t_idle = time.perf_counter()
+            limit = max(limit_click, t_idle + FLUSH_MIN_S)
             try:
                 main = _frame_hwnd(self.root)
             except Exception:
@@ -433,7 +439,7 @@ class AtomicSwitch:
 
         try:
             self.root.after_idle(finish_paint)
-            self.root.after(1500, lambda: token == self._token and self._active and self.park())  # safety
+            self.root.after(2500, lambda: token == self._token and self._active and self.park())  # safety
         except tk.TclError:
             self.park()
 
