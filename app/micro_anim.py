@@ -65,6 +65,7 @@ class MicroAnimations:
             root.bind_class(cls, "<ButtonRelease-1>", self._on_btn_release, add="+")
         root.bind_class("TCombobox", "<<ComboboxSelected>>", self._on_combo_selected, add="+")
         root.bind_class("ComboboxPopdown", "<Map>", self._on_popdown_map, add="+")
+        root.bind_class("ComboboxPopdown", "<Unmap>", self._on_popdown_unmap, add="+")
         for cls in TOGGLE_CLASSES:
             root.bind_class(cls, "<<Invoke>>", self._on_toggle, add="+")
             root.bind_class(cls, "<ButtonRelease-1>", self._on_toggle_release, add="+")
@@ -208,14 +209,53 @@ class MicroAnimations:
         self.animator.animate("combo-sweep", anim.DUR_SNAP, _timed(sweep), ease=anim.EASE_SNAP, done=swept)
 
     # -- combobox list open --------------------------------------------------
-    def _on_popdown_map(self, event: tk.Event) -> None:
-        if not self.animator.enabled:
-            return
+    @staticmethod
+    def _fix_popdown_view(call, path: str) -> None:
+        """ttk's Post runs `see current` BEFORE it sets the listbox -height,
+        so on the first open the view is computed for the default 10-line,
+        not-yet-laid-out listbox: it shows only the lower items, then the
+        upper ones pop in.  Set the final top index directly (no geometry
+        needed): everything from 0 when the list fits, else keep the
+        selection visible the way `see` would at the final height."""
+        lb = f"{path}.f.l"
+        try:
+            n = int(call(lb, "size"))
+            lines = max(1, int(call(lb, "cget", "-height")))
+            sel = call(lb, "curselection")
+            cur = int(sel[0]) if isinstance(sel, tuple) and sel else int(sel or 0) if str(sel).strip() else 0
+            top = 0 if n <= lines or cur < lines else min(cur, n - lines)
+            call(lb, "yview", top)
+        except (tk.TclError, ValueError, TypeError, IndexError):
+            pass
+
+    def _on_popdown_unmap(self, event: tk.Event) -> None:
+        """Closed mid-expand: hand the frame back to grid so the next Post's
+        `winfo reqheight` (popdown size) is correct."""
         path = str(event.widget)
         call = self.root.tk.call
         try:
             if call("winfo", "toplevel", path) != path:
                 return
+            self.animator.cancel(("popdown", path))
+            frame = f"{path}.f"
+            if str(call("winfo", "manager", frame)) == "place":
+                call("place", "forget", frame)
+                call("grid", frame)
+        except tk.TclError:
+            pass
+
+    def _on_popdown_map(self, event: tk.Event) -> None:
+        path = str(event.widget)
+        call = self.root.tk.call
+        try:
+            if call("winfo", "toplevel", path) != path:
+                return
+        except tk.TclError:
+            return
+        self._fix_popdown_view(call, path)
+        if not self.animator.enabled:
+            return
+        try:
             geo = str(call("wm", "geometry", path))
             size, _, pos = geo.partition("+")
             wd, ht = (int(v) for v in size.split("x"))
@@ -231,6 +271,27 @@ class MicroAnimations:
         except tk.TclError:
             alpha = False
 
+        # Keep the list content at its final size, anchored at the top: only
+        # the toplevel's height grows (window clipping), so items never
+        # reflow or scroll mid-animation.
+        frame = f"{path}.f"
+        pinned = False
+        try:
+            call("grid", "remove", frame)
+            call("place", frame, "-x", 0, "-y", 0, "-relwidth", 1.0, "-height", ht)
+            pinned = True
+        except tk.TclError:
+            pass
+
+        def unpin() -> None:
+            if not pinned:
+                return
+            try:
+                call("place", "forget", frame)
+                call("grid", frame)
+            except tk.TclError:
+                pass
+
         def step(p: float) -> None:
             try:
                 h = max(1, round(ht * (0.35 + 0.65 * p)))
@@ -240,7 +301,7 @@ class MicroAnimations:
             except tk.TclError:
                 pass
 
-        self.animator.animate(("popdown", path), anim.DUR_BASE, _timed(step), ease=anim.EASE_OUT)
+        self.animator.animate(("popdown", path), anim.DUR_BASE, _timed(step), ease=anim.EASE_OUT, done=unpin)
 
     # -- toggles ------------------------------------------------------------
     def _on_toggle_release(self, event: tk.Event) -> None:

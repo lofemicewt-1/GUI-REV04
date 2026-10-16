@@ -153,6 +153,39 @@ class NavAnimationTests(unittest.TestCase):
         finally:
             app.close()
 
+    def test_combobox_first_open_shows_final_view_and_fixed_list(self) -> None:
+        import tkinter as tk
+        from tkinter import ttk
+        from app.application import PiezoApplication
+
+        app = PiezoApplication()
+        try:
+            r = app.root
+            win = tk.Toplevel(r)
+            pump(r, 0.2)
+            for enabled in (True, False):
+                app.animator.set_enabled(enabled)
+                for n, idx, top in ((4, 3, 0), (8, 3, 0), (20, 3, 0), (20, 15, 10), (30, 29, 20)):
+                    cb = ttk.Combobox(win, values=[f"v{i}" for i in range(n)], state="readonly")
+                    cb.pack()
+                    cb.current(idx)
+                    pump(r, 0.05)
+                    r.tk.call("ttk::combobox::Post", str(cb))
+                    lb = f"{cb}.popdown.f.l"
+                    heights, tops = set(), set()
+                    for _ in range(12):
+                        pump(r, 0.02)
+                        heights.add(int(r.tk.call("winfo", "height", lb)))
+                        tops.add(round(float(r.tk.call(lb, "yview")[0]) * n))
+                    self.assertEqual(tops, {top}, (n, idx))
+                    self.assertEqual(len(heights), 1, (n, idx, heights))
+                    r.tk.call("ttk::combobox::Unpost", str(cb))
+                    pump(r, 0.05)
+                    self.assertEqual(str(r.tk.call("winfo", "manager", f"{cb}.popdown.f")), "grid")
+                    cb.destroy()
+        finally:
+            app.close()
+
     def test_settings_toggle_disables_animator(self) -> None:
         from app.application import PiezoApplication
 
