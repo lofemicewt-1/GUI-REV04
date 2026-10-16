@@ -76,7 +76,14 @@ AWP1221_DEBOUNCE_MASK = 0x03FF
 AWP1221_ADC_SETTINGS_REGISTER = 0x05
 AWP1221_INTERFACE_CONFIG_0_DEFAULT = 0x442E
 AWP1221_RETURN_BIT_REGISTER = 0x06
-AWP1221_RETURN_BIT_RESET = 0x0000  # reg 0x06 power-on value: return-bit off
+# Register defaults from the AWP1221 register guide (AWP1221 寄存器介绍及说明,
+# Rev.0.1).  Used only for the GUI's initial selections, decoded with the
+# same functions as a device read.
+AWP1221_RETURN_BIT_RESET = 0x0204   # reg 0x06 (p.6): P=off, R=6400 us, OCP 2, no sleep valset
+AWP1221_DEBOUNCE_RESET = 0x0000     # reg 0x12 (p.18): SENSE debouncing 0 ms
+AWP1221_ADC_LOAD_RESET = 0x0000     # reg 0x1F (p.20): CFG_LDO_OUTP_EN 0 -> 40 uA
+# reg 0x08..0x0C / 0x0D..0x11 (p.7-17): control, press thr, release thr, slope, wave
+AWP1221_STAGE_RESET = (0x0003, 0x07FF, 0x1800, 0xC03F, 0x0000)
 AWP1221_SLEEP_SENSITIVITY_MASK = 1 << 12
 AWP1221_ADC_VALUE_REGISTER = 0x13
 AWP1221_ADC_THRESHOLD_PRECISION_MASK = 1 << 14
@@ -1087,7 +1094,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._full_wave_combos: list[ttk.Combobox] = []
         self._selector_widgets: dict[str, list[tk.Widget]] = {}
         self._auto_serial_check: ttk.Checkbutton | None = None
-        self.debounce_time_var = tk.StringVar(value="100")
+        self.debounce_time_var = tk.StringVar(value=str(decode_awp1221_debounce_time(AWP1221_DEBOUNCE_RESET)))
         # Initial selections = chip reset values (reg 0x05 = 0x442E,
         # reg 0x06 = 0x0000), decoded with the same function as a device read
         # so the first paint already shows what a read-back would show.
@@ -1161,6 +1168,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self.board_slot_var = host_slot if isinstance(host_slot, tk.StringVar) else tk.StringVar(value="0")
         self._visible_stage_index = 0
         self._build_ui()
+        self._apply_register_reset_stage_values()
         if self.mode_key == "button_mode":
             self._init_board_recipe_tracking()
         self._bind_realtime_overlay_traces()
@@ -1773,6 +1781,47 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         except Exception as exc:
             messagebox.showerror(self.tr("error"), str(exc))
 
+    def _apply_register_reset_stage_values(self) -> None:
+        """Initial stage selections = datasheet register defaults, through
+        the same decode path as a device read."""
+        with self._suspend_adc_live_writes():
+            for stage_index, registers in enumerate(self.STAGE_REGISTER_RANGES):
+                if stage_index < len(self._stage_vars):
+                    # The guide is self-contradictory for the release
+                    # threshold (0x0A/0x0F: word 0x1800 vs fields AB=0,
+                    # Threshold=0x7FF), so those fields keep their GUI values.
+                    keep = {k: v.get() for k, v in self._stage_vars[stage_index]["release_threshold"].items()}
+                    self._set_stage_values(stage_index, AWP1221_STAGE_RESET)
+                    for k, v in keep.items():
+                        self._stage_vars[stage_index]["release_threshold"][k].set(v)
+                if stage_index < len(self._button_stage_vars):
+                    self._set_button_stage_values(stage_index, dict(zip(registers, AWP1221_STAGE_RESET)))
+
+    def _set_button_stage_values(self, stage_index: int, values: dict[int, int]) -> None:
+        control_reg, press_reg, release_reg, _slope_reg, wave_reg = self.STAGE_REGISTER_RANGES[stage_index]
+        control = decode_awp1221_adc_control(values[control_reg])
+        press_selected = control["flags"]["t_p"] and control["flags"]["trigger_p"]
+        release_selected = control["flags"]["t_r"] and control["flags"]["trigger_r"]
+        mode = "release" if release_selected and not press_selected else "press"
+        variables = self._button_stage_vars[stage_index]
+        wave = decode_awp1221_adc_wave(values[wave_reg])
+        slice_index = wave["press_wave" if mode == "press" else "release_wave"]
+        with self._suspend_adc_live_writes():
+            variables["event_mode"].set(mode)
+            variables["ovv_time"].set(awp1221_adc_time_label(control["press_time"]))
+            active_threshold = values[press_reg] if mode == "press" else values[release_reg]
+            variables["threshold"].set(awp1221_format_threshold_signed(active_threshold))
+            variables["jump_target"].set(f"Stage{(active_threshold >> 13) & 0x1}")
+            variables["debounce"].set(bool(values[press_reg] & 0x8000) and bool(values[release_reg] & 0x8000))
+            variables["use_high_12_bits"].set(
+                bool(
+                    (values[press_reg] if mode == "press" else values[release_reg])
+                    & AWP1221_ADC_THRESHOLD_PRECISION_MASK
+                )
+            )
+            variables["wave"].set(self._format_trigger_waveform(slice_index))
+            variables["repeat"].set(str(wave["press_repeat" if mode == "press" else "release_repeat"]))
+
     def read_button_adc_stage(self, stage_index: int) -> None:
         if not self._ensure_connected():
             return
@@ -1783,28 +1832,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 register: self._read_adc_value(register)
                 for register in (control_reg, press_reg, release_reg, wave_reg)
             }
-            control = decode_awp1221_adc_control(values[control_reg])
-            press_selected = control["flags"]["t_p"] and control["flags"]["trigger_p"]
-            release_selected = control["flags"]["t_r"] and control["flags"]["trigger_r"]
-            mode = "release" if release_selected and not press_selected else "press"
-            variables = self._button_stage_vars[stage_index]
-            wave = decode_awp1221_adc_wave(values[wave_reg])
-            slice_index = wave["press_wave" if mode == "press" else "release_wave"]
-            with self._suspend_adc_live_writes():
-                variables["event_mode"].set(mode)
-                variables["ovv_time"].set(awp1221_adc_time_label(control["press_time"]))
-                active_threshold = values[press_reg] if mode == "press" else values[release_reg]
-                variables["threshold"].set(awp1221_format_threshold_signed(active_threshold))
-                variables["jump_target"].set(f"Stage{(active_threshold >> 13) & 0x1}")
-                variables["debounce"].set(bool(values[press_reg] & 0x8000) and bool(values[release_reg] & 0x8000))
-                variables["use_high_12_bits"].set(
-                    bool(
-                        (values[press_reg] if mode == "press" else values[release_reg])
-                        & AWP1221_ADC_THRESHOLD_PRECISION_MASK
-                    )
-                )
-                variables["wave"].set(self._format_trigger_waveform(slice_index))
-                variables["repeat"].set(str(wave["press_repeat" if mode == "press" else "release_repeat"]))
+            self._set_button_stage_values(stage_index, values)
         except Exception as exc:
             messagebox.showerror(self.tr("error"), str(exc))
 
