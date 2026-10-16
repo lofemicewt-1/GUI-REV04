@@ -89,7 +89,9 @@ class SidebarSelectionColorTests(unittest.TestCase):
             self.assertEqual(_pixel(disabled, 16, 16), _rgb(colors["mode_idle"]), theme)
             self.assertNotEqual(_pixel(disabled, 16, 16), _pixel(selected, 16, 16), theme)
             style = ttk.Style(self.root)
-            self.assertEqual(style.lookup("SidebarMode.TButton", "background"), colors["mode_idle"], theme)
+            # Sidebar tree: unselected mode children use the unselected sidebar look.
+            self.assertEqual(style.lookup("SidebarMode.TButton", "background"), colors["panel_alt"], theme)
+            self.assertEqual(style.layout("SidebarMode.TButton"), style.layout("Sidebar.TButton"), theme)
 
     def test_dark_selected_fill_is_distinct_from_unselected_mode(self) -> None:
         apply_theme(self.root, "dark")
@@ -104,7 +106,8 @@ class SidebarSelectionColorTests(unittest.TestCase):
         style = ttk.Style(self.root)
         self.assertEqual(style.lookup("SidebarSelected.TButton", "foreground").lower(), "#05070d")
         self.assertEqual(style.lookup("SidebarModeSelected.TButton", "foreground").lower(), "#05070d")
-        self.assertEqual(style.lookup("SidebarMode.TButton", "foreground").lower(), "#ffffff")
+        self.assertEqual(style.lookup("SidebarMode.TButton", "foreground").lower(),
+                         style.lookup("Sidebar.TButton", "foreground").lower())
 
 
 if __name__ == "__main__":

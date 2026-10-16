@@ -629,32 +629,11 @@ def _configure_rounded_button_styles(
         darkcolor=[("disabled", colors["muted"]), ("active", sidebar_selected_edge), ("pressed", sidebar_selected_edge)],
         relief=[("disabled", "flat"), ("!disabled", "flat")],
     )
-    configure_plain("SidebarMode.TButton", sidebar_mode_element, colors["mode_idle"], "#FFFFFF")
-    style.map(
-        "SidebarMode.TButton",
-        background=[
-            ("disabled", colors["mode_idle"]),
-            ("pressed", pressed_accent),
-            ("active", colors["mode_idle"]),
-        ],
-        foreground=[("disabled", "#D1D5DB"), ("pressed", sidebar_selected_text if theme == "dark" else "#FFFFFF")],
-        bordercolor=[
-            ("disabled", colors["muted"]),
-            ("pressed", sidebar_selected_edge if theme == "dark" else colors["mode_selected"]),
-            ("active", colors["mode_selected"]),
-        ],
-        lightcolor=[
-            ("disabled", colors["muted"]),
-            ("pressed", sidebar_selected_edge if theme == "dark" else colors["mode_selected"]),
-            ("active", colors["mode_selected"]),
-        ],
-        darkcolor=[
-            ("disabled", colors["muted"]),
-            ("pressed", sidebar_selected_edge if theme == "dark" else colors["mode_selected"]),
-            ("active", colors["mode_selected"]),
-        ],
-        relief=[("disabled", "flat"), ("pressed", "flat"), ("active", "flat")],
-    )
+    # Sidebar tree: unselected page-mode children look exactly like the
+    # unselected sidebar entries (Sidebar.TButton element and state map).
+    configure_plain("SidebarMode.TButton", sidebar_element, colors["panel_alt"], colors["text"])
+    for option, spec in style.map("Sidebar.TButton").items():
+        style.map("SidebarMode.TButton", **{option: spec})
     configure_plain("SidebarModeSelected.TButton", sidebar_mode_selected_element, colors["panel_alt"], sidebar_selected_text)
     style.map(
         "SidebarModeSelected.TButton",

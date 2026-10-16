@@ -156,6 +156,9 @@ class Navigation:
         self.label_keys: dict[str, str] = {}
         self.mode_host: Any | None = None
         self.mode_buttons: dict[str, ttk.Button] = {}
+        # Sidebar tree: chip page -> its page-mode children (always expanded).
+        self._tree_frames: dict[str, ttk.Frame] = {}
+        self._tree_children: dict[str, dict[str, ttk.Button]] = {}
 
         # width=1：画布自身不撑宽侧栏，侧栏宽度由导航按钮自然宽度决定，
         # 避免默认 Canvas 请求宽度（约378px）把按钮列撑得过大。
@@ -260,6 +263,7 @@ class Navigation:
         factory: Callable[[], ttk.Frame] | None,
         *,
         sidebar_button: bool = True,
+        modes: tuple[str, ...] | None = None,
     ) -> None:
         """Register a page (sidebar button now); with a factory the page is
         built on first use: get_page(), show(), or another page's lookup."""
@@ -280,6 +284,8 @@ class Navigation:
             btn.bind("<Leave>", lambda _e, n=name: self._nav_hover(n, False), add="+")
             self.buttons[name] = btn
             self.label_keys[name] = label_key
+            if modes:
+                self._build_tree_children(name, list(modes))
 
         self.sidebar.columnconfigure(0, weight=1)
 
@@ -771,8 +777,9 @@ class Navigation:
         for name, btn in self.buttons.items():
             key = self.label_keys.get(name, name)
             btn.configure(text=t(lang, key))
-        for key, btn in self.mode_buttons.items():
-            btn.configure(text=t(lang, key))
+        for children in self._tree_children.values():
+            for key, btn in children.items():
+                btn.configure(text=t(lang, key))
 
         for page in self.built_pages():
             if hasattr(page, "refresh_language"):
@@ -934,10 +941,11 @@ class Navigation:
     def _refresh_button_styles(self) -> None:
         current_page = self.ctx.state.current_page
         for name, btn in self.buttons.items():
-            btn.configure(style="SidebarSelected.TButton" if name == current_page else "Sidebar.TButton")
+            selected = name == current_page and not self._tree_children.get(name)
+            btn.configure(style="SidebarSelected.TButton" if selected else "Sidebar.TButton")
         self._refresh_settings_button()
-        if self._nav_hover_name == current_page:
-            self._nav_hover(current_page, False)
+        if self._nav_hover_name == self._selected_nav_name():
+            self._nav_hover(self._nav_hover_name, False)
         self._schedule_nav_indicator(animate=True)
 
     # -- nav animation ---------------------------------------------------
@@ -952,10 +960,10 @@ class Navigation:
         """
         bar = self._nav_hover_bar
         animator = self._animator()
-        btn = self.buttons.get(name)
+        btn = self._tree_widget(name)
         if btn is None:
             return
-        if entering and name == self.ctx.state.current_page:
+        if entering and name == self._selected_nav_name():
             entering = False
         rest = self.ctx.colors["panel_alt"]
         peak = anim.lerp_color(rest, self.ctx.colors["primary"], 0.45)
@@ -964,8 +972,9 @@ class Navigation:
                 bh = btn.winfo_height()
                 height = max(6, round(bh * 0.5))
                 width = max(2, self._scaled(3))
-                x = max(0, btn.winfo_x() - width - max(1, self._scaled(3)))
-                y = btn.winfo_y() + (bh - height) / 2
+                bx, by = self._sidebar_xy(btn)
+                x = max(0, bx - width - max(1, self._scaled(3)))
+                y = by + (bh - height) / 2
                 bar.place(x=x, y=round(y), width=width, height=height, bordermode="outside")
                 bar.lift()
                 self._nav_indicator.lift()
@@ -1019,7 +1028,7 @@ class Navigation:
     def _place_nav_indicator(self, animate: bool) -> None:
         self._nav_indicator_job = None
         indicator = self._nav_indicator
-        btn = self.buttons.get(self.ctx.state.current_page)
+        btn = self._tree_widget(self._selected_nav_name())
         try:
             if btn is None or not btn.winfo_ismapped():
                 indicator.place_forget()
@@ -1030,8 +1039,9 @@ class Navigation:
                 return
             height = max(6, round(bh * 0.5))
             width = max(2, self._scaled(3))
-            x = max(0, btn.winfo_x() - width - max(1, self._scaled(3)))
-            target = btn.winfo_y() + (bh - height) / 2
+            bx, by = self._sidebar_xy(btn)
+            x = max(0, bx - width - max(1, self._scaled(3)))
+            target = by + (bh - height) / 2
             indicator.configure(bg=self.ctx.colors["primary"])
         except tk.TclError:
             return
@@ -1049,6 +1059,73 @@ class Navigation:
             step(1.0)
             return
         animator.animate("nav-indicator", anim.NAV_SLIDE_MS, step, ease=anim.EASE_SNAP)
+
+    # -- sidebar tree ---------------------------------------------------
+    def _build_tree_children(self, chip: str, keys: list[str]) -> None:
+        frame = self._tree_frames.get(chip)
+        if frame is None:
+            frame = ttk.Frame(self.sidebar, style="Sidebar.TFrame")
+            frame.columnconfigure(0, weight=1)
+            self._tree_frames[chip] = frame
+        for btn in self._tree_children.get(chip, {}).values():
+            btn.destroy()
+        lang = self.ctx.state.language
+        children: dict[str, ttk.Button] = {}
+        for index, key in enumerate(keys):
+            btn = ttk.Button(
+                frame,
+                text=t(lang, key),
+                style="SidebarMode.TButton",
+                command=lambda c=chip, k=key: self._on_tree_child(c, k),
+            )
+            btn.grid(row=index, column=0, sticky="ew", pady=(0, 3) if index == 0 else 3)
+            tag = f"{chip}:{key}"
+            btn.bind("<Enter>", lambda _e, n=tag: self._nav_hover(n, True), add="+")
+            btn.bind("<Leave>", lambda _e, n=tag: self._nav_hover(n, False), add="+")
+            children[key] = btn
+        self._tree_children[chip] = children
+
+    def _tree_widget(self, name: str) -> ttk.Button | None:
+        if ":" in name:
+            chip, key = name.split(":", 1)
+            return self._tree_children.get(chip, {}).get(key)
+        return self.buttons.get(name)
+
+    def _selected_nav_name(self) -> str:
+        """The sidebar entry that is selected: the current mode child of a
+        chip with children, else the page button itself."""
+        current = self.ctx.state.current_page
+        children = self._tree_children.get(current)
+        if children:
+            page = self.get_page(current, build=False)
+            mode = getattr(page, "current_mode", None)
+            if mode in children:
+                return f"{current}:{mode}"
+        return current
+
+    def _on_tree_child(self, chip: str, key: str) -> None:
+        if self.ctx.state.current_page != chip:
+            self.show(chip)
+        page = self.get_page(chip, build=False)
+        if page is not None and getattr(page, "current_mode", None) != key:
+            self._on_mode_clicked(key)
+        self._refresh_tree_styles()
+
+    def _refresh_tree_styles(self) -> None:
+        current = self.ctx.state.current_page
+        for chip, children in self._tree_children.items():
+            page = self.get_page(chip, build=False) if chip == current else None
+            mode = getattr(page, "current_mode", None) if page is not None else None
+            for key, btn in children.items():
+                try:
+                    btn.configure(style="SidebarModeSelected.TButton" if key == mode else "SidebarMode.TButton")
+                except tk.TclError:
+                    pass
+        self._schedule_nav_indicator(animate=True)
+
+    def _sidebar_xy(self, widget: tk.Misc) -> tuple[int, int]:
+        return (widget.winfo_rootx() - self.sidebar.winfo_rootx(),
+                widget.winfo_rooty() - self.sidebar.winfo_rooty())
 
     def _mode_keys_for(self, page: Any) -> list[str]:
         mode_pages = getattr(page, "mode_pages", None)
@@ -1076,11 +1153,11 @@ class Navigation:
             pady = (0, 3) if index == 0 else 3
             btn.grid(row=row, column=0, sticky="ew", pady=pady)
             row += 1
-            if name == current and self.mode_buttons:
-                self.mode_frame.grid(row=row, column=0, sticky="ew", pady=(0, 3))
+            frame = self._tree_frames.get(name)
+            if frame is not None and self._tree_children.get(name):
+                frame.grid(row=row, column=0, sticky="ew", padx=(self._scaled(16), 0), pady=(0, 3))
                 row += 1
-        if not self.mode_buttons:
-            self.mode_frame.grid_remove()
+        self.mode_frame.grid_remove()
         self._sync_sidebar_scroll_region()
 
     def _sync_sidebar_content_width(self, event: tk.Event) -> None:
@@ -1118,33 +1195,25 @@ class Navigation:
 
     def _sync_mode_buttons(self, page: Any) -> None:
         keys = self._mode_keys_for(page)
-        if not keys:
-            self._clear_mode_buttons()
+        name = self.ctx.state.current_page
+        if not keys or name not in self.buttons:
+            self.mode_host = None
+            self.mode_buttons = {}
+            self._relayout_sidebar()
+            self._refresh_tree_styles()
             return
-        if self.mode_host is not page or list(self.mode_buttons.keys()) != keys:
-            self._clear_mode_buttons()
-            self.mode_host = page
-            host_buttons = getattr(page, "mode_buttons", None)
-            if not isinstance(host_buttons, dict):
-                host_buttons = {}
-                page.mode_buttons = host_buttons
-            lang = self.ctx.state.language
-            for index, key in enumerate(keys):
-                btn = ttk.Button(
-                    self.mode_frame,
-                    text=t(lang, key),
-                    style="SidebarMode.TButton",
-                    command=lambda k=key: self._on_mode_clicked(k),
-                )
-                btn.grid(row=index, column=0, sticky="ew", pady=(0, 3) if index == 0 else 3)
-                self.mode_buttons[key] = btn
-                host_buttons[key] = btn
+        if list(self._tree_children.get(name, {}).keys()) != keys:
+            self._build_tree_children(name, keys)  # page's real modes win over the static list
+        children = self._tree_children[name]
+        self.mode_host = page
+        self.mode_buttons = children
+        host_buttons = getattr(page, "mode_buttons", None)
+        if not isinstance(host_buttons, dict):
+            host_buttons = {}
+            page.mode_buttons = host_buttons
+        host_buttons.update(children)
         self._relayout_sidebar()
-        sync = getattr(page, "_sync_mode_button_styles", None)
-        if callable(sync):
-            sync()
-        else:
-            self._refresh_mode_button_styles()
+        self._refresh_tree_styles()
 
     def _on_mode_clicked(self, key: str) -> None:
         page = self.mode_host
@@ -1167,6 +1236,7 @@ class Navigation:
             sync()
         else:
             self._refresh_mode_button_styles()
+        self._refresh_tree_styles()
 
     def _refresh_mode_button_styles(self) -> None:
         current = getattr(self.mode_host, "current_mode", None)

@@ -100,12 +100,16 @@ class NavAnimationTests(unittest.TestCase):
                 for name in ("awp1922", "home", "awp1221"):
                     nav.show(name)
                     pump(app.root, 0.4)
-                    btn, bar = nav.buttons[name], nav._nav_indicator
+                    # sidebar tree: chips with modes mark their selected mode child
+                    btn, bar = nav._tree_widget(nav._selected_nav_name()), nav._nav_indicator
+                    if name == "awp1221":
+                        self.assertIn(":", nav._selected_nav_name())
                     self.assertTrue(bar.winfo_ismapped())
-                    center_btn = btn.winfo_y() + btn.winfo_height() / 2
+                    bx, by = nav._sidebar_xy(btn)
+                    center_btn = by + btn.winfo_height() / 2
                     center_bar = bar.winfo_y() + bar.winfo_height() / 2
                     self.assertLessEqual(abs(center_btn - center_bar), 1.0)
-                    self.assertLess(bar.winfo_x() + bar.winfo_width(), btn.winfo_x())
+                    self.assertLess(bar.winfo_x() + bar.winfo_width(), bx)
             # hover bar fades in and is removed after leave
             app.animator.set_enabled(True)
             nav._nav_hover("awp1018", True)

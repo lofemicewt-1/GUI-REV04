@@ -3596,6 +3596,13 @@ class PiezoApplication:
         self.navigation.on_page_built = self._refresh_widget_fonts
         t0 = time.perf_counter()
         self.navigation.add_page("home", "home", HomePage(content, self.ctx))
+        # Sidebar tree children (page modes) -- the page's own mode list
+        # replaces these once the page is built, if it ever differs.
+        tree_modes = {
+            "awp1921_1923": ("button_mode", "pump_mode", "full_mode"),
+            "awp1018": ("awp1018_normal_mode", "awp1018_diff_mode", "full_mode"),
+            "awp1221": ("button_mode", "full_mode"),
+        }
         for name, cls, sidebar in (
             ("awp1921_1923", AWP1921AWP1923Page, True),
             ("awp1922", AWP1922Page, True),
@@ -3604,7 +3611,8 @@ class PiezoApplication:
             ("settings", SettingsPage, False),
         ):
             self.navigation.register_page(
-                name, name, lambda cls=cls: cls(content, self.ctx), sidebar_button=sidebar
+                name, name, lambda cls=cls: cls(content, self.ctx), sidebar_button=sidebar,
+                modes=tree_modes.get(name),
             )
         _anim.debug_log(f"build pages: home {(time.perf_counter() - t0) * 1000:.0f} ms (others lazy)")
 
