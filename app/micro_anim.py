@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import time
 import tkinter as tk
+from tkinter import ttk
 from typing import Callable
 
 from core import animation as anim
@@ -69,7 +70,14 @@ class MicroAnimations:
         for cls in TOGGLE_CLASSES:
             root.bind_class(cls, "<<Invoke>>", self._on_toggle, add="+")
             root.bind_class(cls, "<ButtonRelease-1>", self._on_toggle_release, add="+")
+        # add="+" is essential: other code (scroll areas) also binds
+        # <MouseWheel> on "all"; a plain bind_all would replace theirs.
+        # Locked by tests/test_animation.py (test_mousewheel_bind_all_is_additive).
         root.bind_all("<MouseWheel>", self._hide_all, add="+")
+        # Destroyed widgets must not stay referenced (hover target, press
+        # style) -- stale refs raise TclError or animate a dead bar target.
+        for cls in set(HOVER_CLASSES) | set(TOGGLE_CLASSES) | {"TCombobox"}:
+            root.bind_class(cls, "<Destroy>", self._on_widget_destroy, add="+")
 
     # -- helpers ----------------------------------------------------------
     def _bar(self) -> tk.Frame:
@@ -90,9 +98,44 @@ class MicroAnimations:
                 return None
         return w
 
+    def _on_widget_destroy(self, event: tk.Event) -> None:
+        w = self._widget(event)
+        if w is None:
+            return
+        if w is self._hover_widget:
+            self.animator.cancel("btn-hover")
+            self._hover_widget = None
+            self._hover_color = None
+        pressed = getattr(self, "_press_style", None)
+        if pressed and pressed[0] is w:
+            self._press_style = None
+
     def _rest(self, w: tk.Misc) -> str:
-        # background behind the widget (its parent's bg if it is a tk widget,
-        # else the panel colour) -- the bar fades from/to this.
+        """Background behind the widget -- the bar fades from/to this.  Walk
+        up the parents: a tk widget's own bg, else its ttk style's
+        background; fall back to the panel colour."""
+        style = None
+        try:
+            parent = w.master
+            while parent is not None:
+                try:
+                    bg = str(parent.cget("background"))
+                    if bg:
+                        return bg
+                except tk.TclError:
+                    pass
+                try:
+                    name = str(parent.cget("style")) or str(parent.winfo_class())
+                    if style is None:
+                        style = ttk.Style(self.root)
+                    bg = str(style.lookup(name, "background"))
+                    if bg:
+                        return bg
+                except tk.TclError:
+                    pass
+                parent = parent.master
+        except (AttributeError, tk.TclError):
+            pass
         return self._c("panel", "#FFFFFF")
 
     def _hide_all(self, _e=None) -> None:
@@ -107,6 +150,15 @@ class MicroAnimations:
         w = self._widget(event)
         if w is None or self._excluded(w):
             return
+        hw = self._hover_widget
+        if hw is not None and hw is not w:
+            try:
+                alive = bool(hw.winfo_exists())
+            except tk.TclError:
+                alive = False
+            if not alive:
+                self._hover_widget = None
+                self._hover_color = None
         try:
             if w.instate(["disabled"]):  # type: ignore[attr-defined]
                 return
@@ -237,6 +289,10 @@ class MicroAnimations:
             if call("winfo", "toplevel", path) != path:
                 return
             self.animator.cancel(("popdown", path))
+            try:
+                call("wm", "attributes", path, "-alpha", 1.0)  # never stay translucent
+            except tk.TclError:
+                pass
             frame = f"{path}.f"
             if str(call("winfo", "manager", frame)) == "place":
                 call("place", "forget", frame)

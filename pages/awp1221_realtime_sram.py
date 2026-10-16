@@ -47,6 +47,10 @@ def awp1221_merge_adc_load(current: int, load: str) -> int:
     return value & ~AWP1221_ADC_LOAD_BIT
 
 
+def awp1221_decode_adc_load(value: int) -> str:
+    return "160 uA" if int(value) & AWP1221_ADC_LOAD_BIT else "40 uA"
+
+
 def awp1221_merge_sample_time(current: int, sample_time: str) -> int:
     code = AWP1221_ADC_SAMPLE_TIME_OPTIONS.index(str(sample_time))
     value = int(current) & 0xFFFF

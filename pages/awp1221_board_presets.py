@@ -144,6 +144,9 @@ class AWP1221BoardPresetMixin:
         for key in ("save_to_board", "set_active", "apply_slot", "read_slot"):
             self._buttons[key].configure(state="disabled")
 
+        take = getattr(self, "_take_header_listener", None)
+        listener = take() if callable(take) else None
+
         def worker():
             with _serial_batch(self.ctx.serial):
                 if action == "save":
@@ -169,7 +172,7 @@ class AWP1221BoardPresetMixin:
                 messagebox.showerror(self.tr("error"), str(error))
                 notify = getattr(self, "_notify_header_done", None)
                 if callable(notify):
-                    notify()
+                    notify(listener)
                 return
             if action in ("read", "apply"):
                 self._restore_type4_model(result[1])
@@ -191,7 +194,7 @@ class AWP1221BoardPresetMixin:
             messagebox.showinfo(self.tr("info"), text)
             notify = getattr(self, "_notify_header_done", None)
             if callable(notify):
-                notify()
+                notify(listener)
 
         _run_ui_background_task(self, worker, on_done=finish,
                                 on_error=lambda error: finish(error=error))

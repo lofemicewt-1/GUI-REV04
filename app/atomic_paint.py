@@ -267,6 +267,9 @@ COVER_CAP_S = float(os.environ.get("PIEZO_ATOMIC_CAP_MS", "700")) / 1000.0
 # ~900 ms), which used to drop the cover with 0 paint rounds -> the page
 # (e.g. its title) painted visibly in stages.
 FLUSH_MIN_S = float(os.environ.get("PIEZO_ATOMIC_FLUSH_MIN_MS", "400")) / 1000.0
+# Absolute bound from the click.  1800 (not 1500): on the user's PC the 1221
+# Button Mode layout alone reaches ~1.0 s and its paint drain needs ~0.2-0.33 s.
+COVER_ABS_CAP_S = float(os.environ.get("PIEZO_ATOMIC_ABS_CAP_MS", "1800")) / 1000.0
 _PARK = -30000
 
 
@@ -348,6 +351,14 @@ class AtomicSwitch:
             except Exception:
                 pass
             self._token += 1
+            # The old switch's cross-fade (if it had started) must stop here,
+            # or it keeps stepping the alpha of the kept snapshot.
+            animator = getattr(self, "_animator", None)
+            if animator is not None:
+                try:
+                    animator.cancel("page-transition")
+                except Exception:
+                    pass
             self._debug("atomic: cover kept (switch re-entered while covered)")
             return True
         t1 = time.perf_counter()
@@ -395,14 +406,17 @@ class AtomicSwitch:
         if not self._active:
             return
         token = self._token
+        self._animator = animator
         t_reveal = time.perf_counter()
-        limit_click = (started if started is not None else t_reveal) + COVER_CAP_S
+        t_click = started if started is not None else t_reveal
+        limit_click = t_click + COVER_CAP_S
+        limit_abs = t_click + COVER_ABS_CAP_S
 
         def finish_paint() -> None:
             if token != self._token or not self._active:
                 return
             t_idle = time.perf_counter()
-            limit = max(limit_click, t_idle + FLUSH_MIN_S)
+            limit = min(max(limit_click, t_idle + FLUSH_MIN_S), max(limit_abs, t_idle))
             try:
                 main = _frame_hwnd(self.root)
             except Exception:
@@ -439,7 +453,10 @@ class AtomicSwitch:
 
         try:
             self.root.after_idle(finish_paint)
-            self.root.after(2500, lambda: token == self._token and self._active and self.park())  # safety
+            self._cancel_safety()
+            self._safety_job = self.root.after(
+                2500, lambda: token == self._token and self._active and self.park()
+            )  # safety
         except tk.TclError:
             self.park()
 
@@ -476,7 +493,17 @@ class AtomicSwitch:
 
         animator.animate("page-transition", ms, step, ease=anim.EASE_OUT, done=done)
 
+    def _cancel_safety(self) -> None:
+        job = getattr(self, "_safety_job", None)
+        self._safety_job = None
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except tk.TclError:
+                pass
+
     def park(self) -> None:
+        self._cancel_safety()
         self._active = False
         if self._ov_frame:
             try:

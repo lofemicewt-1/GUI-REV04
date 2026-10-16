@@ -50,6 +50,7 @@ from pages.awp1221_realtime_sram import (
     AWP1221_ADC_LIVE_REGISTER,
     AWP1221_ADC_LOAD_REGISTER,
     awp1221_adc_load_label,
+    awp1221_decode_adc_load,
     awp1221_merge_adc_load,
     awp1221_threshold_adc_counts,
     awp1221_vibration_band_seconds,
@@ -82,8 +83,13 @@ AWP1221_RETURN_BIT_REGISTER = 0x06
 AWP1221_RETURN_BIT_RESET = 0x0204   # reg 0x06 (p.6): P=off, R=6400 us, OCP 2, no sleep valset
 AWP1221_DEBOUNCE_RESET = 0x0000     # reg 0x12 (p.18): SENSE debouncing 0 ms
 AWP1221_ADC_LOAD_RESET = 0x0000     # reg 0x1F (p.20): CFG_LDO_OUTP_EN 0 -> 40 uA
+# Release threshold 0x0A / 0x0F: the guide contradicts itself -- the register
+# header says Default 0x1800, but its own bit table (p.11 / p.16) gives
+# EN_DEBOUNCE=0, TH_GAIN=0, CFG_NXT=0, AB=0, Threshold=12'h7FF -> 0x07FF.
+# The bit table is used (same as the press threshold 0x09 / 0x0E).
+AWP1221_RELEASE_THR_RESET = 0x07FF
 # reg 0x08..0x0C / 0x0D..0x11 (p.7-17): control, press thr, release thr, slope, wave
-AWP1221_STAGE_RESET = (0x0003, 0x07FF, 0x1800, 0xC03F, 0x0000)
+AWP1221_STAGE_RESET = (0x0003, 0x07FF, AWP1221_RELEASE_THR_RESET, 0xC03F, 0x0000)
 AWP1221_SLEEP_SENSITIVITY_MASK = 1 << 12
 AWP1221_ADC_VALUE_REGISTER = 0x13
 AWP1221_ADC_THRESHOLD_PRECISION_MASK = 1 << 14
@@ -1100,7 +1106,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         # so the first paint already shows what a read-back would show.
         reset = decode_awp1221_adc_settings_registers(AWP1221_INTERFACE_CONFIG_0_DEFAULT, AWP1221_RETURN_BIT_RESET)
         self.adc_sample_update_var = tk.StringVar(value=reset["sample_update"])
-        self.adc_ldo_var = tk.StringVar(value=AWP1221_ADC_LDO_OPTIONS[0])
+        self.adc_ldo_var = tk.StringVar(value=awp1221_decode_adc_load(AWP1221_ADC_LOAD_RESET))
         self.zero_time_var = tk.StringVar(value=reset["zero_time"])
         self.press_return_bit_time_var = tk.StringVar(value=reset["press_return_bit_time"])
         self.release_return_bit_time_var = tk.StringVar(value=reset["release_return_bit_time"])
@@ -1787,13 +1793,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         with self._suspend_adc_live_writes():
             for stage_index, registers in enumerate(self.STAGE_REGISTER_RANGES):
                 if stage_index < len(self._stage_vars):
-                    # The guide is self-contradictory for the release
-                    # threshold (0x0A/0x0F: word 0x1800 vs fields AB=0,
-                    # Threshold=0x7FF), so those fields keep their GUI values.
-                    keep = {k: v.get() for k, v in self._stage_vars[stage_index]["release_threshold"].items()}
                     self._set_stage_values(stage_index, AWP1221_STAGE_RESET)
-                    for k, v in keep.items():
-                        self._stage_vars[stage_index]["release_threshold"][k].set(v)
                 if stage_index < len(self._button_stage_vars):
                     self._set_button_stage_values(stage_index, dict(zip(registers, AWP1221_STAGE_RESET)))
 
@@ -1837,6 +1837,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             messagebox.showerror(self.tr("error"), str(exc))
 
     def _header_tip(self, text: str) -> str:
+        if self.mode_key == "full_mode":
+            return f"{text}\n{self.tr('awp1221_header_acts_on_button_tip')}"
         return text
 
     # Operations that change chip registers; Full Mode re-reads the chip
@@ -1860,11 +1862,21 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             target._header_done_listener = lambda: self._resync_after_header_action()
         else:
             target._header_done_listener = None
-        return getattr(target, name)(*args)
+        try:
+            return getattr(target, name)(*args)
+        finally:
+            # Async actions took the listener when they started their worker
+            # (_take_header_listener); anything still attached here returned
+            # early (cancelled / invalid / not connected) and must not fire on
+            # a later, unrelated Button Mode write.
+            target._header_done_listener = None
 
-    def _notify_header_done(self) -> None:
+    def _take_header_listener(self) -> Callable[[], None] | None:
         listener = getattr(self, "_header_done_listener", None)
         self._header_done_listener = None
+        return listener if callable(listener) else None
+
+    def _notify_header_done(self, listener: Callable[[], None] | None = None) -> None:
         if callable(listener):
             try:
                 self.after_idle(listener)
@@ -2004,6 +2016,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
             return
         self._set_page_script_buttons_state("disabled")
+        listener = self._take_header_listener()
 
         def worker() -> None:
             with _serial_batch(self.ctx.serial):
@@ -2014,11 +2027,13 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         _run_ui_background_task(
             self,
             worker,
-            on_done=lambda _result: self._finish_page_script_import(None, operations),
-            on_error=lambda error: self._finish_page_script_import(str(error), operations),
+            on_done=lambda _result: self._finish_page_script_import(None, operations, listener),
+            on_error=lambda error: self._finish_page_script_import(str(error), operations, listener),
         )
 
-    def _finish_page_script_import(self, error: str | None, operations: list[Any]) -> None:
+    def _finish_page_script_import(
+        self, error: str | None, operations: list[Any], listener: Callable[[], None] | None = None,
+    ) -> None:
         self._set_page_script_buttons_state("normal")
         if error:
             messagebox.showerror(self.tr("error"), error)
@@ -2029,10 +2044,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 self._apply_page_script_snapshot(snapshot, operations[0].device_addr)
             except Exception as exc:
                 messagebox.showerror(self.tr("error"), str(exc))
-                self._notify_header_done()
+                self._notify_header_done(listener)
                 return
         messagebox.showinfo(self.tr("info"), self.tr("register_script_import_success"))
-        self._notify_header_done()
+        self._notify_header_done(listener)
 
     def _set_page_script_buttons_state(self, state: str) -> None:
         for key in ("button_mode_import_user_preset", "button_mode_export_user_preset"):
@@ -2084,8 +2099,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         settings_words = awp1221_settings_target_words(
             {
                 AWP1221_ADC_SETTINGS_REGISTER: AWP1221_INTERFACE_CONFIG_0_DEFAULT,
-                AWP1221_RETURN_BIT_REGISTER: 0,
-                AWP1221_DEBOUNCE_REGISTER: 0,
+                AWP1221_RETURN_BIT_REGISTER: AWP1221_RETURN_BIT_RESET,
+                AWP1221_DEBOUNCE_REGISTER: AWP1221_DEBOUNCE_RESET,
                 AWP1221_ADC_LOAD_REGISTER: AWP1221_CMD_GATE_BIT,
             },
             self._adc_settings_config(),
@@ -2348,6 +2363,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         extra_writes = tuple(preset.get("extra_register_writes", ()))
         shared_state, revision = self._begin_sinc_write(device_addr)
         self._set_waveform_write_busy(True)
+        listener = self._take_header_listener()
         _run_ui_background_task(
             self,
             lambda: self._write_software_preset(
@@ -2363,14 +2379,14 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 device_addr,
                 shared_state=shared_state,
                 revision=revision,
-            ), self._notify_header_done()),
+            ), self._notify_header_done(listener)),
             on_error=lambda error: (self._finish_sinc_write(
                 str(error),
                 plan,
                 device_addr,
                 shared_state=shared_state,
                 revision=revision,
-            ), self._notify_header_done()),
+            ), self._notify_header_done(listener)),
         )
         return True
 

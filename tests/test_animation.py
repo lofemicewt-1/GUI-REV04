@@ -186,6 +186,42 @@ class NavAnimationTests(unittest.TestCase):
         finally:
             app.close()
 
+    def test_mousewheel_bind_all_is_additive(self) -> None:
+        import tkinter as tk
+        from core import animation as anim
+        from app.micro_anim import MicroAnimations
+
+        root = tk.Tk()
+        try:
+            root.bind_all("<MouseWheel>", lambda e: None)
+            before = root.bind_all("<MouseWheel>")
+            MicroAnimations(root, anim.Animator(root), lambda: {}, lambda w: False)
+            after = root.bind_all("<MouseWheel>")
+            self.assertIn(before.strip().splitlines()[0].strip(), after)
+        finally:
+            root.destroy()
+
+    def test_popdown_unmap_restores_alpha(self) -> None:
+        import tkinter as tk
+        from tkinter import ttk
+        from app.application import PiezoApplication
+
+        app = PiezoApplication()
+        try:
+            r = app.root
+            win = tk.Toplevel(r)
+            cb = ttk.Combobox(win, values=[f"v{i}" for i in range(6)], state="readonly")
+            cb.pack()
+            pump(r, 0.1)
+            app.animator.set_enabled(True)
+            r.tk.call("ttk::combobox::Post", str(cb))
+            pump(r, 0.05)  # mid-expand
+            r.tk.call("ttk::combobox::Unpost", str(cb))
+            pump(r, 0.05)
+            self.assertAlmostEqual(float(r.tk.call("wm", "attributes", f"{cb}.popdown", "-alpha")), 1.0)
+        finally:
+            app.close()
+
     def test_settings_toggle_disables_animator(self) -> None:
         from app.application import PiezoApplication
 

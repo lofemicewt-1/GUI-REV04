@@ -166,7 +166,6 @@ class Navigation:
         self._tree_heights: dict[str, float] = {}
         self._tree_open: str | None = None
         self._tree_anim: bool = False
-        self._tree_job: str | None = None
 
         # width=1：画布自身不撑宽侧栏，侧栏宽度由导航按钮自然宽度决定，
         # 避免默认 Canvas 请求宽度（约378px）把按钮列撑得过大。
@@ -1053,7 +1052,7 @@ class Navigation:
                         and not getattr(self, "_nav_indicator_retry", False)):
                     # child of a just-expanded clip: mapped on the next geometry pass
                     self._nav_indicator_retry = True
-                    self.root.after(16, self._place_nav_indicator, animate)
+                    self._nav_indicator_job = self.root.after(16, self._place_nav_indicator, animate)
                     return
                 indicator.place_forget()
                 self._nav_indicator_y = None
@@ -1098,8 +1097,16 @@ class Navigation:
             frame.place(x=0, y=0, relwidth=1.0)
             self._tree_frames[chip] = frame
             self._tree_heights[chip] = 0.0
-        for btn in self._tree_children.get(chip, {}).values():
-            btn.destroy()
+        old = self._tree_children.get(chip, {})
+        if old:
+            page = self.get_page(chip, build=False)
+            host_buttons = getattr(page, "mode_buttons", None) if page is not None else None
+            for key, btn in old.items():
+                if isinstance(host_buttons, dict) and host_buttons.get(key) is btn:
+                    host_buttons.pop(key, None)
+                if self.mode_buttons.get(key) is btn:
+                    self.mode_buttons.pop(key, None)
+                btn.destroy()
         lang = self.ctx.state.language
         children: dict[str, ttk.Button] = {}
         for index, key in enumerate(keys):
@@ -1137,8 +1144,14 @@ class Navigation:
     def _on_tree_child(self, chip: str, key: str) -> None:
         if self.ctx.state.current_page != chip:
             self.show(chip)
-        page = self.get_page(chip, build=False)
-        if page is not None and getattr(page, "current_mode", None) != key:
+        # show() built the page if the background build had not reached it;
+        # build=True never returns a stale/None page here.
+        page = self.get_page(chip)
+        if page is None:
+            return
+        if self.mode_host is not page:
+            self._sync_mode_buttons(page)
+        if getattr(page, "current_mode", None) != key:
             self._on_mode_clicked(key)
         self._refresh_tree_styles()
 
@@ -1163,8 +1176,24 @@ class Navigation:
         frame = self._tree_frames[chip]
         h = frame.winfo_reqheight()
         if h <= 1:
-            frame.update_idletasks()
-            h = frame.winfo_reqheight()
+            # Not laid out yet: estimate from the buttons' own requests (+ the
+            # grid pady used in _build_tree_children) instead of forcing a
+            # synchronous update_idletasks inside the relayout; the exact
+            # value is applied by the idle re-sync.
+            buttons = list(self._tree_children.get(chip, {}).values())
+            h = sum(b.winfo_reqheight() for b in buttons) + max(0, 6 * len(buttons) - 3)
+            pending = self.__dict__.setdefault("_tree_resync_pending", set())
+            if chip not in pending:
+                pending.add(chip)
+
+                def resync(c: str = chip) -> None:
+                    pending.discard(c)
+                    self._sync_tree_expansion()
+
+                try:
+                    self.root.after_idle(resync)
+                except tk.TclError:
+                    pending.discard(chip)
         return max(1, h)
 
     def _set_tree_height(self, chip: str, h: float) -> None:
@@ -1188,8 +1217,6 @@ class Navigation:
                 if abs(self._tree_heights.get(target, 0) - full) >= 1:
                     self._set_tree_height(target, full)
             return
-        if self._tree_job is not None:
-            return
         sw = getattr(self, "_atomic", None)
         if (sw is not None and sw.active) or sys.platform == "win32":
             # Windows: animating the clip height relayouts every native child
@@ -1199,17 +1226,6 @@ class Navigation:
             self._run_tree_expansion(target, instant=True)
             return
         self._run_tree_expansion(target)
-
-    def _tree_after_cover(self) -> None:
-        self._tree_job = None
-        sw = getattr(self, "_atomic", None)
-        if sw is not None and sw.active:
-            try:
-                self._tree_job = self.root.after(30, self._tree_after_cover)
-            except tk.TclError:
-                pass
-            return
-        self._run_tree_expansion(self._tree_target())
 
     def _run_tree_expansion(self, target: str | None, instant: bool = False) -> None:
         self._tree_open = target
@@ -1331,6 +1347,7 @@ class Navigation:
         if not isinstance(host_buttons, dict):
             host_buttons = {}
             page.mode_buttons = host_buttons
+        host_buttons.clear()  # drop refs to buttons destroyed by a rebuild
         host_buttons.update(children)
         self._relayout_sidebar()
         self._refresh_tree_styles()

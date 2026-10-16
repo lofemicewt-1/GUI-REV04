@@ -27,7 +27,7 @@ class Awp1221DatasheetDefaultsTests(unittest.TestCase):
         self.assertEqual(decode_awp1221_debounce_time(AWP1221_DEBOUNCE_RESET), 0)
 
     def test_stage_defaults(self) -> None:
-        self.assertEqual(AWP1221_STAGE_RESET, (0x0003, 0x07FF, 0x1800, 0xC03F, 0x0000))
+        self.assertEqual(AWP1221_STAGE_RESET, (0x0003, 0x07FF, 0x07FF, 0xC03F, 0x0000))
         slope = decode_awp1221_adc_slope(AWP1221_STAGE_RESET[3])
         self.assertEqual((slope["release_below"], slope["release_slope"], slope["press_below"], slope["press_slope"]),
                          (True, 0x40, False, 0x3F))
@@ -35,3 +35,50 @@ class Awp1221DatasheetDefaultsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Awp1221HeaderListenerTests(unittest.TestCase):
+    def test_early_return_clears_listener(self) -> None:
+        from pages.awp1221_page import AWP1221ModePage
+
+        calls = []
+
+        class Target:
+            _header_done_listener = None
+
+            def apply_software_preset(self, _index):
+                return False  # validation failed: no worker started
+
+        target = Target()
+        page = AWP1221ModePage.__new__(AWP1221ModePage)
+        page.mode_key = "full_mode"
+        page.host = type("H", (), {"mode_pages": {"button_mode": target}})()
+        page._resync_after_header_action = lambda: calls.append(1)
+        AWP1221ModePage._header_action(page, "apply_software_preset", 0)
+        self.assertIsNone(target._header_done_listener)
+
+    def test_async_action_keeps_its_own_listener(self) -> None:
+        from pages.awp1221_page import AWP1221ModePage
+
+        taken = []
+
+        class Target:
+            _header_done_listener = None
+
+            def apply_software_preset(self, _index):
+                taken.append(AWP1221ModePage._take_header_listener(self))
+                return True
+
+        target = Target()
+        page = AWP1221ModePage.__new__(AWP1221ModePage)
+        page.mode_key = "full_mode"
+        page.host = type("H", (), {"mode_pages": {"button_mode": target}})()
+        page._resync_after_header_action = lambda: None
+        AWP1221ModePage._header_action(page, "apply_software_preset", 0)
+        self.assertTrue(callable(taken[0]))
+        self.assertIsNone(target._header_done_listener)
+
+    def test_release_threshold_reset_uses_bit_table(self) -> None:
+        from pages.awp1221_page import AWP1221_RELEASE_THR_RESET, AWP1221_STAGE_RESET
+        self.assertEqual(AWP1221_RELEASE_THR_RESET, 0x07FF)
+        self.assertEqual(AWP1221_STAGE_RESET[2], 0x07FF)
