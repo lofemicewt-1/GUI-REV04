@@ -76,6 +76,7 @@ AWP1221_DEBOUNCE_MASK = 0x03FF
 AWP1221_ADC_SETTINGS_REGISTER = 0x05
 AWP1221_INTERFACE_CONFIG_0_DEFAULT = 0x442E
 AWP1221_RETURN_BIT_REGISTER = 0x06
+AWP1221_RETURN_BIT_RESET = 0x0000  # reg 0x06 power-on value: return-bit off
 AWP1221_SLEEP_SENSITIVITY_MASK = 1 << 12
 AWP1221_ADC_VALUE_REGISTER = 0x13
 AWP1221_ADC_THRESHOLD_PRECISION_MASK = 1 << 14
@@ -1087,11 +1088,15 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._selector_widgets: dict[str, list[tk.Widget]] = {}
         self._auto_serial_check: ttk.Checkbutton | None = None
         self.debounce_time_var = tk.StringVar(value="100")
-        self.adc_sample_update_var = tk.StringVar(value=AWP1221_ADC_SAMPLE_UPDATE_OPTIONS[0])
+        # Initial selections = chip reset values (reg 0x05 = 0x442E,
+        # reg 0x06 = 0x0000), decoded with the same function as a device read
+        # so the first paint already shows what a read-back would show.
+        reset = decode_awp1221_adc_settings_registers(AWP1221_INTERFACE_CONFIG_0_DEFAULT, AWP1221_RETURN_BIT_RESET)
+        self.adc_sample_update_var = tk.StringVar(value=reset["sample_update"])
         self.adc_ldo_var = tk.StringVar(value=AWP1221_ADC_LDO_OPTIONS[0])
-        self.zero_time_var = tk.StringVar(value=AWP1221_ZERO_TIME_OPTIONS[0])
-        self.press_return_bit_time_var = tk.StringVar(value=AWP1221_RETURN_BIT_TIME_OPTIONS[1])
-        self.release_return_bit_time_var = tk.StringVar(value=AWP1221_RETURN_BIT_TIME_OPTIONS[1])
+        self.zero_time_var = tk.StringVar(value=reset["zero_time"])
+        self.press_return_bit_time_var = tk.StringVar(value=reset["press_return_bit_time"])
+        self.release_return_bit_time_var = tk.StringVar(value=reset["release_return_bit_time"])
         self.zps_enabled_var = tk.BooleanVar(value=True)
         self.zps_detect_var = tk.BooleanVar(value=True)
         self.sleep_sensitivity_var = tk.BooleanVar(value=False)
