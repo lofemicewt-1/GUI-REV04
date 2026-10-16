@@ -3304,6 +3304,7 @@ class PiezoApplication:
         self.i2c_bridge = LocalI2cBridge(self.serial._current_manager)
         self.i2c_bridge.start()
         self.colors = apply_theme(self.root, self.state.theme, self.state.font_size, self.state.ui_scale)
+        self.root._piezo_colors = self.colors  # shared tooltip theme
 
         self.ctx = ApplicationContext(
             state=self.state,
@@ -3448,7 +3449,8 @@ class PiezoApplication:
             )
             return
         # Don't compete with a running transition or a pending user event.
-        if getattr(self.animator, "_tweens", None):
+        atomic = getattr(self.navigation, "_atomic", None)
+        if getattr(self.animator, "_tweens", None) or getattr(atomic, "active", False):
             self._schedule_background_slice(60)
             return
         nav = self.navigation
@@ -3686,6 +3688,7 @@ class PiezoApplication:
         self._last_applied_font_size = self.state.font_size
         self.colors = apply_theme(self.root, self.state.theme, self.state.font_size, scale)
         self.ctx.colors = self.colors
+        self.root._piezo_colors = self.colors  # shared tooltip theme
         self.navigation.refresh_theme()
         if refresh_widget_fonts:
             self._refresh_widget_fonts()

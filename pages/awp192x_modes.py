@@ -28,7 +28,7 @@ from core.base_tool import (
 )
 from core.chip_discovery import AWP192X_PROBE
 from core.waveform_storage import WaveformStorage
-from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
+from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen, shared_tooltip, show_tooltip
 from pages.waveform_generator import WAVEFORM_DEFAULT_POINTS_PER_WRITE, WaveformGeneratorPage
 from core.animation import FADE_MS, animator_for, lerp_color
 from core.ui_dispatch import post_to_ui
@@ -1026,79 +1026,16 @@ class ButtonModePage(BasePage):
         self._show_tooltip_text(event, text)
 
     def _show_tooltip_text(self, event: tk.Event, text: str) -> None:
-        widget = event.widget
-        try:
-            if isinstance(widget, ttk.Button) and widget.instate(["disabled"]):
-                return
-        except tk.TclError:
-            return
-
-        tooltip = self._ensure_preset_tooltip()
-        if self._preset_tooltip_label is None:
-            return
-        self._preset_tooltip_label.configure(text=text)
-        self._refresh_preset_tooltip_theme()
-
-        try:
-            tooltip.withdraw()
-            tooltip.update_idletasks()
-            x = widget.winfo_rootx()
-            y = widget.winfo_rooty() + widget.winfo_height() + 8
-            width = tooltip.winfo_reqwidth()
-            height = tooltip.winfo_reqheight()
-            screen_width = tooltip.winfo_screenwidth()
-            screen_height = tooltip.winfo_screenheight()
-            x = min(max(8, x), max(8, screen_width - width - 8))
-            if y + height + 8 > screen_height:
-                y = max(8, widget.winfo_rooty() - height - 8)
-            y = min(max(8, y), max(8, screen_height - height - 8))
-            tooltip.geometry(f"+{x}+{y}")
-            tooltip.deiconify()
-            tooltip.lift()
-        except tk.TclError:
-            pass
-
-    def _ensure_preset_tooltip(self) -> tk.Toplevel:
-        if self._preset_tooltip is not None and self._preset_tooltip.winfo_exists():
-            return self._preset_tooltip
-
-        tooltip = tk.Toplevel(self)
-        tooltip.withdraw()
-        tooltip.overrideredirect(True)
-        try:
-            tooltip.attributes("-topmost", True)
-        except tk.TclError:
-            pass
-        label = tk.Label(tooltip, justify="left", padx=10, pady=8, borderwidth=0)
-        label.pack()
-        self._preset_tooltip = tooltip
-        self._preset_tooltip_label = label
-        return tooltip
+        show_tooltip(event.widget, text)
 
     def _refresh_preset_tooltip_theme(self) -> None:
-        label = self._preset_tooltip_label
-        tooltip = self._preset_tooltip
-        if label is None or tooltip is None:
-            return
-        try:
-            tooltip.configure(bg=self.colors["border"])
-            label.configure(
-                bg=self.colors["panel"],
-                fg=self.colors["text"],
-                font=("Microsoft YaHei UI", int(getattr(self.winfo_toplevel(), "_piezo_body_font_size", 12))),
-            )
-        except tk.TclError:
-            pass
+        """Theme comes from the shared app tooltip (pages.base_page)."""
 
     def _hide_preset_tooltip(self) -> None:
-        tooltip = self._preset_tooltip
-        if tooltip is None:
-            return
         try:
-            tooltip.withdraw()
-        except tk.TclError:
-            self._preset_tooltip = None
-            self._preset_tooltip_label = None
+            shared_tooltip(self).hide()
+        except Exception:
+            pass
 
     def export_user_preset_script(self) -> None:
         try:

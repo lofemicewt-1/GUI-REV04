@@ -331,6 +331,20 @@ class AtomicSwitch:
         x, y, w, h = rect
         if w <= 1 or h <= 1 or not self._ensure_overlay():
             return False
+        if self._active and self._bmp:
+            # A switch is still under the cover (rapid clicks re-enter show()
+            # from reveal's event pump).  Keep the snapshot that is on screen:
+            # re-cloaking here hid the overlay for a frame and exposed the
+            # half-painted next page, then the old snapshot came back
+            # (next page flash -> old page -> transition).
+            try:
+                if self._layered:
+                    _set_alpha(self._ov_frame, 255)
+            except Exception:
+                pass
+            self._token += 1
+            self._debug("atomic: cover kept (switch re-entered while covered)")
+            return True
         t1 = time.perf_counter()
         bmp = _grab_bitmap(x, y, w, h)
         if bmp is None:
@@ -353,6 +367,10 @@ class AtomicSwitch:
             if cloaked:
                 _dwm_flush()
                 _cloak(self._ov_frame, False)
+                # Uncloak reaches the screen with the next composed frame;
+                # wait for it so the page change below can never be
+                # composed before the cover is visible.
+                _dwm_flush()
         except Exception:
             _cloak(self._ov_frame, False)
             self.park()

@@ -1051,7 +1051,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         self.rom_metric_var = tk.StringVar(value="")
         self.rom_frequency_var = tk.StringVar(value="")
-        self.board_slot_var = tk.StringVar(value="0")
+        host_slot = getattr(host, "board_slot_var", None) if host is not None else None
+        self.board_slot_var = host_slot if isinstance(host_slot, tk.StringVar) else tk.StringVar(value="0")
         self._visible_stage_index = 0
         self._build_ui()
         if self.mode_key == "button_mode":
@@ -1072,27 +1073,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-        header = ttk.Frame(self, style="App.TFrame")
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
-        header.columnconfigure(1, weight=1)
-        self.mode_title_label = ttk.Label(header, style="Prominent.TLabel")
-        self.mode_title_label.grid(row=0, column=0, sticky="w")
-
-        preset_frame = ttk.Frame(header, style="App.TFrame")
-        preset_frame.grid(row=0, column=1, sticky="ew", padx=(24, 0))
-        for column in range(self.PRESET_HEADER_COLUMNS):
-            preset_frame.columnconfigure(column, weight=1, uniform="awp1221_preset_cols", minsize=118)
-        preset_keys = (
-            "awp1221_preset_1_reserved",
-            "awp1221_preset_2_reserved",
-            "awp1221_preset_3_reserved",
-            "awp1221_import_reserved",
-            "awp1221_export_reserved",
-        )
-        for column, key in enumerate(preset_keys):
-            button = ttk.Button(preset_frame, style="Bg.TButton", state="disabled")
-            button.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 6, 0))
-            self._buttons[key] = button
+        # Same top section as Button Mode (shared builder, shared slot value).
+        self._build_button_preset_header()
 
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
@@ -1484,12 +1466,17 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._threshold_entry_with_hint(parent, variables["threshold"], row=1, column=1)
 
         self._form_label(parent, "awp1221_adc_event_mode", row=1, column=2)
+        # Same layout/style as the AWP1018 Diff Mode jump condition
+        # (按压阈值 / 松手阈值): one row, Check.TRadiobutton, fixed columns.
         mode_frame = ttk.Frame(parent, style="Panel.TFrame")
-        mode_frame.grid(row=1, column=3, sticky="w", pady=5)
+        mode_frame.grid(row=1, column=3, sticky="ew", pady=5)
+        mode_frame.columnconfigure(0, weight=1, minsize=100)
+        mode_frame.columnconfigure(1, weight=1, minsize=110)
         press_radio = ttk.Radiobutton(
             mode_frame,
             variable=variables["event_mode"],
             value="press",
+            style="Check.TRadiobutton",
         )
         press_radio.grid(row=0, column=0, sticky="w")
         self._register_text(press_radio, "awp1221_press_mode")
@@ -1497,8 +1484,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             mode_frame,
             variable=variables["event_mode"],
             value="release",
+            style="Check.TRadiobutton",
         )
-        release_radio.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        release_radio.grid(row=0, column=1, sticky="w", padx=(14, 0))
         self._register_text(release_radio, "awp1221_release_mode")
 
         self._form_label(parent, "awp1221_event_waveform", row=3, column=0)
@@ -1691,7 +1679,15 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         except Exception as exc:
             messagebox.showerror(self.tr("error"), str(exc))
 
+    def _header_tip(self, text: str) -> str:
+        """Top-section tooltip; Full Mode shares the layout but its actions
+        stay disabled (they operate on Button Mode / Type-4 settings)."""
+        if not text or self.mode_key == "button_mode":
+            return text
+        return f"{text}\n{self.tr('awp1221_full_mode_header_disabled_tip')}"
+
     def _build_button_preset_header(self) -> None:
+        button_mode = self.mode_key == "button_mode"
         header = ttk.Frame(self, style="App.TFrame")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         header.columnconfigure(1, weight=1)
@@ -1726,25 +1722,28 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             button.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 6, 0))
             self._buttons[key] = button
             if key.startswith("button_mode_preset_"):
-                self._tooltips.append(
-                    SimpleTooltip(
-                        button,
-                        lambda preset_index=column: self._software_preset_tooltip_text(preset_index),
-                    )
-                )
+                tip = lambda preset_index=column: self._header_tip(self._software_preset_tooltip_text(preset_index))
+            else:
+                tip = lambda action=key: self._header_tip(self.tr(f"awp1221_{action}_tip"))
+            if not button_mode:
+                button.state(["disabled"])
+            self._tooltips.append(SimpleTooltip(button, tip, show_disabled=True))
 
         slot_cell = ttk.Frame(preset_frame, style="App.TFrame")
         slot_cell.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         slot_label = ttk.Label(slot_cell, style="App.TLabel")
         slot_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._register_text(slot_label, "board_slot")
-        ttk.Combobox(
+        self._tooltips.append(SimpleTooltip(slot_label, lambda: self._header_tip(self.tr("awp1221_board_slot_tip")), show_disabled=True))
+        slot_combo = ttk.Combobox(
             slot_cell,
             textvariable=self.board_slot_var,
             values=("0", "1", "2"),
             state="readonly",
             width=4,
-        ).grid(row=0, column=1, sticky="w")
+        )
+        slot_combo.grid(row=0, column=1, sticky="w")
+        self._tooltips.append(SimpleTooltip(slot_combo, lambda: self._header_tip(self.tr("awp1221_board_slot_tip")), show_disabled=True))
 
         board_actions = (self.save_board_preset, self.set_board_preset_active,
                          self.apply_board_preset, self.read_board_preset)
@@ -1756,9 +1755,11 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             )
             button.grid(row=1, column=column, sticky="ew", pady=(8, 0), padx=(6, 0))
             self._buttons[key] = button
-
+            if not button_mode:
+                button.state(["disabled"])
             self._tooltips.append(SimpleTooltip(
-                button, lambda action=key: self.tr(f"awp1221_type4_{action}_tip")
+                button, lambda action=key: self._header_tip(self.tr(f"awp1221_type4_{action}_tip")),
+                show_disabled=True,
             ))
 
     def _show_preset_pending(self) -> None:
@@ -3450,22 +3451,29 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         self._form_check(parent, "awp1221_press_below_threshold", press_threshold["below_threshold"], row=6, column=0, columnspan=2)
         self._form_check(parent, "awp1221_release_below_threshold", release_threshold["below_threshold"], row=6, column=2, columnspan=2)
-        self._section_label(parent, "awp1221_adc_event_mode", row=7)
+        # Same layout/style as the AWP1018 Diff Mode jump condition.
+        self._form_label(parent, "awp1221_adc_event_mode", row=7, column=0)
+        event_mode_frame = ttk.Frame(parent, style="Panel.TFrame")
+        event_mode_frame.grid(row=7, column=1, columnspan=3, sticky="ew", pady=5)
+        event_mode_frame.columnconfigure(0, weight=1, minsize=100)
+        event_mode_frame.columnconfigure(1, weight=1, minsize=110)
         press_mode_radio = ttk.Radiobutton(
-            parent,
+            event_mode_frame,
             variable=event_mode_var,
             value="press",
+            style="Check.TRadiobutton",
             command=lambda index=stage_index: self._sync_full_event_mode(index),
         )
-        press_mode_radio.grid(row=8, column=0, columnspan=2, sticky="w", pady=5)
+        press_mode_radio.grid(row=0, column=0, sticky="w")
         self._register_text(press_mode_radio, "awp1221_press_mode")
         release_mode_radio = ttk.Radiobutton(
-            parent,
+            event_mode_frame,
             variable=event_mode_var,
             value="release",
+            style="Check.TRadiobutton",
             command=lambda index=stage_index: self._sync_full_event_mode(index),
         )
-        release_mode_radio.grid(row=8, column=2, columnspan=2, sticky="w", pady=5)
+        release_mode_radio.grid(row=0, column=1, sticky="w", padx=(14, 0))
         self._register_text(release_mode_radio, "awp1221_release_mode")
 
         self._section_label(parent, "awp1221_event_actions", row=10)
@@ -4604,8 +4612,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self.tools_notebook.tab(1, text=self.tr("awp1221_rom_tab"))
         for widget, key in self._translated_widgets:
             widget.configure(text=self.tr(key))
+        board_keys = {"set_active": "awp1221_type4_active", "apply_slot": "awp1221_type4_apply",
+                      "read_slot": "awp1221_type4_read"}
         for key, button in self._buttons.items():
-            button.configure(text=self.tr(key))
+            button.configure(text=self.tr(board_keys.get(key, key)))
         self._refresh_adc_read_buttons()
         self._refresh_sinc_slice_time_labels()
 
@@ -4650,6 +4660,7 @@ class AWP1221Page(BasePage):
         self.read_value_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="")
         self.auto_serial_var = tk.BooleanVar(value=True)
+        self.board_slot_var = tk.StringVar(value="0")  # shared by Button / Full Mode headers
         self.en_enabled_var = tk.BooleanVar(value=False)
         self.en_status_var = tk.StringVar(value="")
         self._en_state: bool | None = None

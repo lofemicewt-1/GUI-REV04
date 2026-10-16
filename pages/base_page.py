@@ -96,54 +96,135 @@ def build_serial_log_export_content(history: list[str], visible_text: str) -> st
         seen.add(line)
     return "\n".join(lines)
 
+# One tooltip look for the whole app (the AWP192x style: themed panel
+# background, 1 px border, body font, shown just below the widget).  A
+# single borderless toplevel per root is reused by every tooltip.
+TOOLTIP_DELAY_MS = 0  # both previous implementations showed immediately
+
+
+class _SharedTooltip:
+    def __init__(self, root: tk.Misc) -> None:
+        self.root = root
+        self.tip: tk.Toplevel | None = None
+        self.label: tk.Label | None = None
+        self.owner: tk.Misc | None = None
+
+    def _ensure(self) -> bool:
+        try:
+            if self.tip is not None and self.tip.winfo_exists():
+                return True
+        except tk.TclError:
+            pass
+        try:
+            tip = tk.Toplevel(self.root)
+            tip.withdraw()
+            tip.overrideredirect(True)
+            try:
+                tip.attributes("-topmost", True)
+            except tk.TclError:
+                pass
+            label = tk.Label(tip, justify="left", padx=10, pady=8, borderwidth=0, wraplength=420)
+            label.pack(padx=1, pady=1)
+        except tk.TclError:
+            return False
+        self.tip, self.label = tip, label
+        return True
+
+    def _theme(self) -> None:
+        colors = getattr(self.root, "_piezo_colors", None) or {}
+        try:
+            self.tip.configure(bg=colors.get("border", "#D1D5DB"))
+            self.label.configure(
+                bg=colors.get("panel", "#FFFFFF"),
+                fg=colors.get("text", "#111827"),
+                font=("Microsoft YaHei UI", int(getattr(self.root, "_piezo_body_font_size", 12))),
+            )
+        except tk.TclError:
+            pass
+
+    def show(self, widget: tk.Misc, text: str) -> None:
+        if not text or not self._ensure():
+            return
+        self.owner = widget
+        tip = self.tip
+        try:
+            self.label.configure(text=text)
+            self._theme()
+            tip.withdraw()
+            tip.update_idletasks()
+            x = widget.winfo_rootx()
+            y = widget.winfo_rooty() + widget.winfo_height() + 8
+            width, height = tip.winfo_reqwidth(), tip.winfo_reqheight()
+            sw, sh = tip.winfo_screenwidth(), tip.winfo_screenheight()
+            x = min(max(8, x), max(8, sw - width - 8))
+            if y + height + 8 > sh:
+                y = max(8, widget.winfo_rooty() - height - 8)
+            y = min(max(8, y), max(8, sh - height - 8))
+            tip.geometry(f"+{x}+{y}")
+            tip.deiconify()
+            tip.lift()
+        except tk.TclError:
+            pass
+
+    def hide(self, widget: tk.Misc | None = None) -> None:
+        if widget is not None and self.owner is not None and widget is not self.owner:
+            return
+        self.owner = None
+        if self.tip is not None:
+            try:
+                self.tip.withdraw()
+            except tk.TclError:
+                self.tip = self.label = None
+
+
+def shared_tooltip(widget: tk.Misc) -> _SharedTooltip:
+    root = widget._root()  # type: ignore[attr-defined]
+    tip = getattr(root, "_piezo_tooltip", None)
+    if tip is None:
+        tip = _SharedTooltip(root)
+        root._piezo_tooltip = tip  # type: ignore[attr-defined]
+    return tip
+
+
+def show_tooltip(widget: tk.Misc, text: str, *, show_disabled: bool = False) -> None:
+    try:
+        if not show_disabled and widget.instate(["disabled"]):  # type: ignore[attr-defined]
+            return
+    except (AttributeError, tk.TclError):
+        pass
+    shared_tooltip(widget).show(widget, text)
+
+
+def hide_tooltip(widget: tk.Misc | None = None) -> None:
+    target = widget if widget is not None else tk._default_root  # type: ignore[attr-defined]
+    if target is not None:
+        shared_tooltip(target).hide(widget)
+
+
 class SimpleTooltip:
-    def __init__(self, widget: tk.Widget, text_getter: Any) -> None:
+    """Hover tooltip for one widget; all instances share one window and look."""
+
+    def __init__(self, widget: tk.Widget, text_getter: Any, *, show_disabled: bool = False) -> None:
         self.widget = widget
         self.text_getter = text_getter
-        self.tip: tk.Toplevel | None = None
-        widget.bind("<Enter>", self._show)
-        widget.bind("<Leave>", self._hide)
+        self.show_disabled = show_disabled
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
 
-    def _show(self, _event: tk.Event) -> None:
-        self._hide()
+    @property
+    def tip(self) -> tk.Toplevel | None:
+        shared = shared_tooltip(self.widget)
+        return shared.tip if shared.owner is self.widget else None
+
+    def _show(self, _event: tk.Event | None = None) -> None:
         text = self.text_getter() if callable(self.text_getter) else str(self.text_getter)
         if not text:
             return
-        x = self.widget.winfo_rootx() + self.widget.winfo_width() + 8
-        y = self.widget.winfo_rooty() + 4
-        self.tip = tk.Toplevel(self.widget)
-        self.tip.wm_overrideredirect(True)
-        label = tk.Label(
-            self.tip,
-            text=text,
-            justify="left",
-            bg="#111827",
-            fg="#F9FAFB",
-            relief="solid",
-            borderwidth=1,
-            padx=8,
-            pady=6,
-            wraplength=320,
-        )
-        label.pack()
-        try:
-            self.tip.update_idletasks()
-            screen_width = self.tip.winfo_screenwidth()
-            screen_height = self.tip.winfo_screenheight()
-            tip_width = self.tip.winfo_reqwidth()
-            tip_height = self.tip.winfo_reqheight()
-            x = min(max(8, x), max(8, screen_width - tip_width - 8))
-            if y + tip_height + 8 > screen_height:
-                y = max(8, self.widget.winfo_rooty() - tip_height - 8)
-            y = min(max(8, y), max(8, screen_height - tip_height - 8))
-        except tk.TclError:
-            pass
-        self.tip.wm_geometry(f"+{x}+{y}")
+        show_tooltip(self.widget, text, show_disabled=self.show_disabled)
 
     def _hide(self, _event: tk.Event | None = None) -> None:
-        if self.tip is not None:
-            self.tip.destroy()
-            self.tip = None
+        shared_tooltip(self.widget).hide(self.widget)
 
 
 class VerticalScrollArea(ttk.Frame):
