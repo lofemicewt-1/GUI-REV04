@@ -121,6 +121,38 @@ class NavAnimationTests(unittest.TestCase):
         finally:
             app.close()
 
+    def test_sidebar_accordion_only_current_chip_expanded(self) -> None:
+        from app.application import PiezoApplication
+
+        app = PiezoApplication()
+        try:
+            nav = app.navigation
+            app.root.geometry("1200x800+0+0")
+            pump(app.root, 0.3)
+            for enabled in (True, False):
+                app.animator.set_enabled(enabled)
+                for name in ("awp1018", "home", "awp1221", "awp1922", "awp1921_1923", "settings"):
+                    if name not in nav.pages:
+                        continue
+                    nav.show(name)
+                    pump(app.root, 0.45)
+                    for chip, clip in nav._tree_clips.items():
+                        if chip == name:
+                            self.assertTrue(clip.winfo_ismapped(), chip)
+                            self.assertGreaterEqual(clip.winfo_height(), nav._tree_frames[chip].winfo_reqheight() - 1)
+                        else:
+                            self.assertFalse(clip.winfo_ismapped(), (name, chip))
+            # clicking a child of a collapsed chip navigates and expands it
+            app.animator.set_enabled(True)
+            nav.show("home")
+            pump(app.root, 0.4)
+            nav._on_tree_child("awp1018", "awp1018_diff_mode")
+            pump(app.root, 0.5)
+            self.assertEqual(app.state.current_page, "awp1018")
+            self.assertEqual(nav._tree_open, "awp1018")
+        finally:
+            app.close()
+
     def test_settings_toggle_disables_animator(self) -> None:
         from app.application import PiezoApplication
 

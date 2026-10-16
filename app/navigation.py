@@ -159,6 +159,13 @@ class Navigation:
         # Sidebar tree: chip page -> its page-mode children (always expanded).
         self._tree_frames: dict[str, ttk.Frame] = {}
         self._tree_children: dict[str, dict[str, ttk.Button]] = {}
+        # accordion: each chip's children live in a clip frame whose height is
+        # animated (DUR_BASE) -- no per-frame style work, only one configure.
+        self._tree_clips: dict[str, ttk.Frame] = {}
+        self._tree_heights: dict[str, float] = {}
+        self._tree_open: str | None = None
+        self._tree_anim: bool = False
+        self._tree_job: str | None = None
 
         # width=1：画布自身不撑宽侧栏，侧栏宽度由导航按钮自然宽度决定，
         # 避免默认 Canvas 请求宽度（约378px）把按钮列撑得过大。
@@ -1015,6 +1022,7 @@ class Navigation:
         self._schedule_nav_indicator(animate=False)
 
     def _schedule_nav_indicator(self, *, animate: bool) -> None:
+        self._nav_indicator_retry = False
         if self._nav_indicator_job is not None:
             try:
                 self.root.after_cancel(self._nav_indicator_job)
@@ -1030,10 +1038,20 @@ class Navigation:
         indicator = self._nav_indicator
         btn = self._tree_widget(self._selected_nav_name())
         try:
-            if btn is None or not btn.winfo_ismapped():
+            if self._tree_anim:
+                return
+            if btn is None or not btn.winfo_ismapped() or (
+                    ":" in self._selected_nav_name() and self._tree_open != self.ctx.state.current_page):
+                if (btn is not None and self._tree_open == self.ctx.state.current_page
+                        and not getattr(self, "_nav_indicator_retry", False)):
+                    # child of a just-expanded clip: mapped on the next geometry pass
+                    self._nav_indicator_retry = True
+                    self.root.after(16, self._place_nav_indicator, animate)
+                    return
                 indicator.place_forget()
                 self._nav_indicator_y = None
                 return
+            self._nav_indicator_retry = False
             bh = btn.winfo_height()
             if bh <= 1:
                 return
@@ -1064,9 +1082,15 @@ class Navigation:
     def _build_tree_children(self, chip: str, keys: list[str]) -> None:
         frame = self._tree_frames.get(chip)
         if frame is None:
-            frame = ttk.Frame(self.sidebar, style="Sidebar.TFrame")
+            clip = ttk.Frame(self.sidebar, style="Sidebar.TFrame", height=1)
+            clip.grid_propagate(False)
+            clip.pack_propagate(False)
+            self._tree_clips[chip] = clip
+            frame = ttk.Frame(clip, style="Sidebar.TFrame")
             frame.columnconfigure(0, weight=1)
+            frame.place(x=0, y=0, relwidth=1.0)
             self._tree_frames[chip] = frame
+            self._tree_heights[chip] = 0.0
         for btn in self._tree_children.get(chip, {}).values():
             btn.destroy()
         lang = self.ctx.state.language
@@ -1123,6 +1147,91 @@ class Navigation:
                     pass
         self._schedule_nav_indicator(animate=True)
 
+    # -- accordion -------------------------------------------------------
+    def _tree_target(self) -> str | None:
+        current = self.ctx.state.current_page
+        return current if self._tree_children.get(current) else None
+
+    def _tree_full_height(self, chip: str) -> int:
+        frame = self._tree_frames[chip]
+        h = frame.winfo_reqheight()
+        if h <= 1:
+            frame.update_idletasks()
+            h = frame.winfo_reqheight()
+        return max(1, h)
+
+    def _set_tree_height(self, chip: str, h: float) -> None:
+        clip = self._tree_clips[chip]
+        self._tree_heights[chip] = h
+        if h < 1:
+            clip.grid_remove()
+        else:
+            clip.configure(height=max(1, round(h)))
+            clip.grid()
+
+    def _sync_tree_expansion(self) -> None:
+        """Expand the current chip, collapse the others.  While the atomic
+        page-switch cover is up, wait and animate after the reveal (the
+        revealed frame shows the old sidebar, then it slides) -- never under
+        the cover and never fighting it."""
+        target = self._tree_target()
+        if target == self._tree_open and not self._tree_anim:
+            if target is not None:  # keep the open height exact (language/scale changes)
+                full = self._tree_full_height(target)
+                if abs(self._tree_heights.get(target, 0) - full) >= 1:
+                    self._set_tree_height(target, full)
+            return
+        if self._tree_job is not None:
+            return
+        animator = self._animator()
+        sw = getattr(self, "_atomic", None)
+        if animator is not None and animator.enabled and sw is not None and sw.active:
+            try:
+                self._tree_job = self.root.after(atomic_paint.FADE_MS + 20, self._tree_after_cover)
+            except tk.TclError:
+                self._tree_job = None
+            return
+        self._run_tree_expansion(target)
+
+    def _tree_after_cover(self) -> None:
+        self._tree_job = None
+        sw = getattr(self, "_atomic", None)
+        if sw is not None and sw.active:
+            try:
+                self._tree_job = self.root.after(30, self._tree_after_cover)
+            except tk.TclError:
+                pass
+            return
+        self._run_tree_expansion(self._tree_target())
+
+    def _run_tree_expansion(self, target: str | None) -> None:
+        self._tree_open = target
+        starts = dict(self._tree_heights)
+        ends = {c: (self._tree_full_height(c) if c == target else 0.0) for c in self._tree_clips}
+        moving = [c for c in self._tree_clips if abs(starts.get(c, 0.0) - ends[c]) >= 1]
+        animator = self._animator()
+
+        def step(p: float) -> None:
+            for c in moving:
+                a = starts.get(c, 0.0)
+                self._set_tree_height(c, a + (ends[c] - a) * p)
+
+        def done() -> None:
+            self._tree_anim = False
+            for c in moving:
+                self._set_tree_height(c, ends[c])
+            self._schedule_nav_indicator(animate=True)
+
+        if not moving:
+            return
+        if animator is None or not animator.enabled:
+            done()
+            return
+        self._tree_anim = True
+        self._nav_indicator.place_forget()  # reappears on the expanded child
+        self._nav_indicator_y = None
+        animator.animate("nav-tree", anim.DUR_BASE, step, ease=anim.EASE_OUT, done=done)
+
     def _sidebar_xy(self, widget: tk.Misc) -> tuple[int, int]:
         return (widget.winfo_rootx() - self.sidebar.winfo_rootx(),
                 widget.winfo_rooty() - self.sidebar.winfo_rooty())
@@ -1153,11 +1262,14 @@ class Navigation:
             pady = (0, 3) if index == 0 else 3
             btn.grid(row=row, column=0, sticky="ew", pady=pady)
             row += 1
-            frame = self._tree_frames.get(name)
-            if frame is not None and self._tree_children.get(name):
-                frame.grid(row=row, column=0, sticky="ew", padx=(self._scaled(16), 0), pady=(0, 3))
+            clip = self._tree_clips.get(name)
+            if clip is not None and self._tree_children.get(name):
+                clip.grid(row=row, column=0, sticky="ew", padx=(self._scaled(16), 0), pady=0)
+                if self._tree_heights.get(name, 0.0) < 1:
+                    clip.grid_remove()
                 row += 1
         self.mode_frame.grid_remove()
+        self._sync_tree_expansion()
         self._sync_sidebar_scroll_region()
 
     def _sync_sidebar_content_width(self, event: tk.Event) -> None:
