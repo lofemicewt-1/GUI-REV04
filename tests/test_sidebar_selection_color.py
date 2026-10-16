@@ -50,9 +50,17 @@ class SidebarSelectionColorTests(unittest.TestCase):
         for theme in ("light", "dark"):
             apply_theme(self.root, theme)
             store = self.root._rounded_button_images[theme]
-            chip = _pixels(store["sidebar"]["pressed"])
+            # tree selection == page Stage0 segment (Selected.TButton) image,
+            # differing only in the corner surface
+            stage = _pixels(store["panel"]["pressed"])
             mode = _pixels(store["sidebar_mode_selected"]["pressed"])
-            self.assertEqual(mode, chip, theme)
+            parent = _pixels(store["sidebar_parent"]["pressed"])
+            self.assertEqual(mode, parent, theme)
+            self.assertEqual(_pixel(store["sidebar_mode_selected"]["pressed"], 16, 16),
+                             _pixel(store["panel"]["pressed"], 16, 16), theme)
+            self.assertEqual(_pixel(store["sidebar_mode_selected"]["pressed"], 16, 0),
+                             _pixel(store["panel"]["pressed"], 16, 0), theme)
+            self.assertEqual(len(mode), len(stage))
 
     def test_mode_selected_style_map_uses_chip_selected_colors(self) -> None:
         for theme in ("light", "dark"):
@@ -63,7 +71,7 @@ class SidebarSelectionColorTests(unittest.TestCase):
                 for state in (["active"], ["pressed"]):
                     self.assertEqual(
                         style.lookup("SidebarModeSelected.TButton", option, state),
-                        style.lookup("SidebarSelected.TButton", option, state),
+                        style.lookup("Selected.TButton", option, state),
                         f"{theme} {option} {state}",
                     )
             self.assertEqual(
@@ -100,12 +108,15 @@ class SidebarSelectionColorTests(unittest.TestCase):
         idle = _pixel(store["sidebar_mode"]["normal"], 16, 16)
         distance = sum((left - right) ** 2 for left, right in zip(selected, idle)) ** 0.5
         self.assertGreater(distance, 80, (selected, idle))
-        self.assertEqual(selected, _pixel(store["sidebar_mode_selected"]["pressed"], 16, 16))
-        self.assertEqual(selected, (0x28, 0x71, 0xFA))
+        self.assertEqual(selected, (0x28, 0x71, 0xFA))  # home/leaf selection unchanged
+        self.assertEqual(_pixel(store["sidebar_mode_selected"]["pressed"], 16, 16),
+                         _pixel(store["panel"]["pressed"], 16, 16))
         self.assertEqual(idle, (0x17, 0x3B, 0x70))
         style = ttk.Style(self.root)
         self.assertEqual(style.lookup("SidebarSelected.TButton", "foreground").lower(), "#05070d")
-        self.assertEqual(style.lookup("SidebarModeSelected.TButton", "foreground").lower(), "#05070d")
+        for name in ("SidebarModeSelected.TButton", "SidebarParentSelected.TButton"):
+            self.assertEqual(style.lookup(name, "foreground").lower(),
+                             style.lookup("Selected.TButton", "foreground").lower())
         self.assertEqual(style.lookup("SidebarMode.TButton", "foreground").lower(),
                          style.lookup("Sidebar.TButton", "foreground").lower())
 

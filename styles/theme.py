@@ -302,6 +302,10 @@ def _button_image_layout(element_name: str) -> list[tuple[str, dict]]:
     ]
 
 
+# text colour of the Stage0-style selected segment (Selected.TButton)
+SELECTED_TEXT = "#FFFFFF"
+
+
 def _configure_rounded_button_styles(
     root: tk.Misc,
     style: ttk.Style,
@@ -408,29 +412,23 @@ def _configure_rounded_button_styles(
         setattr(root, "_rounded_button_images", image_store)
 
     store = image_store[theme]
-    def _mix(a: str, b: str, t: float) -> str:
-        ca = [int(a[i:i + 2], 16) for i in (1, 3, 5)]
-        cb = [int(b[i:i + 2], 16) for i in (1, 3, 5)]
-        return "#" + "".join(f"{round(x + (y - x) * t):02X}" for x, y in zip(ca, cb))
-
-    # selected chip parent: a soft tint of the selected-mode blue
-    parent_fill = _mix(colors["panel_alt"], sidebar_selected_fill, 0.16 if theme != "dark" else 0.22)
-    parent_edge = _mix(colors["panel_alt"], sidebar_selected_fill, 0.45)
-    parent_text = _mix(colors["text"], sidebar_selected_fill, 0.55 if theme != "dark" else 0.25)
+    # Sidebar tree selection (chip parent + mode child) uses exactly the
+    # page's Stage0 selected segment (Selected.TButton): same fill, border,
+    # inner shadow and text; only the corner surface is the sidebar's.
+    stage_fill, stage_edge, stage_text = selected_center, selected_edge, SELECTED_TEXT
+    if "sidebar_stage" not in store:
+        store["sidebar_stage"] = make_set(colors["panel_alt"])["pressed"]
+    stage_image = store["sidebar_stage"]
+    parent_fill, parent_edge, parent_text = stage_fill, stage_edge, stage_text
     if "sidebar_parent" not in store:
-        tint = _make_rounded_button_image(
-            root, fill=parent_fill, border=parent_edge, corner=colors["panel_alt"],
-            size=32, radius=radius, shadow=0.0,
-        )
-        store["sidebar_parent"] = {"normal": tint, "pressed": tint, "disabled": tint}
+        store["sidebar_parent"] = {"normal": stage_image, "pressed": stage_image, "disabled": stage_image}
     if "sidebar_mode" not in store:
         store["sidebar_mode"] = make_mode_set(colors["mode_idle"], pressed_accent)
-        selected_image = store["sidebar"]["pressed"]
         if theme == "dark":
-            store["sidebar_mode"]["pressed"] = selected_image
+            store["sidebar_mode"]["pressed"] = store["sidebar"]["pressed"]
         store["sidebar_mode_selected"] = {
-            "normal": selected_image,
-            "pressed": selected_image,
+            "normal": stage_image,
+            "pressed": stage_image,
             "disabled": _make_rounded_button_image(
                 root,
                 fill=colors["mode_idle"],
@@ -588,7 +586,7 @@ def _configure_rounded_button_styles(
     configure_plain("Danger.TButton", normal_element, colors["panel"], colors["danger"])
 
     for button_style in ("Selected.TButton", "Flash.TButton"):
-        configure_plain(button_style, selected_element, colors["panel"], "#FFFFFF")
+        configure_plain(button_style, selected_element, colors["panel"], SELECTED_TEXT)
         style.map(
             button_style,
             background=[("disabled", colors["panel"]), ("active", selected_center), ("pressed", selected_center)],
@@ -656,32 +654,35 @@ def _configure_rounded_button_styles(
     style.map(
         "SidebarParentSelected.TButton",
         background=[("disabled", colors["panel_alt"]), ("active", parent_fill), ("pressed", parent_fill)],
-        foreground=[("disabled", colors["muted"]), ("pressed", parent_text), ("active", parent_text)],
+        foreground=[("disabled", "#D1D5DB"), ("pressed", parent_text), ("active", parent_text)],
+        bordercolor=[("disabled", colors["muted"]), ("active", parent_edge), ("pressed", parent_edge)],
+        lightcolor=[("disabled", colors["muted"]), ("active", parent_edge), ("pressed", parent_edge)],
+        darkcolor=[("disabled", colors["muted"]), ("active", parent_edge), ("pressed", parent_edge)],
         relief=[("disabled", "flat"), ("!disabled", "flat")],
     )
-    configure_plain("SidebarModeSelected.TButton", sidebar_mode_selected_element, colors["panel_alt"], sidebar_selected_text)
+    configure_plain("SidebarModeSelected.TButton", sidebar_mode_selected_element, colors["panel_alt"], stage_text)
     style.map(
         "SidebarModeSelected.TButton",
         background=[
             ("disabled", colors["mode_idle"]),
-            ("active", sidebar_selected_fill),
-            ("pressed", sidebar_selected_fill),
+            ("active", stage_fill),
+            ("pressed", stage_fill),
         ],
-        foreground=[("disabled", "#D1D5DB"), ("pressed", sidebar_selected_text), ("active", sidebar_selected_text)],
+        foreground=[("disabled", "#D1D5DB"), ("pressed", stage_text), ("active", stage_text)],
         bordercolor=[
             ("disabled", colors["muted"]),
-            ("active", sidebar_selected_edge),
-            ("pressed", sidebar_selected_edge),
+            ("active", stage_edge),
+            ("pressed", stage_edge),
         ],
         lightcolor=[
             ("disabled", colors["muted"]),
-            ("active", sidebar_selected_edge),
-            ("pressed", sidebar_selected_edge),
+            ("active", stage_edge),
+            ("pressed", stage_edge),
         ],
         darkcolor=[
             ("disabled", colors["muted"]),
-            ("active", sidebar_selected_edge),
-            ("pressed", sidebar_selected_edge),
+            ("active", stage_edge),
+            ("pressed", stage_edge),
         ],
         relief=[("disabled", "flat"), ("!disabled", "flat")],
     )
@@ -982,12 +983,13 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
             ("Flash.TButton", colors["panel"], selected_bg, selected_edge),
             ("BgSelected.TButton", colors["bg"], selected_bg, selected_edge),
             ("SidebarSelected.TButton", colors["panel_alt"], sidebar_selected_fill, sidebar_selected_edge),
-            ("SidebarModeSelected.TButton", colors["mode_idle"], sidebar_selected_fill, sidebar_selected_edge),
+            ("SidebarModeSelected.TButton", colors["mode_idle"], selected_bg, selected_edge),
+            ("SidebarParentSelected.TButton", colors["panel_alt"], selected_bg, selected_edge),
         ):
             style.configure(
                 button_style,
                 background=fill,
-                foreground=sidebar_selected_text if button_style in {"SidebarSelected.TButton", "SidebarModeSelected.TButton"} else "#FFFFFF",
+                foreground=sidebar_selected_text if button_style == "SidebarSelected.TButton" else SELECTED_TEXT,
                 borderwidth=1,
                 bordercolor=edge,
                 lightcolor=edge,
