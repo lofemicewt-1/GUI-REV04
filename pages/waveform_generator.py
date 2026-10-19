@@ -111,10 +111,12 @@ class WaveformGeneratorPage(BasePage):
         embedded: bool = False,
         storage: WaveformStorage | None = None,
         positive_only: bool = False,
+        slice_readout_width: int | None = None,
     ) -> None:
         super().__init__(parent, ctx)
         self.embedded = embedded
         self.positive_only = positive_only
+        self.slice_readout_width = slice_readout_width
         self.engine = WaveformEngine(voltage_range=95.0)
         self.storage = storage if storage is not None else WaveformStorage()
 
@@ -306,17 +308,19 @@ class WaveformGeneratorPage(BasePage):
 
         self.canvas.grid(row=1, column=0, sticky="nsew")
 
-        self.read_slices_text = tk.Text(
-            plot_panel,
-            height=6,
-            bg=self.colors["panel"],
-            fg=self.colors["text"],
-            insertbackground=self.colors["text"],
-            relief="flat",
-            highlightthickness=1,
-            highlightbackground=self.colors["border"],
-            wrap="none",
-        )
+        readout_options: dict[str, Any] = {
+            "height": 6,
+            "bg": self.colors["panel"],
+            "fg": self.colors["text"],
+            "insertbackground": self.colors["text"],
+            "relief": "flat",
+            "highlightthickness": 1,
+            "highlightbackground": self.colors["border"],
+            "wrap": "none",
+        }
+        if self.slice_readout_width is not None:
+            readout_options["width"] = self.slice_readout_width
+        self.read_slices_text = tk.Text(plot_panel, **readout_options)
         self.read_slices_text.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         self.read_slices_scrollbar = ttk.Scrollbar(
             plot_panel,
@@ -325,6 +329,15 @@ class WaveformGeneratorPage(BasePage):
         )
         self.read_slices_scrollbar.grid(row=2, column=1, sticky="ns", pady=(10, 0))
         self.read_slices_text.configure(yscrollcommand=self.read_slices_scrollbar.set)
+        self.read_slices_xscrollbar: ttk.Scrollbar | None = None
+        if self.slice_readout_width is not None:
+            self.read_slices_xscrollbar = ttk.Scrollbar(
+                plot_panel,
+                orient="horizontal",
+                command=self.read_slices_text.xview,
+            )
+            self.read_slices_xscrollbar.grid(row=3, column=0, sticky="ew")
+            self.read_slices_text.configure(xscrollcommand=self.read_slices_xscrollbar.set)
 
         for var in [
             self.waveform_type_var,
@@ -535,6 +548,8 @@ class WaveformGeneratorPage(BasePage):
             if waveform_type == "serial":
                 self.read_slices_text.grid_remove()
                 self.read_slices_scrollbar.grid_remove()
+                if self.read_slices_xscrollbar is not None:
+                    self.read_slices_xscrollbar.grid_remove()
                 self.serial_editor.grid()
                 self.verify_waveform_button.grid_remove()
                 self._plot_mode = "current"
@@ -543,6 +558,8 @@ class WaveformGeneratorPage(BasePage):
                 self.serial_editor.grid_remove()
                 self.read_slices_text.grid()
                 self.read_slices_scrollbar.grid()
+                if self.read_slices_xscrollbar is not None:
+                    self.read_slices_xscrollbar.grid()
                 self.verify_waveform_button.grid()
         self._refresh_write_button_text()
 
