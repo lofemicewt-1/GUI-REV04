@@ -47,6 +47,8 @@ def _timed(step: Callable[[float], None]) -> Callable[[float], None]:
 
 
 class MicroAnimations:
+    _live: list[MicroAnimations] = []
+
     def __init__(self, root: tk.Misc, animator: anim.Animator, colors: Callable[[], dict],
                  excluded: Callable[[tk.Misc], bool]) -> None:
         self.root = root
@@ -74,7 +76,16 @@ class MicroAnimations:
         for cls in TOGGLE_CLASSES:
             self._bind(cls, "<<Invoke>>", self._on_toggle, add="+")
             self._bind(cls, "<ButtonRelease-1>", self._on_toggle_release, add="+")
-        self._bind("all", "<MouseWheel>", self._hide_all, add="+")
+        for sequence in (
+            "<MouseWheel>",
+            "<Shift-MouseWheel>",
+            "<Button-4>",
+            "<Button-5>",
+            "<Shift-Button-4>",
+            "<Shift-Button-5>",
+        ):
+            self._bind("all", sequence, self._hide_all, add="+")
+        MicroAnimations._live.append(self)
 
     def _bind(self, tag, sequence, callback, **kwargs):
         funcid = self.root.bind_class(tag, sequence, callback, **kwargs)
@@ -100,6 +111,10 @@ class MicroAnimations:
 
     def close(self) -> None:
         self._closed = True
+        try:
+            MicroAnimations._live.remove(self)
+        except ValueError:
+            pass
         self.reset()
         for tag, sequence, funcid in self._bindings:
             script = str(self.root.tk.call("bind", tag, sequence))
@@ -109,6 +124,14 @@ class MicroAnimations:
         self._bindings.clear()
         for bar in (self._hover_bar, self._combo_bar, self._toggle_bar):
             bar.destroy()
+
+    @classmethod
+    def hide_open_bars(cls) -> None:
+        for inst in list(cls._live):
+            try:
+                inst._hide_all()
+            except tk.TclError:
+                pass
 
     # -- helpers ----------------------------------------------------------
     def _bar(self) -> tk.Frame:
@@ -151,7 +174,10 @@ class MicroAnimations:
     def _hide_all(self, _e=None) -> None:
         for key, bar in (("btn-hover", self._hover_bar), ("combo-sweep", self._combo_bar), ("toggle", self._toggle_bar)):
             self.animator.cancel(key)
-            bar.place_forget()
+            try:
+                bar.place_forget()
+            except tk.TclError:
+                pass
         self._hover_widget = None
         self._hover_color = None
 
