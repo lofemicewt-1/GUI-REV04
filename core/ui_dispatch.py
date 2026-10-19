@@ -44,6 +44,7 @@ class UiDispatcher:
         self.time_budget_s = float(time_budget_s)
         self._queue: "queue.SimpleQueue[tuple[Callable[..., Any], tuple[Any, ...]]]" = queue.SimpleQueue()
         self._closed = threading.Event()
+        self._post_lock = threading.Lock()
         self._after_id: str | None = None
         self.processed = 0
         self.dropped = 0
@@ -54,11 +55,12 @@ class UiDispatcher:
         return self._closed.is_set()
 
     def post(self, fn: Callable[..., Any], *args: Any) -> bool:
-        if self._closed.is_set():
-            self.dropped += 1
-            return False
-        self._queue.put((fn, args))
-        return True
+        with self._post_lock:
+            if self._closed.is_set():
+                self.dropped += 1
+                return False
+            self._queue.put((fn, args))
+            return True
 
     def pending(self) -> int:
         return self._queue.qsize()
@@ -68,12 +70,15 @@ class UiDispatcher:
         global _active
         with _active_lock:
             _active = self
-        self._schedule(self.interval_ms)
+        self.root._piezo_ui_dispatcher = self
+        if self._after_id is None:
+            self._schedule(self.interval_ms)
         return self
 
     def close(self) -> None:
         global _active
-        self._closed.set()
+        with self._post_lock:
+            self._closed.set()
         with _active_lock:
             if _active is self:
                 _active = None
@@ -112,7 +117,7 @@ class UiDispatcher:
                     self.root.report_callback_exception(type(exc), exc, exc.__traceback__)
                 except Exception:
                     pass
-            if count % 64 == 0 and time.perf_counter() >= deadline:
+            if time.perf_counter() >= deadline:
                 break
         self.processed += count
         return count
@@ -137,15 +142,34 @@ def active_dispatcher() -> UiDispatcher | None:
     return _active
 
 
+def cancel_pending_ui_jobs(root: tk.Misc) -> None:
+    """Root teardown owns this Tcl interpreter, including widget idle jobs."""
+    try:
+        for job in root.tk.splitlist(root.tk.call("after", "info")):
+            root.tk.call("after", "cancel", job)
+    except tk.TclError:
+        pass
+
+
 def post_to_ui(widget: Any, fn: Callable[..., Any], *args: Any) -> None:
     """Run ``fn(*args)`` on the Tk main thread.  Safe from any thread.
 
     Uses the application's dispatcher when one is running; otherwise (light
     test fixtures without an application) falls back to ``widget.after(0)``.
     """
-    dispatcher = _active
-    if dispatcher is not None and not dispatcher.closed:
+    owner = widget
+    dispatcher = None
+    while owner is not None:
+        dispatcher = getattr(owner, "_piezo_ui_dispatcher", None)
+        if dispatcher is not None:
+            break
+        owner = getattr(owner, "master", None)
+    dispatcher = dispatcher or _active
+    if dispatcher is not None:
         dispatcher.post(fn, *args)
+        return
+    # A worker may outlive the window: never fall back to a Tk call there.
+    if threading.current_thread() is not threading.main_thread():
         return
     after = getattr(widget, "after", None)
     if not callable(after):

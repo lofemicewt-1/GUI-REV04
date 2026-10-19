@@ -1,0 +1,301 @@
+from __future__ import annotations
+
+import math
+import sys
+import time
+import tkinter as tk
+from types import SimpleNamespace
+from tkinter import ttk
+import unittest
+from unittest.mock import patch
+
+from core import animation as anim
+from core.lazy_pages import LazyPages
+from core.ui_dispatch import UiDispatcher, post_to_ui
+
+
+class ClockRoot:
+    def __init__(self):
+        self.jobs = {}
+        self.next_id = 0
+
+    def after(self, ms, callback):
+        self.next_id += 1
+        self.jobs[self.next_id] = callback
+        return self.next_id
+
+    def after_cancel(self, job):
+        self.jobs.pop(job, None)
+
+    def tick(self):
+        jobs, self.jobs = self.jobs, {}
+        for callback in jobs.values():
+            callback()
+
+
+class MotionClockTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = 0.0
+        self.patcher = patch.object(anim.time, "perf_counter", lambda: self.clock)
+        self.patcher.start()
+        self.root = ClockRoot()
+        self.a = anim.Animator(self.root)
+
+    def tearDown(self):
+        self.a.stop()
+        self.patcher.stop()
+
+    def test_busy_frame_catches_up_and_leaves_no_timer(self):
+        seen, done = [], []
+        self.a.animate("hover", anim.DUR_FAST, seen.append, done=lambda: done.append(True))
+        self.clock = 0.3
+        self.root.tick()
+        self.assertEqual(seen, [0.0, 1.0])
+        self.assertEqual(done, [True])
+        self.assertFalse(self.root.jobs)
+
+    def test_one_timer_and_replacement_never_calls_old_completion(self):
+        old, current, done = [], [], []
+        self.a.animate("k", 200, old.append, done=lambda: done.append("old"))
+        self.a.animate("k", 120, current.append, done=lambda: done.append("new"))
+        self.a.animate("other", 200, lambda p: None)
+        self.assertEqual(len(self.root.jobs), 1)
+        self.clock = 1
+        self.root.tick()
+        self.assertEqual(old, [0.0])
+        self.assertEqual(current[-1], 1)
+        self.assertEqual(done, ["new"])
+
+    def test_disable_finishes_chained_jobs_synchronously(self):
+        seen = []
+        def chained():
+            self.a.animate("k", 200, lambda p: seen.append(("second", p)))
+        self.a.animate("k", 200, lambda p: seen.append(("first", p)), done=chained)
+        self.a.set_enabled(False)
+        self.assertEqual(seen[-2:], [("first", 1.0), ("second", 1.0)])
+        self.assertFalse(self.a._tweens)
+        self.assertFalse(self.root.jobs)
+
+    def test_first_step_can_cancel_itself(self):
+        self.a.animate("k", 200, lambda p: self.a.cancel("k"))
+        self.assertFalse(self.root.jobs)
+
+    def test_destroyed_target_does_not_stop_other_jobs(self):
+        done, seen = [], []
+        def gone(p):
+            raise tk.TclError("destroyed")
+        self.a.animate("gone", 200, gone, done=lambda: done.append(True))
+        self.a.animate("live", 200, seen.append)
+        self.clock = 1
+        self.root.tick()
+        self.assertEqual(done, [True])
+        self.assertEqual(seen[-1], 1)
+
+    def test_stop_prevents_late_rescheduling(self):
+        self.a.stop()
+        self.a.animate("late", 60, lambda p: self.fail("late callback"))
+        self.assertFalse(self.root.jobs)
+
+
+class MotionMathTests(unittest.TestCase):
+    def test_reference_durations_and_easing_endpoints(self):
+        self.assertEqual((anim.DUR_FAST, anim.DUR_SNAP, anim.DUR_BASE, anim.DUR_SHEET, anim.DUR_SLOW),
+                         (60, 120, 200, 300, 450))
+        for easing in (anim.EASE_OUT, anim.EASE_SNAP, anim.EASE_GRAPHEME,
+                       anim.SPRING_BUTTON, anim.SPRING_CARD, anim.SPRING_FEEDBACK, anim.SPRING_DRAG):
+            self.assertAlmostEqual(easing(0), 0)
+            self.assertAlmostEqual(easing(1), 1)
+            self.assertTrue(all(math.isfinite(easing(i/100)) for i in range(101)))
+        peak_button = max(anim.SPRING_BUTTON(i/100) for i in range(101))
+        peak_feedback = max(anim.SPRING_FEEDBACK(i/100) for i in range(101))
+        self.assertGreater(peak_feedback, peak_button)
+        self.assertLess(peak_button, 1.1)
+        self.assertEqual(anim.lerp_color("#000", "#fff", 0.5), "#808080")
+
+
+class LazyPageTests(unittest.TestCase):
+    def test_registry_broadcasts_do_not_construct_pages(self):
+        calls = []
+        pages = LazyPages(lambda name, page: calls.append((name, page)))
+        pages.register("one", lambda: object())
+        pages.register("two", lambda: object())
+        self.assertEqual(pages.keys(), ["one", "two"])
+        self.assertEqual(pages.built_values(), [])
+        page = pages["one"]
+        self.assertIs(pages.get("one"), page)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(pages.values()), 2)
+        self.assertEqual(len(calls), 2)
+
+    def test_failed_construction_remains_retryable(self):
+        calls = []
+        def factory():
+            calls.append(True)
+            if len(calls) == 1:
+                raise ValueError("failed")
+            return object()
+        pages = LazyPages(lambda *_: None)
+        pages.register("one", factory)
+        with self.assertRaises(ValueError):
+            pages["one"]
+        self.assertIn("one", pages)
+        self.assertIsNotNone(pages["one"])
+
+
+def pump(root, seconds):
+    end = time.perf_counter()+seconds
+    while time.perf_counter() < end:
+        root.update()
+        time.sleep(0.002)
+
+
+class TkMotionTests(unittest.TestCase):
+    def setUp(self):
+        from app.micro_anim import MicroAnimations
+        from styles.theme import get_colors
+        self.root = tk.Tk()
+        self.root.geometry("480x320+20+20")
+        self.errors = []
+        self.root.report_callback_exception = lambda k, v, tb: self.errors.append(str(v))
+        self.animator = anim.Animator(self.root)
+        self.micro = MicroAnimations(self.root, self.animator, lambda: get_colors("light"), lambda w: False)
+        self.dispatcher = UiDispatcher(self.root).start()
+
+    def tearDown(self):
+        self.micro.close()
+        self.animator.stop()
+        self.dispatcher.close()
+        self.root.update_idletasks()
+        self.root.destroy()
+        self.assertEqual(self.errors, [])
+
+    def test_quick_popdown_close_disable_and_reopen_restore_geometry(self):
+        combo = ttk.Combobox(self.root, values=list(range(20)), state="readonly", height=5)
+        combo.pack()
+        self.root.update()
+        call = self.root.tk.call
+        for immediate in (True, False):
+            call("ttk::combobox::Post", str(combo))
+            pump(self.root, 0.02 if immediate else 0.3)
+            self.animator.set_enabled(False)
+            self.micro.reset()
+            path = str(combo)+".popdown"
+            self.assertEqual(float(call("wm", "attributes", path, "-alpha")), 1)
+            self.assertEqual(str(call("winfo", "manager", path+".f")), "grid")
+            call("ttk::combobox::Unpost", str(combo))
+            self.root.update()
+            self.animator.set_enabled(True)
+        self.assertFalse(self.micro._popdowns)
+
+    def test_worker_callback_is_on_main_thread_and_late_post_is_dropped(self):
+        import threading
+        seen = []
+        worker = threading.Thread(target=lambda: post_to_ui(self.root, lambda: seen.append(threading.current_thread())))
+        worker.start()
+        worker.join(timeout=1)
+        self.assertFalse(worker.is_alive())
+        pump(self.root, 0.06)
+        self.assertEqual(seen, [threading.main_thread()])
+        self.dispatcher.close()
+        post_to_ui(self.root, lambda: self.fail("late callback"))
+        self.assertEqual(self.dispatcher.pending(), 0)
+
+    def test_dispatch_time_budget_is_checked_after_every_callback(self):
+        for _ in range(5):
+            self.dispatcher.post(time.sleep, 0.02)
+        self.assertEqual(self.dispatcher.drain(), 1)
+        self.assertEqual(self.dispatcher.pending(), 4)
+
+    def test_large_panel_finishes_when_motion_is_disabled(self):
+        window = tk.Toplevel(self.root)
+        self.root.update()
+        self.assertTrue(self.animator.is_running(("panel", str(window))))
+        self.animator.set_enabled(False)
+        self.micro.reset()
+        self.assertEqual(float(window.attributes("-alpha")), 1)
+        self.assertFalse(self.micro._panels)
+        window.destroy()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows native transition")
+    def test_native_cover_works_releases_bitmap_and_preserves_ctypes_signatures(self):
+        import ctypes
+        from app.transitions import SnapshotTransition
+        before = ctypes.windll.gdi32.CreateCompatibleBitmap.restype
+        self.root.update()
+        transition = SnapshotTransition(self.root, self.animator)
+        try:
+            self.root.configure(background="#123456")
+            self.root.update()
+            self.assertTrue(transition.cover(self.root))
+            self.assertTrue(transition._bitmap)
+            from ctypes import wintypes
+            from app.transitions import _user32, _gdi32
+            _user32.GetDC.restype = wintypes.HDC
+            _gdi32.GetPixel.restype = wintypes.DWORD
+            dc = _user32.GetDC(wintypes.HWND(transition._client))
+            try:
+                self.assertEqual(_gdi32.GetPixel(wintypes.HDC(dc), 30, 30), 0x563412)
+            finally:
+                _user32.ReleaseDC(wintypes.HWND(transition._client), wintypes.HDC(dc))
+            from app.transitions import _client_rect, _physical_pixels
+            _user32.WindowFromPoint.argtypes = [wintypes.POINT]
+            _user32.WindowFromPoint.restype = wintypes.HWND
+            _user32.GetAncestor.restype = wintypes.HWND
+            with _physical_pixels():
+                x, y, _w, _h = _client_rect(self.root)
+                hit = _user32.WindowFromPoint(wintypes.POINT(x+30, y+30))
+                self.assertEqual(_user32.GetAncestor(hit, 2), transition._frame,
+                                 "old-page cover must not send clicks to unseen new controls")
+            transition.reveal(anim.DUR_SNAP)
+            pump(self.root, 0.25)
+            self.assertFalse(transition.active)
+            self.assertEqual(transition._bitmap, 0)
+            self.assertIs(ctypes.windll.gdi32.CreateCompatibleBitmap.restype, before)
+            transition.cover(self.root)
+            transition.close()
+            self.assertEqual(transition._frame, 0)
+        finally:
+            transition.close()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows native transition")
+    def test_live_log_exposes_do_not_hold_the_page_cover_until_timeout(self):
+        from app.transitions import SnapshotTransition
+        text = tk.Text(self.root, width=30, height=3)
+        text.pack()
+        pump(self.root, .05)
+        transition = SnapshotTransition(self.root, self.animator)
+        job = [None]
+        def update_log():
+            text.insert("end", "RX status update\n")
+            text.see("end")
+            text.event_generate("<Expose>")
+            job[0] = self.root.after(10, update_log)
+        try:
+            self.assertTrue(transition.cover(self.root))
+            update_log()
+            transition.reveal(anim.DUR_SNAP, ready=lambda: bool(text.winfo_ismapped()))
+            pump(self.root, .45)
+            self.assertFalse(transition.active, "live log paints kept an already laid-out page hidden")
+        finally:
+            if job[0] is not None:
+                self.root.after_cancel(job[0])
+            transition.close()
+            text.destroy()
+
+    def test_direct_root_destroy_cancels_worker_and_animation_timers(self):
+        from app.transitions import SnapshotTransition
+        root = tk.Tk()
+        a = anim.Animator(root)
+        d = UiDispatcher(root).start()
+        transition = SnapshotTransition(root, a)
+        root.update_idletasks()
+        a.animate("k", 200, lambda p: None)
+        root.after_idle(lambda: None)
+        root.destroy()
+        self.assertTrue(d.closed)
+        self.assertTrue(a._stopped)
+        self.assertEqual(root.tk.call("after", "info"), "")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -12,9 +12,15 @@ from tkinter import messagebox, ttk
 from typing import Any
 
 from app.navigation import Navigation
+from app.micro_anim import MicroAnimations
+from app.transitions import SnapshotTransition
+from core import animation as anim
+from core.ui_dispatch import UiDispatcher, post_to_ui, cancel_pending_ui_jobs
+from styles.fonts import page_title_weight
 from app.state import AppState
 from config.languages import t
 from core.base_tool import (
+    ALLOWED_I2C_SPEEDS,
     GPIO_ADC_PINS,
     GPIO_DETECT_PINS,
     GPIO_MODE_DETECT,
@@ -23,10 +29,10 @@ from core.base_tool import (
     SerialResponse,
     is_serial_contention_error,
     parse_adc_read_response,
+    parse_board_flag_response,
     parse_freq_response,
     parse_gpio_read_response,
 )
-from core.ui_dispatch import UiDispatcher, post_to_ui
 from core import chip_status_cache
 from core.chip_discovery import ChipDiscovery, ChipProbe, discover_first
 from core.continuous_register_read import (
@@ -37,24 +43,13 @@ from core.continuous_register_read import (
     run_continuous_register_reads,
 )
 from core.local_i2c_bridge import LocalI2cBridge
-from core.serial_manager import BLUETOOTH_PORT_ERROR, SerialManager, SerialRouter, is_known_bluetooth_port
+from core.serial_manager import SerialManager, SerialRouter
 from pages.base_page import BasePage, VerticalScrollArea, fit_toplevel_to_screen
 from pages.awp1018_page import AWP1018Page
 from pages.awp1221_page import AWP1221Page
 from pages.awp1922_page import AWP1922Page
 from pages.chip_pages import AWP1921AWP1923Page
 from styles.theme import apply_theme
-
-
-CONNECT_RESULT_POLL_MS = 25
-
-
-@dataclass
-class _ConnectAttempt:
-    port: str
-    cancelled: threading.Event = field(default_factory=threading.Event)
-    lock: threading.Lock = field(default_factory=threading.Lock)
-    result: SerialResponse | None = None
 
 
 @dataclass
@@ -101,11 +96,25 @@ class _ContinuousReadOperation:
     cancel_reason: str = ""
 
 
+@dataclass(frozen=True)
+class _D2ScanRequest:
+    """One FLAG2 event waiting for a complete status-cache snapshot."""
+
+    port: str
+    session: int
+    flag_generation: int
+    sequence: int
+    targets: tuple[chip_status_cache.TargetIdentity, ...]
+
+
 class HomePage(BasePage):
     page_name = "home"
     BAUDRATES = (9600, 57600, 115200, 230400, 460800, 921600)
-    I2C_SPEEDS = (100000, 400000)
+    I2C_SPEEDS = ALLOWED_I2C_SPEEDS
     REGISTER_WIDTHS = (8, 16)
+    FLAG_POLL_INTERVAL_MS = 250
+    FLAG_RESULT_CHECK_INTERVAL_MS = 25
+    STATUS_POLL_INTERVAL_MS = 300
     PORT_LIST_POLL_INTERVAL_MS = 30000
     STATUS_RESULT_CHECK_INTERVAL_MS = 25
     PUSH_EVENT_POLL_INTERVAL_MS = 25
@@ -113,6 +122,9 @@ class HomePage(BasePage):
     CONTINUOUS_READ_RESULT_QUEUE_SIZE = 256
     CONTINUOUS_READ_MAX_DISPLAY_ROWS = 500
     PUSH_EVENT_DEFER_TIMEOUT_S = 5.0
+    D2_SCAN_STAT_ATTEMPTS = 8
+    D2_SCAN_STAT_RETRY_MS = 25
+    D2_SCAN_RETRY_COOLDOWN_MS = 750
     STATUS_MAX_TARGETS = chip_status_cache.SLOT_COUNT
     STATUS_TYPE_VALUES = (chip_status_cache.CHIP_TYPE_192, chip_status_cache.CHIP_TYPE_1221, "1018")
     STATUS_ADDRESS_VALUES = {
@@ -124,6 +136,15 @@ class HomePage(BasePage):
     def __init__(self, parent: tk.Misc, ctx: ApplicationContext) -> None:
         super().__init__(parent, ctx)
         self.port_names: dict[str, str] = {}
+        self._flag_poll_after_id: str | None = None
+        self._flag_poll_generation = 0
+        self._flag_poll_inflight = False
+        self._flag_poll_port: str | None = None
+        self._flag_poll_results: Queue[tuple[Any, ...]] = Queue()
+        self._d2_scan_request: _D2ScanRequest | None = None
+        self._d2_last_scanned_by_port: dict[str, int] = {}
+        self._d2_failed_by_port: dict[str, int] = {}
+        self._d2_failed_at_by_port: dict[str, float] = {}
         self._status_after_id: str | None = None
         self._status_after_port: str | None = None
         self._status_generation = 0
@@ -154,8 +175,10 @@ class HomePage(BasePage):
         self._continuous_read_operation: _ContinuousReadOperation | None = None
         self._continuous_read_after_id: str | None = None
         self._continuous_read_next_token = 0
-        # Status updates are event-owned (CAP FLAG3 + EVSTAT push); there is
-        # no STAT?/FLAG polling path.
+        # Legacy fixture pages may still call the manual status scheduler.  A
+        # real Home page leaves automatic STAT scheduling disabled; users can
+        # still invoke the explicit read API and the old FLAG helpers.
+        self._status_auto_poll_enabled = False
         self._serial_disconnect_error_by_port: dict[str, str] = {}
         self._port_list_poll_after_id: str | None = None
         self._port_scan_results: Queue[tuple[Any, str]] | None = None
@@ -531,6 +554,7 @@ class HomePage(BasePage):
         operation = getattr(self, "_continuous_read_operation", None)
         if operation is not None and operation.port != current:
             self._cancel_continuous_read("connection_changed", port=operation.port)
+        self._stop_flag_poll()
         self._stop_status_monitor()
         self._status_display_port = None
         if current and self._is_selected_port_connected(current):
@@ -603,6 +627,13 @@ class HomePage(BasePage):
         self._status_legacy_by_port = getattr(self, "_status_legacy_by_port", {})
         self._status_errors_by_port = getattr(self, "_status_errors_by_port", {})
         self._status_pending = getattr(self, "_status_pending", {})
+        self._d2_scan_request = None
+        self._d2_last_scanned_by_port = getattr(self, "_d2_last_scanned_by_port", {})
+        self._d2_failed_by_port = getattr(self, "_d2_failed_by_port", {})
+        self._d2_failed_at_by_port = getattr(self, "_d2_failed_at_by_port", {})
+        self._d2_last_scanned_by_port.pop(port, None)
+        self._d2_failed_by_port.pop(port, None)
+        self._d2_failed_at_by_port.pop(port, None)
         session = (time.monotonic_ns() ^ id(self) ^ sum(map(ord, str(port)))) & chip_status_cache.MAX_U32
         if session == 0:
             session = 1
@@ -648,6 +679,15 @@ class HomePage(BasePage):
         self._push_event_pending_since_by_port.pop(port, None)
         self._status_legacy_by_port.pop(port, None)
         self._status_errors_by_port.pop(port, None)
+        self._d2_last_scanned_by_port = getattr(self, "_d2_last_scanned_by_port", {})
+        self._d2_failed_by_port = getattr(self, "_d2_failed_by_port", {})
+        self._d2_failed_at_by_port = getattr(self, "_d2_failed_at_by_port", {})
+        self._d2_last_scanned_by_port.pop(port, None)
+        self._d2_failed_by_port.pop(port, None)
+        self._d2_failed_at_by_port.pop(port, None)
+        request = getattr(self, "_d2_scan_request", None)
+        if request is not None and getattr(request, "port", None) == port:
+            self._d2_scan_request = None
         self._status_pending = {
             slot: binding
             for slot, binding in self._status_pending.items()
@@ -981,6 +1021,17 @@ class HomePage(BasePage):
                     )
                     if not monitor_response.ok:
                         error = monitor_response.error or monitor_response.data or "status monitor enable failed"
+                if not error and not capabilities.d2_scan:
+                    self._status_check_cancel(operation)
+                    response = self._status_call_with_retry(
+                        serial,
+                        "read_status_snapshot",
+                        cancel_event=operation.cancel_event,
+                    )
+                    if response.ok:
+                        snapshot = self._status_parse(response, chip_status_cache.parse_stat_frame)
+                    else:
+                        error = response.error or response.data or "status snapshot failed"
         except _StatusOperationCancelled:
             cancelled = True
         except Exception as exc:
@@ -1055,6 +1106,185 @@ class HomePage(BasePage):
         )
         operation.done_event.set()
 
+    def _status_poll_start(self, port: str, session: int) -> None:
+        # Status snapshots are now event-owned.  ``read_status_snapshot``
+        # remains an explicit/manual API; Home never starts a periodic STAT
+        # callback for either old or FLAG3 firmware.
+        return
+
+    def _poll_status_snapshot(self, port: str, session: int) -> None:
+        self._status_after_id = None
+        self._status_after_port = None
+        selected_port = getattr(getattr(self, "port_var", None), "get", lambda: "")().strip()
+        if (
+            selected_port != port
+            or self._status_session_by_port.get(port) != session
+            or not self._is_selected_port_connected(port)
+        ):
+            return
+        active = getattr(self, "_status_operation", None)
+        if active is not None:
+            if not active.done_event.is_set():
+                self._status_poll_start(port, session)
+                return
+            # The result checker should normally consume a completed operation
+            # first.  Keep its private result available if a poll callback wins
+            # a Tk scheduling race.
+            self._status_start_result_check(port, session, active.token, active)
+            return
+        if self._status_inflight:
+            self._status_poll_start(port, session)
+            return
+        if not self._status_targets_by_port.get(port):
+            return
+        self._status_inflight = True
+        token = self._status_generation
+        operation = _StatusOperation("snapshot", port, session, token)
+        self._status_operation = operation
+        threading.Thread(
+            target=self._read_status_snapshot_worker,
+            args=(port, session, token, operation),
+            daemon=True,
+        ).start()
+        self._status_start_result_check(port, session, token, operation)
+
+    def _read_status_snapshot_worker(
+        self,
+        port: str,
+        session: int,
+        token: int,
+        operation: _StatusOperation | None = None,
+    ) -> None:
+        supplied_operation = operation
+        operation = operation or _StatusOperation("snapshot", port, session, token)
+        snapshot: chip_status_cache.Snapshot | None = None
+        response: SerialResponse | None = None
+        error = ""
+        cancelled = False
+        try:
+            serial = self._serial_for_port(port)
+            if serial is None:
+                raise RuntimeError("Selected serial port is not connected")
+            self._status_check_cancel(operation)
+            response = self._status_call_with_retry(
+                serial,
+                "read_status_snapshot",
+                cancel_event=operation.cancel_event,
+            )
+            if response.ok:
+                self._status_check_cancel(operation)
+                snapshot = self._status_parse(response, chip_status_cache.parse_stat_frame)
+            else:
+                error = response.error or response.data or "status snapshot failed"
+        except _StatusOperationCancelled:
+            cancelled = True
+        except Exception as exc:
+            error = str(exc)
+        self._status_queue_result(
+            ("snapshot", port, session, token, snapshot, response, error, cancelled),
+            supplied_operation,
+        )
+        operation.done_event.set()
+
+    def _d2_targets_for_port(self, port: str) -> tuple[chip_status_cache.TargetIdentity, ...]:
+        """Return the enabled target identities captured for one D2 event."""
+
+        targets = getattr(self, "_status_targets_by_port", {}).get(port, {})
+        state = getattr(self, "_status_state_by_port", {}).get(port)
+        if state is None:
+            return ()
+        return tuple(
+            target
+            for slot, target in sorted(targets.items())
+            if state.monitor_enabled(slot) is True
+        )
+
+    @staticmethod
+    def _d2_snapshot_matches(
+        snapshot: chip_status_cache.Snapshot,
+        session: int,
+        sequence: int,
+        targets: tuple[chip_status_cache.TargetIdentity, ...],
+    ) -> bool:
+        """Require one complete FLAG2 record for every event target."""
+
+        if snapshot.session_id != session or snapshot.irq_seq != sequence:
+            return False
+        by_slot = {record.slot: record for record in snapshot.records}
+        for target in targets:
+            record = by_slot.get(target.slot)
+            if record is None or record.identity != target:
+                return False
+            if record.source != chip_status_cache.SOURCE_D2_SCAN:
+                return False
+            if record.irq_seq != sequence:
+                return False
+            if not (record.valid or record.failed):
+                return False
+        return True
+
+    def _read_d2_status_snapshot_worker(
+        self,
+        port: str,
+        session: int,
+        token: int,
+        sequence: int,
+        targets: tuple[chip_status_cache.TargetIdentity, ...],
+        operation: _StatusOperation,
+    ) -> None:
+        """Wait for a complete same-event STAT snapshot without touching Tk."""
+
+        snapshot: chip_status_cache.Snapshot | None = None
+        response: SerialResponse | None = None
+        error = ""
+        cancelled = False
+        try:
+            serial = self._serial_for_port(port)
+            if serial is None:
+                raise RuntimeError("Selected serial port is not connected")
+            for attempt in range(self.D2_SCAN_STAT_ATTEMPTS):
+                self._status_check_cancel(operation)
+                response = self._status_call_with_retry(
+                    serial,
+                    "read_status_snapshot",
+                    cancel_event=operation.cancel_event,
+                )
+                if not response.ok:
+                    error = response.error or response.data or "D2 status snapshot failed"
+                    break
+                try:
+                    candidate = self._status_parse(response, chip_status_cache.parse_stat_frame)
+                except Exception as exc:
+                    error = str(exc)
+                    break
+                if self._d2_snapshot_matches(candidate, session, sequence, targets):
+                    snapshot = candidate
+                    error = ""
+                    break
+                error = f"D2 STAT is incomplete or stale for seq={sequence:08X}"
+                if attempt + 1 < self.D2_SCAN_STAT_ATTEMPTS:
+                    if operation.cancel_event.wait(self.D2_SCAN_STAT_RETRY_MS / 1000.0):
+                        raise _StatusOperationCancelled
+        except _StatusOperationCancelled:
+            cancelled = True
+        except Exception as exc:
+            error = str(exc)
+        self._status_queue_result(
+            (
+                "d2_snapshot",
+                port,
+                session,
+                token,
+                sequence,
+                snapshot,
+                response,
+                error,
+                cancelled,
+            ),
+            operation,
+        )
+        operation.done_event.set()
+
     def _consume_status_results(
         self,
         port: str,
@@ -1109,6 +1339,90 @@ class HomePage(BasePage):
             return
 
         kind = result[0]
+        if kind == "d2_snapshot":
+            (
+                _kind,
+                _port,
+                _session,
+                _token,
+                sequence,
+                snapshot,
+                response,
+                error,
+                cancelled,
+            ) = result[:9]
+            request = getattr(self, "_d2_scan_request", None)
+            flag_generation = (
+                request.flag_generation
+                if request is not None
+                else getattr(self, "_flag_poll_generation", 0)
+            )
+            self._status_finish_operation(active)
+            if cancelled:
+                if request is not None and request.sequence == sequence:
+                    self._d2_scan_request = None
+                return
+
+            accepted = False
+            if (
+                request is not None
+                and request.port == port
+                and request.session == session
+                and request.sequence == sequence
+                and snapshot is not None
+                and self._d2_snapshot_matches(snapshot, session, sequence, request.targets)
+            ):
+                accepted = self._apply_status_snapshot(port, snapshot)
+
+            if accepted:
+                self._d2_last_scanned_by_port = getattr(self, "_d2_last_scanned_by_port", {})
+                self._d2_failed_by_port = getattr(self, "_d2_failed_by_port", {})
+                self._d2_failed_at_by_port = getattr(self, "_d2_failed_at_by_port", {})
+                self._d2_last_scanned_by_port[port] = sequence
+                self._d2_failed_by_port.pop(port, None)
+                self._d2_failed_at_by_port.pop(port, None)
+                self._d2_scan_request = None
+                # The event is acknowledged only after every expected target
+                # has been applied from the matching FLAG2 snapshot.
+                self._start_interrupt_ack_worker(port, flag_generation, sequence)
+                self._flag_poll_after_id = self.after(
+                    self.FLAG_RESULT_CHECK_INTERVAL_MS,
+                    self._consume_flag_poll_results,
+                    port,
+                    flag_generation,
+                )
+            else:
+                if request is not None and request.sequence == sequence:
+                    self._d2_failed_by_port = getattr(self, "_d2_failed_by_port", {})
+                    self._d2_failed_at_by_port = getattr(self, "_d2_failed_at_by_port", {})
+                    self._d2_failed_by_port[port] = sequence
+                    self._d2_failed_at_by_port[port] = time.monotonic()
+                    self._d2_scan_request = None
+                detail = error or f"D2 STAT is incomplete for seq={sequence:08X}"
+                self._set_status_error(port, f"D2 seq={sequence:08X}: {detail}")
+                # Leave the mailbox unacknowledged.  A later FLAG with a newer
+                # sequence can still advance after this bounded attempt.
+                if self._flag_poll_is_current(port, flag_generation):
+                    self._finish_flag_poll(port, flag_generation)
+            return
+
+        if kind == "snapshot":
+            if len(result) >= 8:
+                _kind, _port, _session, _token, snapshot, response, error, cancelled = result[:8]
+            else:
+                _kind, _port, _session, _token, snapshot, response, error = result
+                cancelled = False
+            if cancelled:
+                self._status_finish_operation(active)
+                return
+            self._status_finish_operation(active)
+            if snapshot is not None:
+                self._apply_status_snapshot(port, snapshot)
+            elif error:
+                self._set_status_error(port, error)
+            self._status_poll_start(port, session)
+            return
+
         if kind == "configure":
             if len(result) >= 12:
                 (
@@ -1190,6 +1504,7 @@ class HomePage(BasePage):
                     if snapshot is None and not error:
                         self._status_errors_by_port.pop(port, None)
                     self._refresh_status_row(slot)
+            self._status_poll_start(port, session)
             return
 
         if kind == "clear":
@@ -1248,6 +1563,7 @@ class HomePage(BasePage):
                     row["committed_type"] = str(row["type"].get()).strip()
                     row["committed_address"] = str(row["address"].get()).strip()
                 self._set_status_row_text(slot, "--")
+            self._status_poll_start(port, session)
 
     def _apply_status_snapshot(self, port: str, snapshot: chip_status_cache.Snapshot) -> bool:
         state = self._status_state_by_port.get(port)
@@ -1423,7 +1739,6 @@ class HomePage(BasePage):
 
     def _apply_port_info(self, port_info: Any) -> None:
         self.port_names = {info.device: info.name for info in port_info}
-        self._bluetooth_ports = {info.device for info in port_info if getattr(info, "bluetooth", False)}
         ports = [info.device for info in port_info]
         current = self.port_var.get().strip()
         is_port_connected = self._is_selected_port_connected(current)
@@ -1435,8 +1750,7 @@ class HomePage(BasePage):
             self.port_combo.configure(values=ports)
 
         if ports and (not current or (current not in ports and not is_port_connected)):
-            preferred = [p for p in ports if p not in self._bluetooth_ports]
-            self.port_var.set((preferred or ports)[0])
+            self.port_var.set(ports[0])
 
         operation = getattr(self, "_continuous_read_operation", None)
         selected_now = self.port_var.get().strip()
@@ -1533,12 +1847,23 @@ class HomePage(BasePage):
         home_is_lost = home_port == lost_port or (
             not home_port and getattr(self.ctx.state, "selected_port", None) == lost_port
         )
+        flag_port = getattr(self, "_flag_poll_port", None)
+        flag_belongs_to_lost = flag_port == lost_port or (
+            flag_port is None
+            and home_is_lost
+            and (
+                bool(getattr(self, "_flag_poll_inflight", False))
+                or getattr(self, "_flag_poll_after_id", None) is not None
+            )
+        )
         operation = getattr(self, "_status_operation", None)
         operation_port = getattr(operation, "port", None)
         status_after_port = getattr(self, "_status_after_port", None)
+        d2_request = getattr(self, "_d2_scan_request", None)
         status_belongs_to_lost = (
             operation_port == lost_port
             or status_after_port == lost_port
+            or getattr(d2_request, "port", None) == lost_port
         )
         if (
             not status_belongs_to_lost
@@ -1553,6 +1878,8 @@ class HomePage(BasePage):
         ):
             status_belongs_to_lost = True
 
+        if flag_belongs_to_lost:
+            self._stop_flag_poll()
         self._status_invalidate_port(lost_port, stop_monitor=status_belongs_to_lost)
         connected_ports = getattr(self.ctx.serial, "connected_ports", None)
         self.ctx.state.serial_connected = bool(connected_ports()) if callable(connected_ports) else False
@@ -1578,12 +1905,10 @@ class HomePage(BasePage):
         self.refresh_language()
 
     def toggle_connection(self) -> None:
-        if getattr(self, "_connect_attempt", None) is not None:
-            self.cancel_connection()
-            return
         port = self.port_var.get().strip()
         self._cancel_continuous_read("connection_changed")
         if self._is_selected_port_connected(port):
+            self._stop_flag_poll()
             self._status_invalidate_port(port)
             self.ctx.serial.disconnect(port)
             self.ctx.state.serial_connected = False
@@ -1598,11 +1923,6 @@ class HomePage(BasePage):
         if not port:
             messagebox.showwarning(self.tr("error"), self.tr("no_ports_found"))
             return
-        if self._is_bluetooth_port(port):
-            # Never try to open a Bluetooth SPP port: Windows blocks for
-            # seconds reaching the paired device and it is never the board.
-            messagebox.showwarning(self.tr("error"), self.tr("bluetooth_port_refused", port=port))
-            return
 
         try:
             baudrate = int(self.baud_var.get())
@@ -1610,104 +1930,7 @@ class HomePage(BasePage):
             baudrate = self.ctx.state.baudrate
         self.ctx.state.baudrate = baudrate
 
-        # Opening a port can block for seconds.  Run it off the Tk thread so
-        # the window keeps repainting; the user can cancel at any time, the
-        # UI returns immediately and a late result is discarded (and its port
-        # closed) by the worker itself.
-        attempt = _ConnectAttempt(port=port)
-        previous = getattr(self, "_connect_previous_thread", None)
-        self._connect_attempt = attempt
-        serial_router = self.ctx.serial
-
-        def connect_worker() -> None:
-            if previous is not None and previous.is_alive():
-                previous.join()  # a cancelled attempt must finish its cleanup first
-            response: SerialResponse
-            if attempt.cancelled.is_set():
-                response = SerialResponse(False, error="cancelled")
-            else:
-                try:
-                    response = serial_router.connect(port, baudrate)
-                except Exception as exc:  # never leave the UI waiting
-                    response = SerialResponse(False, error=str(exc))
-            with attempt.lock:
-                late = attempt.cancelled.is_set()
-                if not late:
-                    attempt.result = response
-            if late and response.ok:
-                try:
-                    serial_router.disconnect(port)
-                except Exception:
-                    pass
-
-        thread = threading.Thread(target=connect_worker, daemon=True, name="serial-connect")
-        self._connect_previous_thread = thread
-        thread.start()
-        self.ctx.state.extra["connection_detail"] = f"{port}: {self.tr('connecting')}"
-        self._refresh_connect_controls()
-        self.after(CONNECT_RESULT_POLL_MS, self._finish_connect_attempt, attempt)
-
-    def cancel_connection(self) -> None:
-        attempt = getattr(self, "_connect_attempt", None)
-        if attempt is None:
-            return
-        # Main thread: flags only.  No serial object, no thread join, no lock
-        # that the connecting thread can hold (attempt.lock is only ever held
-        # for a field swap).  The worker closes the port when it returns.
-        with attempt.lock:
-            attempt.cancelled.set()
-        canceller = getattr(self.ctx.serial, "cancel_connect", None)
-        if callable(canceller):
-            try:
-                canceller(attempt.port)  # sets an Event; never blocks
-            except Exception:
-                pass
-        self._connect_attempt = None
-        self.ctx.state.extra["connection_detail"] = f"{attempt.port}: {self.tr('connect_cancelled')}"
-        self._refresh_connect_controls()
-
-    def _refresh_connect_controls(self) -> None:
-        """Cheap update of the connect button and status line only."""
-        lang = self.language
-        if getattr(self, "_connect_attempt", None) is not None:
-            text = t(lang, "cancel_connect")
-        elif self._is_selected_port_connected():
-            text = t(lang, "disconnect")
-        else:
-            text = t(lang, "connect")
-        status = t(lang, "connected") if self.ctx.serial.is_connected else t(lang, "disconnected")
-        detail = self.ctx.state.extra.get("connection_detail", "")
-        suffix = f" | {detail}" if detail else ""
-        try:
-            self.connect_btn.configure(text=text)
-            self.status_label.configure(text=f"{t(lang, 'status')}: {status}{suffix}")
-        except tk.TclError:
-            pass
-
-    def _is_bluetooth_port(self, port: str) -> bool:
-        if getattr(self, "_bluetooth_ports", set()) and port in self._bluetooth_ports:
-            return True
-        return is_known_bluetooth_port(port)
-
-    def _finish_connect_attempt(self, attempt: "_ConnectAttempt") -> None:
-        if attempt.cancelled.is_set() or getattr(self, "_connect_attempt", None) is not attempt:
-            return  # cancelled: the worker discards and closes on its own
-        with attempt.lock:
-            resp = attempt.result
-        if resp is None:
-            try:
-                self.after(CONNECT_RESULT_POLL_MS, self._finish_connect_attempt, attempt)
-            except tk.TclError:
-                pass
-            return
-        self._connect_attempt = None
-        port = attempt.port
-        try:
-            if not self.winfo_exists():
-                return
-        except tk.TclError:
-            return
-        self.ctx.state.extra.pop("connection_detail", None)
+        resp = self.ctx.serial.connect(port, baudrate)
         if resp.ok:
             self._serial_disconnect_error_by_port.pop(port, None)
             self.ctx.state.serial_connected = True
@@ -1715,8 +1938,6 @@ class HomePage(BasePage):
             self.ctx.state.extra["selected_port_name"] = self.port_names.get(port, port)
             self.ctx.state.extra["connection_detail"] = f"{port}: {resp.data}"
             self._finish_connection_when_ready(port)
-        elif str(resp.error).startswith(BLUETOOTH_PORT_ERROR):
-            messagebox.showwarning(self.tr("error"), self.tr("bluetooth_port_refused", port=port))
         else:
             messagebox.showerror(self.tr("error"), resp.error)
 
@@ -2002,6 +2223,169 @@ class HomePage(BasePage):
 
         del port, snapshot, reason
 
+    def _start_flag_poll(self, port: str) -> None:
+        """Poll the FLAG mailbox without running serial I/O on Tk's event loop."""
+        self._stop_flag_poll()
+        self._flag_poll_port = port
+        generation = self._flag_poll_generation
+        self._schedule_flag_poll(port, generation, delay_ms=0)
+
+    def _stop_flag_poll(self) -> None:
+        self._flag_poll_generation = getattr(self, "_flag_poll_generation", 0) + 1
+        self._d2_scan_request = None
+        self._d2_last_scanned_by_port = {}
+        self._d2_failed_by_port = {}
+        self._d2_failed_at_by_port = {}
+        after_id = getattr(self, "_flag_poll_after_id", None)
+        if after_id is not None:
+            try:
+                self.after_cancel(after_id)
+            except (tk.TclError, AttributeError):
+                pass
+        self._flag_poll_after_id = None
+        self._flag_poll_inflight = False
+        self._flag_poll_port = None
+
+    def _flag_poll_is_current(self, port: str, generation: int) -> bool:
+        selected_port = getattr(getattr(self, "port_var", None), "get", lambda: "")().strip()
+        return (
+            generation == getattr(self, "_flag_poll_generation", 0)
+            and selected_port == port
+            and self._is_selected_port_connected(port)
+        )
+
+    def _schedule_flag_poll(self, port: str, generation: int, *, delay_ms: int | None = None) -> None:
+        if not self._flag_poll_is_current(port, generation):
+            return
+        delay = self.FLAG_POLL_INTERVAL_MS if delay_ms is None else delay_ms
+        self._flag_poll_after_id = self.after(delay, self._poll_board_flag, port, generation)
+
+    def _poll_board_flag(self, port: str, generation: int) -> None:
+        self._flag_poll_after_id = None
+        if not self._flag_poll_is_current(port, generation):
+            return
+        if self._flag_poll_inflight:
+            self._schedule_flag_poll(port, generation)
+            return
+        self._flag_poll_inflight = True
+        threading.Thread(
+            target=self._read_flag_and_discover,
+            args=(port, generation),
+            daemon=True,
+        ).start()
+        self._flag_poll_after_id = self.after(
+            self.FLAG_RESULT_CHECK_INTERVAL_MS,
+            self._consume_flag_poll_results,
+            port,
+            generation,
+        )
+
+    def _schedule_d2_scan(self, request: _D2ScanRequest, *, delay_ms: int = 0) -> None:
+        if not self._flag_poll_is_current(request.port, request.flag_generation):
+            return
+        self._flag_poll_after_id = self.after(
+            delay_ms,
+            self._start_d2_scan_when_ready,
+            request,
+        )
+
+    def _start_d2_scan_when_ready(self, request: _D2ScanRequest) -> None:
+        """Start one STAT transaction after any prior status operation exits."""
+
+        self._flag_poll_after_id = None
+        if getattr(self, "_d2_scan_request", None) != request:
+            return
+        if (
+            not self._flag_poll_is_current(request.port, request.flag_generation)
+            or self._status_session_by_port.get(request.port) != request.session
+        ):
+            self._d2_scan_request = None
+            return
+        if getattr(self, "_status_operation", None) is not None or self._status_inflight:
+            self._schedule_d2_scan(request, delay_ms=self.STATUS_RESULT_CHECK_INTERVAL_MS)
+            return
+
+        token = self._status_generation
+        operation = _StatusOperation("d2_snapshot", request.port, request.session, token)
+        self._status_operation = operation
+        self._status_inflight = True
+        threading.Thread(
+            target=self._read_d2_status_snapshot_worker,
+            args=(
+                request.port,
+                request.session,
+                token,
+                request.sequence,
+                request.targets,
+                operation,
+            ),
+            daemon=True,
+        ).start()
+        self._status_start_result_check(request.port, request.session, token, operation)
+        for target in request.targets:
+            self._set_status_row_text(target.slot, self.tr("status_cache_d2_scanning"))
+
+    def _read_flag_and_discover(self, port: str, generation: int) -> None:
+        """Worker-only serial work. It must not touch Tk variables or widgets."""
+        response = None
+        status = None
+        try:
+            serial = self._serial_for_port(port)
+            if serial is None:
+                raise RuntimeError("Selected serial port is not connected")
+            poll_reader = getattr(serial, "read_board_flag_for_poll", None)
+            if callable(poll_reader):
+                response = poll_reader()
+            else:
+                response = serial.read_board_flag()
+            if not response.ok:
+                result = (response, None, None, response.error or response.data or "FLAG poll failed")
+            else:
+                try:
+                    status = parse_board_flag_response(response.data)
+                except ValueError as exc:
+                    result = (response, None, None, str(exc))
+                else:
+                    # FLAG is an event mailbox.  A non-zero sequence is
+                    # acknowledged against the same sequence; it must not
+                    # trigger another all-address discovery pass.  Connection
+                    # time discovery remains in _finish_connection_when_ready.
+                    result = (response, status, None, "")
+        except Exception as exc:
+            result = (response, status, None, str(exc))
+        self._flag_poll_results.put(("poll", generation, port, result))
+
+    def _start_interrupt_ack_worker(self, port: str, generation: int, sequence: int) -> None:
+        threading.Thread(
+            target=self._acknowledge_interrupt_worker,
+            args=(port, generation, sequence),
+            daemon=True,
+        ).start()
+
+    def _acknowledge_interrupt_worker(self, port: str, generation: int, sequence: int) -> None:
+        """Worker-only ACK after the main thread has applied the discovery state."""
+        try:
+            serial = self._serial_for_port(port)
+            if serial is None:
+                raise RuntimeError("Selected serial port is not connected")
+            response = serial.acknowledge_interrupt(sequence)
+        except Exception as exc:
+            response = None
+            error = str(exc)
+        else:
+            error = response.error if not response.ok else ""
+        self._flag_poll_results.put(("ack", generation, port, (sequence, response, error)))
+
+    def _record_flag_poll_error(self, port: str, error: str) -> None:
+        detail = str(error).strip() or "unknown error"
+        message = f"{port}: FLAG poll failed: {detail}"
+        self.ctx.state.extra["connection_detail"] = message
+        serial = self._serial_for_port(port)
+        logger = getattr(serial, "emit_log", None)
+        if callable(logger):
+            logger(f"ERROR {message}")
+        self.refresh_language()
+
     def destroy(self) -> None:
         self._port_scan_closed = True
         if self._port_scan_after_id is not None:
@@ -2033,6 +2417,143 @@ class HomePage(BasePage):
             remove_connection_listener(listener)
             self._serial_connection_listener = None
         super().destroy()
+
+    def _record_flag_poll_notice(self, port: str, message: str) -> None:
+        detail = str(message).strip() or "status notice"
+        formatted = f"{port}: {detail}"
+        self.ctx.state.extra["connection_detail"] = formatted
+        serial = self._serial_for_port(port)
+        logger = getattr(serial, "emit_log", None)
+        if callable(logger):
+            logger(f"INFO {formatted}")
+        self.refresh_language()
+
+    def _consume_flag_poll_results(self, port: str, generation: int) -> None:
+        self._flag_poll_after_id = None
+        if not self._flag_poll_is_current(port, generation):
+            return
+
+        result: tuple[Any, ...] | None = None
+        while True:
+            try:
+                candidate = self._flag_poll_results.get_nowait()
+            except Empty:
+                break
+            if candidate[1] == generation and candidate[2] == port:
+                result = candidate
+                break
+
+        if result is None:
+            if self._flag_poll_inflight:
+                self._flag_poll_after_id = self.after(
+                    self.FLAG_RESULT_CHECK_INTERVAL_MS,
+                    self._consume_flag_poll_results,
+                    port,
+                    generation,
+                )
+            return
+
+        kind, _result_generation, _result_port, payload = result
+        if kind == "ack":
+            if len(payload) == 3:
+                sequence, response, error = payload
+            else:
+                sequence = None
+                response, error = payload
+            if response is None or not response.ok:
+                sequence_text = f" seq={int(sequence):08X}" if sequence is not None else ""
+                self._record_flag_poll_error(
+                    port,
+                    f"INTACK{sequence_text}: {error or getattr(response, 'data', '') or 'no response'}",
+                )
+            self._finish_flag_poll(port, generation)
+            return
+
+        response, status, found, error = payload
+        if response is None:
+            self._record_flag_poll_error(port, error or "no response")
+            self._finish_flag_poll(port, generation)
+            return
+        if not response.ok:
+            detail = error or response.error or response.data or "FLAG failed"
+            if is_serial_contention_error(detail):
+                self._finish_flag_poll(port, generation)
+                return
+            self._record_flag_poll_error(port, detail)
+            self._finish_flag_poll(port, generation)
+            return
+        if status is None:
+            self._record_flag_poll_error(port, error or "invalid FLAG response")
+            self._finish_flag_poll(port, generation)
+            return
+        if status.sequence == 0:
+            self._finish_flag_poll(port, generation)
+            return
+
+        capabilities = getattr(self, "_status_capabilities_by_port", {}).get(port)
+        targets = self._d2_targets_for_port(port)
+        if not targets or capabilities is None or not getattr(capabilities, "d2_scan", False):
+            # No configured FLAG2 target keeps the established mailbox path.
+            # A FLAG1 cache is never presented as a D2-complete sample.
+            if targets and capabilities is not None and not getattr(capabilities, "d2_scan", False):
+                self._record_flag_poll_notice(port, "D2 scan requires FLAG2 firmware; legacy event ACK used")
+            self._start_interrupt_ack_worker(port, generation, status.sequence)
+            self._flag_poll_after_id = self.after(
+                self.FLAG_RESULT_CHECK_INTERVAL_MS,
+                self._consume_flag_poll_results,
+                port,
+                generation,
+            )
+            return
+
+        last_scanned = getattr(self, "_d2_last_scanned_by_port", {}).get(port)
+        if last_scanned == status.sequence:
+            # A previous complete scan only needs an ACK retry; never re-read
+            # the same event and overwrite the firmware's held first result.
+            self._start_interrupt_ack_worker(port, generation, status.sequence)
+            self._flag_poll_after_id = self.after(
+                self.FLAG_RESULT_CHECK_INTERVAL_MS,
+                self._consume_flag_poll_results,
+                port,
+                generation,
+            )
+            return
+
+        failed = getattr(self, "_d2_failed_by_port", {}).get(port)
+        if failed == status.sequence:
+            failed_at = getattr(self, "_d2_failed_at_by_port", {}).get(port)
+            cooldown_ms = getattr(self, "D2_SCAN_RETRY_COOLDOWN_MS", 750)
+            if failed_at is not None and (time.monotonic() - failed_at) * 1000 < cooldown_ms:
+                # Do not spin on one failed event, but keep polling so a newer
+                # mailbox sequence can advance during the cooldown.
+                self._finish_flag_poll(port, generation)
+                return
+            # The bounded attempt is eligible for one same-sequence retry after
+            # the cooldown.  It remains unacknowledged until a complete STAT.
+        for previous in (last_scanned, failed):
+            if previous is not None and status.sequence != previous:
+                try:
+                    if not chip_status_cache.is_newer_u32(status.sequence, previous):
+                        self._finish_flag_poll(port, generation)
+                        return
+                except chip_status_cache.StateError:
+                    self._finish_flag_poll(port, generation)
+                    return
+
+        session = self._status_session_by_port.get(port)
+        if session is None:
+            self._record_flag_poll_error(port, "FLAG2 event has no active status session")
+            self._finish_flag_poll(port, generation)
+            return
+        request = _D2ScanRequest(port, session, generation, status.sequence, targets)
+        self._d2_scan_request = request
+        # Keep FLAG inflight while the status operation waits for the serial
+        # gate and until a complete same-sequence STAT is applied.
+        self._schedule_d2_scan(request)
+
+    def _finish_flag_poll(self, port: str, generation: int) -> None:
+        self._flag_poll_inflight = False
+        self._schedule_flag_poll(port, generation)
 
     def _board_gpio_modes_for_pin(self, pin: str) -> tuple[str, ...]:
         if pin in GPIO_DETECT_PINS:
@@ -2481,13 +3002,7 @@ class HomePage(BasePage):
         self.i2c_btn.configure(text=t(lang, "apply_i2c_speed"))
         self.current_port_name_label.configure(text=f"{t(lang, 'current_serial_name')}:")
         self.refresh_btn.configure(text=t(lang, "refresh_ports"))
-        if getattr(self, "_connect_attempt", None) is not None:
-            connect_text = t(lang, "cancel_connect")
-        elif self._is_selected_port_connected():
-            connect_text = t(lang, "disconnect")
-        else:
-            connect_text = t(lang, "connect")
-        self.connect_btn.configure(text=connect_text)
+        self.connect_btn.configure(text=t(lang, "disconnect") if self._is_selected_port_connected() else t(lang, "connect"))
 
         self.device_addr_label.configure(text=t(lang, "device_addr"))
         self.reg_addr_label.configure(text=t(lang, "reg_addr"))
@@ -3116,6 +3631,7 @@ class SettingsPage(BasePage):
         preference = str(self.ctx.state.extra.get("theme_preference", self.ctx.state.theme))
         self.theme_var = tk.StringVar(value=self._theme_labels.get(preference, "light（浅色）"))
         self.font_size_var = tk.IntVar(value=self.ctx.state.font_size)
+        self.animations_var = tk.BooleanVar(value=bool(self.ctx.state.extra.get("animations_enabled", True)))
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -3157,11 +3673,20 @@ class SettingsPage(BasePage):
         ).grid(row=2, column=1, sticky="w", pady=8)
 
         self.apply_btn = ttk.Button(panel, style="Primary.TButton", command=self.apply_settings)
-        self.apply_btn.grid(row=3, column=0, columnspan=2, sticky="w", pady=(14, 0))
+        self.animations_label = ttk.Label(panel, style="Panel.TLabel")
+        self.animations_label.grid(row=3, column=0, sticky="w", padx=(0, 10), pady=8)
+        self.animations_check = ttk.Checkbutton(panel, variable=self.animations_var,
+                                               command=self._apply_animations_toggle)
+        self.animations_check.grid(row=3, column=1, sticky="w", pady=8)
+        self.apply_btn.grid(row=4, column=0, columnspan=2, sticky="w", pady=(14, 0))
 
         self.refresh_language()
 
+    def _apply_animations_toggle(self) -> None:
+        self.ctx.app.set_animations(bool(self.animations_var.get()))
+
     def apply_settings(self) -> None:
+        self._apply_animations_toggle()
         language = self._language_choices.get(self.language_var.get(), "en")
         theme = self._theme_choices.get(self.theme_var.get(), "light")
         self.ctx.app.apply_settings(language, theme, self.font_size_var.get())
@@ -3179,6 +3704,8 @@ class SettingsPage(BasePage):
         self.theme_label.configure(text="Theme")
         self.font_size_label.configure(text="Font Size 字体大小")
         self.apply_btn.configure(text="Apply")
+        self.animations_label.configure(text=self.tr("animations_setting"))
+        self.animations_check.configure(text=self.tr("animations_enabled"))
 
 
 def _resolve_theme(theme: str) -> str:
@@ -3200,9 +3727,10 @@ def _resolve_theme(theme: str) -> str:
 class PiezoApplication:
     def __init__(self) -> None:
         self.root = tk.Tk()
-        # Worker threads hand results to Tk only through this FIFO dispatcher.
         self.ui_dispatcher = UiDispatcher(self.root).start()
-        self.root.bind("<Destroy>", self._on_root_destroy, add="+")
+        self.animator = anim.Animator(self.root)
+        self.root._piezo_animator = self.animator
+        self.transitions = SnapshotTransition(self.root, self.animator)
         # Let scroll containers handle the wheel without changing a hovered combobox value.
         self.root.bind_class("TCombobox", "<MouseWheel>", lambda _event: None)
         self.root.title("Piezo Control GUI")
@@ -3240,11 +3768,17 @@ class PiezoApplication:
         )
 
         self.navigation = Navigation(self.root, self.ctx)
+        self.micro_anim = MicroAnimations(self.root, self.animator, lambda: self.colors,
+                                         lambda w: str(w.cget("style")).startswith("Sidebar"))
 
         self._register_pages()
         self._refresh_widget_fonts()
         self.navigation.show("home")
-        self.root.bind("<Configure>", self._on_root_configure, add="+")
+        # The normal root bind tag also receives every descendant Configure.
+        # Resize handling is only needed for the top-level window itself.
+        self._resize_tag = f"ApplicationResize{id(self)}"
+        self.root.bindtags((self._resize_tag, *self.root.bindtags()))
+        self.root.bind_class(self._resize_tag, "<Configure>", self._on_root_configure)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     def _apply_window_icon(self) -> None:
@@ -3257,17 +3791,25 @@ class PiezoApplication:
             pass
 
     def _register_pages(self) -> None:
-        self.navigation.add_page("home", "home", HomePage(self.navigation.content, self.ctx))
-        self.navigation.add_page("awp1921_1923", "awp1921_1923", AWP1921AWP1923Page(self.navigation.content, self.ctx))
-        self.navigation.add_page("awp1922", "awp1922", AWP1922Page(self.navigation.content, self.ctx))
-        self.navigation.add_page("awp1018", "awp1018", AWP1018Page(self.navigation.content, self.ctx))
-        self.navigation.add_page("awp1221", "awp1221", AWP1221Page(self.navigation.content, self.ctx))
-        self.navigation.add_page(
-            "settings",
-            "settings",
-            SettingsPage(self.navigation.content, self.ctx),
-            sidebar_button=False,
-        )
+        content = self.navigation.content
+        for name, cls, sidebar in (
+            ("home", HomePage, True),
+            ("awp1921_1923", AWP1921AWP1923Page, True),
+            ("awp1922", AWP1922Page, True),
+            ("awp1018", AWP1018Page, True),
+            ("awp1221", AWP1221Page, True),
+            ("settings", SettingsPage, False),
+        ):
+            self.navigation.register_page(name, name, lambda cls=cls: cls(content, self.ctx),
+                                          sidebar_button=sidebar)
+
+    def set_animations(self, enabled: bool) -> None:
+        self.state.extra["animations_enabled"] = bool(enabled)
+        self.animator.set_enabled(enabled)
+        self.micro_anim.reset()
+        self.navigation.motion.reset()
+        if not enabled:
+            self.transitions.finish()
 
     def set_language(self, language: str) -> None:
         if language not in {"zh", "en"}:
@@ -3284,7 +3826,7 @@ class PiezoApplication:
         if theme == self.state.theme:
             return
         self.state.theme = theme
-        self._apply_visual_settings()
+        self.transitions.change(self.root, anim.DUR_SLOW, self._apply_visual_settings)
 
     def set_font_size(self, font_size: int) -> None:
         try:
@@ -3319,7 +3861,11 @@ class PiezoApplication:
                 self.state.extra["theme_preference"] = preference
             if font_changed:
                 self.state.font_size = next_font_size
-            self._apply_visual_settings()
+            self.micro_anim.reset()
+            if theme_changed:
+                self.transitions.change(self.root, anim.DUR_SLOW, self._apply_visual_settings)
+            else:
+                self._apply_visual_settings()
 
     def _window_scale(self) -> float:
         width = max(1, self.root.winfo_width())
@@ -3363,34 +3909,23 @@ class PiezoApplication:
             if getattr(self.state, "current_page", "") == "home":
                 nav._align_home_panel()
 
-    def _refresh_widget_fonts(self) -> None:
+    def _refresh_widget_fonts(self, start: tk.Misc | None = None) -> None:
         body_size = int(getattr(self.root, "_piezo_body_font_size", self.state.font_size))
         title_size = int(getattr(self.root, "_piezo_title_font_size", self.state.font_size + 8))
         small_size = max(7, body_size - 1)
         mono_size = int(getattr(self.root, "_piezo_mono_font_size", 9))
 
-        # Resolving font.actual() goes through fontconfig on Linux (~4 ms per
-        # call) and this walk visits every widget, so cache by font spec for
-        # the duration of this pass.  Identical specs resolve identically.
         flags_cache: dict[str, tuple[bool, bool]] = {}
-
         def current_font_flags(widget: tk.Misc) -> tuple[bool, bool]:
             try:
                 spec = widget.cget("font")
-            except Exception:
+                key = str(spec)
+                if key not in flags_cache:
+                    actual = tkfont.Font(root=self.root, font=spec).actual()
+                    flags_cache[key] = (actual.get("weight") == "bold", bool(actual.get("underline")))
+                return flags_cache[key]
+            except (tk.TclError, AttributeError):
                 return False, False
-            key = str(spec)
-            cached = flags_cache.get(key)
-            if cached is not None:
-                return cached
-            try:
-                font = tkfont.Font(root=self.root, font=spec)
-                actual = font.actual()
-                result = (actual.get("weight") == "bold", bool(actual.get("underline")))
-            except Exception:
-                result = (False, False)
-            flags_cache[key] = result
-            return result
 
         def apply(widget: tk.Misc) -> None:
             try:
@@ -3408,8 +3943,10 @@ class PiezoApplication:
                     font = None
                 elif style_name == "Prominent.TLabel":
                     prominent_size = int(getattr(self.root, "_piezo_prominent_title_font_size", title_size + 1))
-                    font = ("Microsoft YaHei UI", prominent_size, "bold", *(() if not underline else ("underline",)))
-                elif style_name in {"Title.TLabel", "PanelTitle.TLabel"}:
+                    font = ("Microsoft YaHei UI", prominent_size, page_title_weight(self.root), *(() if not underline else ("underline",)))
+                elif style_name == "Title.TLabel":
+                    font = ("Microsoft YaHei UI", title_size, page_title_weight(self.root), *(() if not underline else ("underline",)))
+                elif style_name == "PanelTitle.TLabel":
                     font = ("Microsoft YaHei UI", title_size, "bold", *(() if not underline else ("underline",)))
                 elif style_name == "SectionTitle.TLabel":
                     font = ("Microsoft YaHei UI", body_size, "bold", *(() if not underline else ("underline",)))
@@ -3444,19 +3981,18 @@ class PiezoApplication:
             for child in widget.winfo_children():
                 apply(child)
 
-        apply(self.root)
+        apply(self.root if start is None else start)
 
     def run(self) -> None:
         self.root.mainloop()
 
-    def _on_root_destroy(self, event: tk.Event) -> None:
-        if getattr(event, "widget", None) is self.root:
-            self.ui_dispatcher.close()
-
     def close(self) -> None:
-        # Stop accepting worker callbacks first; nothing may touch Tk after
-        # the window is gone ("main thread is not in main loop").
         self.ui_dispatcher.close()
+        self.root.unbind_class(self._resize_tag, "<Configure>")
+        self.transitions.close()
+        self.micro_anim.close()
+        self.navigation.close()
+        self.animator.stop()
         if self._resize_after is not None:
             try:
                 self.root.after_cancel(self._resize_after)
@@ -3464,9 +4000,6 @@ class PiezoApplication:
                 pass
             self._resize_after = None
         home_page = getattr(getattr(self, "navigation", None), "pages", {}).get("home")
-        cancel_connect = getattr(home_page, "cancel_connection", None)
-        if callable(cancel_connect):
-            cancel_connect()
         cancel_continuous_read = getattr(home_page, "cancel_continuous_read", None)
         if callable(cancel_continuous_read):
             cancel_continuous_read("application_closing")
@@ -3483,6 +4016,7 @@ class PiezoApplication:
                 self.serial.disconnect()
         except Exception:
             pass
+        cancel_pending_ui_jobs(self.root)
         self.root.destroy()
 
     def _clear_waveform_cache_files(self) -> None:

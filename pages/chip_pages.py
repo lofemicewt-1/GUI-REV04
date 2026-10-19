@@ -9,11 +9,11 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 from core import register_base
+from core.lazy_pages import LazyPages
 from pages import awp192x_registers
 from pages.awp1221_page import AWP1221Page
 from pages.awp192x_modes import ButtonModePage, FullModePage, PumpModePage
 from pages.base_page import BasePage, SimpleTooltip
-from core.ui_dispatch import post_to_ui
 
 
 AWP1744_AWP1766_VOLTAGE_TABLE = [
@@ -173,7 +173,7 @@ class AWP1921AWP1923Page(BasePage):
         self.current_mode = "button_mode"
         self.mode_buttons: dict[str, ttk.Button] = {}
         self.state_buttons: dict[str, ttk.Button] = {}
-        self.mode_pages: dict[str, ttk.Frame] = {}
+        self.mode_pages = LazyPages(self._install_mode_page)
         self._detail_field_vars: dict[str, tk.StringVar] = {}
         self._detail_field_choice_values: dict[str, dict[str, int]] = {}
         self._detail_tooltips: list[SimpleTooltip] = []
@@ -210,17 +210,19 @@ class AWP1921AWP1923Page(BasePage):
         self.mode_container.rowconfigure(0, weight=1)
         self.mode_container.columnconfigure(0, weight=1)
 
-        self.mode_pages["button_mode"] = ButtonModePage(self.mode_container, self.ctx)
-        self.mode_pages["pump_mode"] = PumpModePage(self.mode_container, self.ctx)
-        self.mode_pages["full_mode"] = FullModePage(self.mode_container, self.ctx)
-
-        for page in self.mode_pages.values():
-            page.grid(row=0, column=0, sticky="nsew")
-            page.grid_remove()
+        for name, page_type in (("button_mode", ButtonModePage), ("pump_mode", PumpModePage), ("full_mode", FullModePage)):
+            self.mode_pages.register(name, lambda page_type=page_type: page_type(self.mode_container, self.ctx))
 
         self.refresh_language()
         self._on_addr_changed()
         self.show_mode("button_mode")
+
+    def _install_mode_page(self, _name: str, page: ttk.Frame) -> None:
+        page.grid(row=0, column=0, sticky="nsew")
+        page.grid_remove()
+        refresh = getattr(getattr(self.ctx, "app", None), "_refresh_widget_fonts", None)
+        if callable(refresh):
+            refresh(page)
 
     def _build_state_actions(self, parent: tk.Misc) -> None:
         for column, (key, value, style) in enumerate(self.STATE_COMMANDS):
@@ -789,7 +791,7 @@ class AWP1921AWP1923Page(BasePage):
                 bits=16,
             )
             try:
-                post_to_ui(self, finish, response.ok, response.error)
+                self.after(0, finish, response.ok, response.error)
             except tk.TclError:
                 pass
 
@@ -817,7 +819,7 @@ class AWP1921AWP1923Page(BasePage):
             return
         self.current_mode = mode
         self._sync_mode_button_styles()
-        for page in self.mode_pages.values():
+        for page in dict.values(self.mode_pages):
             page.grid_remove()
         page = self.mode_pages[mode]
         page.grid()
@@ -846,7 +848,7 @@ class AWP1921AWP1923Page(BasePage):
             btn.configure(text=self.tr(key))
         for key, btn in self.state_buttons.items():
             btn.configure(text=self.tr(key))
-        for page in self.mode_pages.values():
+        for page in dict.values(self.mode_pages):
             if hasattr(page, "refresh_language"):
                 page.refresh_language()
 
@@ -859,7 +861,7 @@ class AWP1921AWP1923Page(BasePage):
         if self.detail_mode_active():
             self._refresh_detail_fields(view=self._detail_last_view)
             self._apply_detail_host_height()
-        for page in self.mode_pages.values():
+        for page in dict.values(self.mode_pages):
             if hasattr(page, "refresh_theme"):
                 page.refresh_theme()
 
@@ -1375,7 +1377,7 @@ class AWP1744AWP1766PumpModePage(BasePage):
         reader = getattr(self.ctx.serial, "read_frequency", None)
         resp = reader() if callable(reader) else self.ctx.serial.send_command("FREQ?", expect_response=True)
         try:
-            post_to_ui(self, self._finish_frequency_request, resp.ok, resp.data, resp.error)
+            self.after(0, self._finish_frequency_request, resp.ok, resp.data, resp.error)
         except Exception:
             pass
 
@@ -1394,7 +1396,7 @@ class AWP1744AWP1766PumpModePage(BasePage):
         period_text, hz_text = parsed
         if threading.current_thread() is not threading.main_thread():
             try:
-                post_to_ui(self, self._set_frequency_reading, period_text, hz_text)
+                self.after(0, self._set_frequency_reading, period_text, hz_text)
             except Exception:
                 pass
             return

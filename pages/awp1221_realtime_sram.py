@@ -21,7 +21,6 @@ from core.awp1221_gpio import (
 from core.base_tool import GPIO_MODE_DETECT, parse_gpio_read_response, run_async_write
 
 from pages.awp1221_sram_editor import AWP1221SramEditor
-from core.ui_dispatch import post_to_ui
 
 
 AWP1221_ADC_SETTINGS_REGISTER = 0x05
@@ -151,7 +150,10 @@ def awp1221_visible_band(
 
 
 def _schedule_ui(widget: tk.Misc, callback: Callable[..., None], *args: Any) -> None:
-    post_to_ui(widget, callback, *args)
+    try:
+        widget.after(0, callback, *args)
+    except tk.TclError:
+        pass
 
 
 def _run_ui_background_task(
@@ -387,19 +389,45 @@ class AWP1221RealtimeMixin:
 
     def _init_adc_realtime(self) -> None:
         self._adc_realtime_active = False
+        self._adc_value_realtime_active = False
+        self._adc_realtime_generation = 0
         self._adc_realtime_job: str | None = None
         self._adc_voltage_window: ADCVoltageWindow | None = None
         self._vibration_gpio_level: int | None = None
 
     def toggle_adc_realtime(self) -> None:
+        if getattr(self, "mode_key", None) == "button_mode":
+            if self._adc_value_realtime_active:
+                self._adc_value_realtime_active = False
+                if self._adc_voltage_window is None:
+                    self._stop_adc_realtime()
+                else:
+                    self._refresh_adc_read_buttons()
+                return
+            if not self._ensure_connected():
+                return
+            self._adc_value_realtime_active = True
+            already_polling = self._adc_realtime_active
+            self._adc_realtime_active = True
+            self._refresh_adc_read_buttons()
+            if not already_polling:
+                self._poll_adc_realtime()
+            return
         if self._adc_realtime_active:
             self._stop_adc_realtime()
+            return
+        self.show_adc_graph()
+
+    def show_adc_graph(self) -> None:
+        if self._adc_voltage_window is not None and self._adc_voltage_window.winfo_exists():
+            self._adc_voltage_window.deiconify()
+            self._adc_voltage_window.lift()
             return
         if not self._ensure_connected():
             return
         self._adc_voltage_window = ADCVoltageWindow(
             self,
-            self._stop_adc_realtime,
+            self._close_adc_graph,
             on_settings_change=self._apply_adc_voltage_settings,
         )
         colors = getattr(getattr(self, "ctx", None), "colors", None)
@@ -409,6 +437,18 @@ class AWP1221RealtimeMixin:
         self._adc_realtime_active = True
         self._refresh_adc_read_buttons()
         self._load_adc_voltage_settings()
+        self._push_realtime_thresholds()
+
+    def _close_adc_graph(self) -> None:
+        if getattr(self, "mode_key", None) != "button_mode" or not self._adc_value_realtime_active:
+            self._stop_adc_realtime()
+            return
+        window = self._adc_voltage_window
+        self._adc_voltage_window = None
+        if window is not None and window.winfo_exists():
+            window.destroy()
+        self._vibration_gpio_level = None
+        self._refresh_adc_read_buttons()
 
     def _load_adc_voltage_settings(self) -> None:
         try:
@@ -436,12 +476,14 @@ class AWP1221RealtimeMixin:
                 if page_load is not None:
                     page_load.set(load)
                 window.redraw()
-                self._poll_adc_realtime()
+                if self._adc_realtime_job is None and not self._adc_read_in_flight:
+                    self._poll_adc_realtime()
 
         def settings_error(error: Exception) -> None:
             self._show_adc_voltage_error(error)
             if self._adc_realtime_active and self._adc_voltage_window is target_window:
-                self._poll_adc_realtime()
+                if self._adc_realtime_job is None and not self._adc_read_in_flight:
+                    self._poll_adc_realtime()
 
         _run_ui_background_task(self, read_settings, on_done=apply_settings, on_error=settings_error)
 
@@ -465,10 +507,18 @@ class AWP1221RealtimeMixin:
         )
         setter = getattr(self, "adc_sample_update_var", None)
         if setter is not None:
-            post_to_ui(self, setter.set, sample)
+            after = getattr(self, "after", None)
+            if callable(after):
+                after(0, setter.set, sample)
+            else:
+                setter.set(sample)
         load_setter = getattr(self, "adc_ldo_var", None)
         if load_setter is not None:
-            post_to_ui(self, load_setter.set, load)
+            after = getattr(self, "after", None)
+            if callable(after):
+                after(0, load_setter.set, load)
+            else:
+                load_setter.set(load)
 
     def _apply_adc_voltage_settings(self) -> None:
         window = self._adc_voltage_window
@@ -553,19 +603,26 @@ class AWP1221RealtimeMixin:
             self._schedule_next_adc_poll()
             return
         generation = getattr(self, "_adc_lifecycle_generation", 0)
+        poll_generation = getattr(self, "_adc_realtime_generation", 0)
+        graph_open = self._adc_voltage_window is not None
         self._adc_read_in_flight = True
 
         def work() -> tuple[int | None, int]:
             with self.ctx.serial.suppress_logging():
                 level: int | None
-                try:
-                    level = self._read_vibration_gpio_level()
-                except Exception:
-                    level = None
+                level = None
+                if graph_open:
+                    try:
+                        level = self._read_vibration_gpio_level()
+                    except Exception:
+                        pass
                 value = self._read_register_value(AWP1221_ADC_LIVE_REGISTER, address)
                 return level, value
 
         def on_done(result: tuple[int | None, int]) -> None:
+            if poll_generation != getattr(self, "_adc_realtime_generation", 0):
+                self._adc_read_in_flight = False
+                return
             level, value = result
             self._note_vibration_gpio_level(level)
             self._finish_adc_value_read(
@@ -575,6 +632,7 @@ class AWP1221RealtimeMixin:
                 generation=generation,
                 on_complete=self._schedule_next_adc_poll,
                 register=AWP1221_ADC_LIVE_REGISTER,
+                update_display=getattr(self, "mode_key", None) != "button_mode" or self._adc_value_realtime_active,
             )
             window = self._adc_voltage_window
             if window is not None and window.winfo_exists():
@@ -587,6 +645,9 @@ class AWP1221RealtimeMixin:
                 window.status.set(f"{marker} · ADC 0x13: 0x{value & 0xFFFF:04X}")
 
         def on_error(error: Exception) -> None:
+            if poll_generation != getattr(self, "_adc_realtime_generation", 0):
+                self._adc_read_in_flight = False
+                return
             self._finish_adc_value_read(
                 value=None,
                 error=error,
@@ -609,6 +670,8 @@ class AWP1221RealtimeMixin:
 
     def _stop_adc_realtime(self) -> None:
         self._adc_realtime_active = False
+        self._adc_value_realtime_active = False
+        self._adc_realtime_generation = getattr(self, "_adc_realtime_generation", 0) + 1
         window = self._adc_voltage_window
         self._adc_voltage_window = None
         if window is not None and window.winfo_exists():

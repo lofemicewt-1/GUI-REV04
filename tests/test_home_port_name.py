@@ -70,6 +70,13 @@ class HomePortNameTests(unittest.TestCase):
 
         self.assertEqual(self.page.current_port_name_var.get(), "USB-SERIAL CH340 (COM5)")
 
+    def test_i2c_speed_combobox_keeps_default_and_offers_all_steps(self) -> None:
+        self.assertEqual(self.page.i2c_speed_var.get(), "400000")
+        self.assertEqual(list(self.page.i2c_speed_combo.cget("values")),
+                         ["100000", "400000", "500000", "615385", "666667",
+                          "727273", "800000"])
+        self.assertEqual(str(self.page.i2c_speed_combo.cget("state")), "readonly")
+
     def test_port_list_poll_picks_up_new_serial_name(self) -> None:
         self.assertEqual(self.page.current_port_name_var.get(), "Arduino Uno (COM3)")
 

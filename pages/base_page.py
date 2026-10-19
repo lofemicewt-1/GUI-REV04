@@ -10,8 +10,9 @@ from typing import Any
 
 from config.app_info import CHIP_WEBSITE_URLS
 from config.languages import t
-from styles.fonts import sidebar_brand_font_spec
 from core.ui_dispatch import post_to_ui
+from core import animation as anim
+from styles.fonts import sidebar_brand_font_spec, page_title_weight
 
 
 def fit_toplevel_to_screen(
@@ -137,8 +138,16 @@ class SimpleTooltip:
         except tk.TclError:
             pass
         self.tip.wm_geometry(f"+{x}+{y}")
+        animator = anim.animator_for(self.widget)
+        if animator is not None and animator.enabled:
+            tip = self.tip
+            animator.animate(("tooltip", id(self)), anim.GRAPHEME_MS,
+                             lambda p: tip.attributes("-alpha", p), ease=anim.EASE_GRAPHEME)
 
     def _hide(self, _event: tk.Event | None = None) -> None:
+        animator = anim.animator_for(self.widget)
+        if animator is not None:
+            animator.cancel(("tooltip", id(self)))
         if self.tip is not None:
             self.tip.destroy()
             self.tip = None
@@ -163,6 +172,7 @@ class VerticalScrollArea(ttk.Frame):
         self.propagate_height = bool(propagate_height)
         self._scrollbar_visible = False
         self._horizontal_scrollbar_visible = False
+        self._layout_job: str | None = None
 
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
@@ -181,8 +191,9 @@ class VerticalScrollArea(ttk.Frame):
         self.content.columnconfigure(0, weight=1)
         self.window_id = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
 
-        self.content.bind("<Configure>", self._sync_scroll_region)
-        self.canvas.bind("<Configure>", self._sync_content_width)
+        self.content.bind("<Configure>", self._queue_scroll_layout)
+        self.canvas.bind("<Configure>", self._queue_scroll_layout)
+        self.bind("<Destroy>", self._cancel_scroll_layout, add="+")
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
         self.canvas.bind_all("<Shift-MouseWheel>", self._on_shift_mousewheel, add="+")
         self.refresh_theme()
@@ -208,7 +219,25 @@ class VerticalScrollArea(ttk.Frame):
         except (tk.TclError, TypeError, ValueError):
             return 0
 
+    def _queue_scroll_layout(self, _event: tk.Event | None = None) -> None:
+        # One content resize also configures its canvas and scrollbars. Read
+        # their final dimensions once instead of repainting at every boundary.
+        if self._layout_job is None:
+            self._layout_job = self.after(anim.FRAME_MS, self._run_scroll_layout)
+
+    def _run_scroll_layout(self) -> None:
+        self._layout_job = None
+        self._sync_scroll_region()
+
+    def _cancel_scroll_layout(self, event: tk.Event | None = None) -> None:
+        if event is not None and event.widget is not self:
+            return
+        if self._layout_job is not None:
+            self.after_cancel(self._layout_job)
+            self._layout_job = None
+
     def _sync_scroll_region(self, _event: tk.Event | None = None) -> None:
+        self._cancel_scroll_layout()
         try:
             natural_width, natural_height = self._natural_content_size()
             canvas_width = max(1, self.canvas.winfo_width())
@@ -227,7 +256,9 @@ class VerticalScrollArea(ttk.Frame):
                 height = max(height, requested_height)
                 if natural_height + 16 <= canvas_height:
                     height = min(height, canvas_height)
-            self.canvas.configure(scrollregion=(0, 0, width, height))
+            region = (0, 0, width, height)
+            if tuple(map(float, self.canvas.tk.splitlist(self.canvas.cget("scrollregion")))) != region:
+                self.canvas.configure(scrollregion=region)
             needs_scrollbar = height > canvas_height
             needs_horizontal_scrollbar = self.horizontal and width > canvas_width
             if needs_scrollbar and not self._scrollbar_visible:
@@ -262,7 +293,8 @@ class VerticalScrollArea(ttk.Frame):
                 width = max(1, event.width, self.min_content_width, self.content.winfo_reqwidth())
             else:
                 width = max(1, event.width)
-            self.canvas.itemconfigure(self.window_id, width=width)
+            if self._window_item_span("width") != width:
+                self.canvas.itemconfigure(self.window_id, width=width)
             self._sync_scroll_region()
         except tk.TclError:
             pass
@@ -439,27 +471,30 @@ class FooterSplit(ttk.Frame):
 _CHIP_TITLE_KEYS = {"awp1921_1923", "awp1921", "awp1923", "awp1922", "awp1018", "awp1221"}
 
 
-_FONT_SIZE_FOR_HEIGHT_CACHE: dict[tuple[Any, ...], int] = {}
-
-
 def _font_size_for_pixel_height(root: tk.Misc, family: str, weight: str, target_px: int) -> int:
+    owner = root._root()
+    cache = getattr(owner, "_motion_font_height_cache", None)
+    if cache is None:
+        cache = owner._motion_font_height_cache = {}
+    key = (family, weight, int(target_px), str(root.tk.call("tk", "scaling")))
+    if key not in cache:
+        cache[key] = _font_size_for_pixel_height_uncached(root, family, weight, target_px)
+    return cache[key]
+
+
+def _wordmark_width(root: tk.Misc, family: str, size: int, weight: str) -> int:
+    owner = root._root()
+    cache = getattr(owner, "_motion_wordmark_width_cache", None)
+    if cache is None:
+        cache = owner._motion_wordmark_width_cache = {}
+    key = (family, size, weight, str(root.tk.call("tk", "scaling")))
+    if key not in cache:
+        cache[key] = tkfont.Font(root=root, family=family, size=size, weight=weight).measure("PIEZO CONTROL")
+    return cache[key]
+
+
+def _font_size_for_pixel_height_uncached(root: tk.Misc, family: str, weight: str, target_px: int) -> int:
     target = max(12, int(target_px))
-    try:
-        scaling = str(root.tk.call("tk", "scaling"))
-    except tk.TclError:
-        scaling = ""
-    # Probing up to 60 Font objects is slow (~100 ms) and this runs on every
-    # header <Configure>; metrics only depend on these inputs, so memoize.
-    cache_key = (str(root), family, weight, target, scaling)
-    cached = _FONT_SIZE_FOR_HEIGHT_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    chosen = _font_size_for_pixel_height_uncached(root, family, weight, target)
-    _FONT_SIZE_FOR_HEIGHT_CACHE[cache_key] = chosen
-    return chosen
-
-
-def _font_size_for_pixel_height_uncached(root: tk.Misc, family: str, weight: str, target: int) -> int:
     chosen = 12
     for size in range(12, 73):
         probe = tkfont.Font(root=root, family=family, size=size, weight=weight)
@@ -629,8 +664,8 @@ class BasePage(ttk.Frame):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-    def make_merged_footer(self) -> tuple[ttk.Frame, ttk.Frame, WrappingGroupBar, WrappingGroupBar]:
-        footer = ttk.Frame(self, style="Panel.TFrame", padding=(12, 10))
+    def make_merged_footer(self, parent: tk.Misc | None = None) -> tuple[ttk.Frame, ttk.Frame, WrappingGroupBar, WrappingGroupBar]:
+        footer = ttk.Frame(self if parent is None else parent, style="Panel.TFrame", padding=(12, 10))
         footer.columnconfigure(0, weight=1)
         actions = ttk.Frame(footer, style="Panel.TFrame")
         actions.grid(row=0, column=0, sticky="ew")
@@ -682,7 +717,7 @@ class BasePage(ttk.Frame):
             self._make_linked_title_part(title_group, "AWP1921", "awp1921", 0, title_style)
             slash = ttk.Label(title_group, text="/", style=title_style)
             slash.grid(row=0, column=1, sticky="w")
-            slash.configure(font=("Microsoft YaHei UI", self._chip_title_size(), "bold"))
+            slash.configure(font=("Microsoft YaHei UI", self._chip_title_size(), page_title_weight(self)))
             self._chip_title_labels.append(slash)
             self._make_linked_title_part(title_group, "AWP1923", "awp1923", 2, title_style)
         else:
@@ -738,7 +773,7 @@ class BasePage(ttk.Frame):
         else:
             size_name = "_piezo_prominent_title_font_size" if style_name == "Prominent.TLabel" else "_piezo_title_font_size"
             size = int(getattr(self.winfo_toplevel(), size_name, 18))
-        title.configure(cursor="hand2", font=("Microsoft YaHei UI", size, "bold", "underline"))
+        title.configure(cursor="hand2", font=("Microsoft YaHei UI", size, page_title_weight(self), "underline"))
         title.bind("<Button-1>", lambda _event, link=url: webbrowser.open(link))
 
     def _set_button_selected(self, key: str, selected: bool) -> None:
@@ -779,7 +814,7 @@ class BasePage(ttk.Frame):
             try:
                 current = str(title.cget("font"))
                 underlined = "underline" in current
-                font: tuple[Any, ...] = ("Microsoft YaHei UI", size, "bold", "underline") if underlined else ("Microsoft YaHei UI", size, "bold")
+                font: tuple[Any, ...] = ("Microsoft YaHei UI", size, page_title_weight(self), "underline") if underlined else ("Microsoft YaHei UI", size, page_title_weight(self))
                 title.configure(font=font)
             except tk.TclError:
                 continue
@@ -821,12 +856,10 @@ class BasePage(ttk.Frame):
         own_row = False
         if available > 0:
             while size > 16:
-                probe = tkfont.Font(root=self.winfo_toplevel(), family=family, size=size, weight=weight)
-                if probe.measure("PIEZO CONTROL") <= available:
+                if _wordmark_width(self.winfo_toplevel(), family, size, weight) <= available:
                     break
                 size -= 1
-            probe = tkfont.Font(root=self.winfo_toplevel(), family=family, size=size, weight=weight)
-            own_row = probe.measure("PIEZO CONTROL") > available
+            own_row = _wordmark_width(self.winfo_toplevel(), family, size, weight) > available
         text_color = self.ctx.colors.get("text", "#111827")
         key = ("wordmark", height, theme, text_color, size, own_row)
         if getattr(label, "_logo_key", None) == key:
@@ -934,7 +967,7 @@ class BasePage(ttk.Frame):
             messagebox.showerror(self.tr("error"), str(exc))
     SERIAL_LOG_MAX_LINES = 10_000
 
-    def _serial_log_pending_state(self) -> tuple[threading.Lock, list[list[str]]]:
+    def _serial_log_pending_state(self) -> tuple[threading.Lock, list[Any]]:
         state = self.__dict__.get("_serial_log_pending")
         if state is None:
             state = self.__dict__.setdefault("_serial_log_pending", (threading.Lock(), [[], False, 0]))
@@ -1013,6 +1046,7 @@ class BasePage(ttk.Frame):
             text.configure(state="disabled")
         except Exception:
             pass
+
     def destroy(self) -> None:
         if self._serial_log_listener is not None:
             self.ctx.serial.remove_log_listener(self._serial_log_listener)

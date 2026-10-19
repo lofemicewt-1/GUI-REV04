@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from styles.fonts import page_title_weight
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
@@ -300,6 +301,37 @@ def _button_image_layout(element_name: str) -> list[tuple[str, dict]]:
     ]
 
 
+def _button_render_tile(root: tk.Misc, source: tk.PhotoImage, border: int) -> tk.PhotoImage:
+    """Keep corner pixels, enlarge the repeatable strips to reduce native blits.
+
+    ttk tiles image elements rather than stretching their centre. A 32px
+    source with 11px borders otherwise repeats a 10px strip across wide buttons.
+    Element minima remain the original image size (set by the caller).
+    """
+    width, height = source.width(), source.height()
+    middle_w, middle_h = width-2*border, height-2*border
+    if min(middle_w, middle_h) <= 0:
+        return source
+    cache = getattr(root, "_rounded_button_render_tiles", None)
+    if cache is None:
+        cache = root._rounded_button_render_tiles = {}
+    key = (str(source), border)
+    if key not in cache:
+        zoom_x, zoom_y = 32, 4
+        out_w, out_h = 2*border+middle_w*zoom_x, 2*border+middle_h*zoom_y
+        image = tk.PhotoImage(master=root, width=out_w, height=out_h)
+        rows = ((0, border, 0, 1), (border, height-border, border, zoom_y),
+                (height-border, height, out_h-border, 1))
+        cols = ((0, border, 0, 1), (border, width-border, border, zoom_x),
+                (width-border, width, out_w-border, 1))
+        for sy, ey, dy, zy in rows:
+            for sx, ex, dx, zx in cols:
+                root.tk.call(str(image), "copy", str(source), "-from", sx, sy, ex, ey,
+                             "-to", dx, dy, "-zoom", zx, zy)
+        cache[key] = image
+    return cache[key]
+
+
 def _configure_rounded_button_styles(
     root: tk.Misc,
     style: ttk.Style,
@@ -356,43 +388,9 @@ def _configure_rounded_button_styles(
             ),
         }
 
-    def make_mode_set(fill: str, accent: str) -> dict[str, tk.PhotoImage]:
-        corner = colors["panel_alt"]
-        return {
-            "normal": _make_rounded_button_image(
-                root,
-                fill=fill,
-                border=accent,
-                corner=corner,
-                size=32,
-                radius=radius,
-                shadow=0.0,
-            ),
-            "pressed": _make_rounded_button_image(
-                root,
-                fill=accent,
-                border=accent,
-                corner=corner,
-                size=32,
-                radius=radius,
-                shadow=0.0,
-                inner_shadow=0.72,
-            ),
-            "disabled": _make_rounded_button_image(
-                root,
-                fill=fill,
-                border=colors["muted"],
-                corner=corner,
-                size=32,
-                radius=radius,
-                shadow=0.0,
-            ),
-        }
-
     sidebar_selected_fill = selected_center if theme != "dark" else "#2871FA"
     sidebar_selected_edge = selected_edge if theme != "dark" else "#173B70"
     sidebar_selected_text = "#FFFFFF" if theme != "dark" else "#05070D"
-    pressed_accent = sidebar_selected_fill if theme == "dark" else colors["mode_selected"]
     if theme not in image_store or "panel" not in image_store[theme]:
         image_store[theme] = {
             "panel": make_set(colors["panel"]),
@@ -407,16 +405,14 @@ def _configure_rounded_button_styles(
 
     store = image_store[theme]
     if "sidebar_mode" not in store:
-        store["sidebar_mode"] = make_mode_set(colors["mode_idle"], pressed_accent)
+        store["sidebar_mode"] = store["sidebar"]
         selected_image = store["sidebar"]["pressed"]
-        if theme == "dark":
-            store["sidebar_mode"]["pressed"] = selected_image
         store["sidebar_mode_selected"] = {
             "normal": selected_image,
             "pressed": selected_image,
             "disabled": _make_rounded_button_image(
                 root,
-                fill=colors["mode_idle"],
+                fill=colors["panel_alt"],
                 border=colors["muted"],
                 corner=colors["panel_alt"],
                 size=32,
@@ -442,14 +438,18 @@ def _configure_rounded_button_styles(
     def ensure_element(name: str, images: dict[str, tk.PhotoImage], *, selected: bool) -> None:
         if name in style.element_names():
             return
+        render = {state: _button_render_tile(root, image, slice_border) for state, image in images.items()}
+        original_w, original_h = images["normal"].width(), images["normal"].height()
         if selected:
             style.element_create(
                 name,
                 "image",
-                images["pressed"],
-                ("disabled", images["disabled"]),
-                ("pressed", images["pressed"]),
-                ("active", images["pressed"]),
+                render["pressed"],
+                ("disabled", render["disabled"]),
+                ("pressed", render["pressed"]),
+                ("active", render["pressed"]),
+                width=original_w,
+                height=original_h,
                 border=slice_border,
                 padding=radius,
                 sticky="nswe",
@@ -458,10 +458,12 @@ def _configure_rounded_button_styles(
         style.element_create(
             name,
             "image",
-            images["normal"],
-            ("disabled", images["disabled"]),
-            ("pressed", images["pressed"]),
-            ("active", images["normal"]),
+            render["normal"],
+            ("disabled", render["disabled"]),
+            ("pressed", render["pressed"]),
+            ("active", render["normal"]),
+            width=original_w,
+            height=original_h,
             border=slice_border,
             padding=radius,
             sticky="nswe",
@@ -527,10 +529,12 @@ def _configure_rounded_button_styles(
         style.element_create(
             quiet_element,
             "image",
-            panel_images["normal"],
-            ("disabled", panel_images["disabled"]),
-            ("pressed", panel_images["normal"]),
-            ("active", panel_images["normal"]),
+            _button_render_tile(root, panel_images["normal"], slice_border),
+            ("disabled", _button_render_tile(root, panel_images["disabled"], slice_border)),
+            ("pressed", _button_render_tile(root, panel_images["normal"], slice_border)),
+            ("active", _button_render_tile(root, panel_images["normal"], slice_border)),
+            width=panel_images["normal"].width(),
+            height=panel_images["normal"].height(),
             border=slice_border,
             padding=radius,
             sticky="nswe",
@@ -628,37 +632,15 @@ def _configure_rounded_button_styles(
         darkcolor=[("disabled", colors["muted"]), ("active", sidebar_selected_edge), ("pressed", sidebar_selected_edge)],
         relief=[("disabled", "flat"), ("!disabled", "flat")],
     )
-    configure_plain("SidebarMode.TButton", sidebar_mode_element, colors["mode_idle"], "#FFFFFF")
-    style.map(
-        "SidebarMode.TButton",
-        background=[
-            ("disabled", colors["mode_idle"]),
-            ("pressed", pressed_accent),
-            ("active", colors["mode_idle"]),
-        ],
-        foreground=[("disabled", "#D1D5DB"), ("pressed", sidebar_selected_text if theme == "dark" else "#FFFFFF")],
-        bordercolor=[
-            ("disabled", colors["muted"]),
-            ("pressed", sidebar_selected_edge if theme == "dark" else colors["mode_selected"]),
-            ("active", colors["mode_selected"]),
-        ],
-        lightcolor=[
-            ("disabled", colors["muted"]),
-            ("pressed", sidebar_selected_edge if theme == "dark" else colors["mode_selected"]),
-            ("active", colors["mode_selected"]),
-        ],
-        darkcolor=[
-            ("disabled", colors["muted"]),
-            ("pressed", sidebar_selected_edge if theme == "dark" else colors["mode_selected"]),
-            ("active", colors["mode_selected"]),
-        ],
-        relief=[("disabled", "flat"), ("pressed", "flat"), ("active", "flat")],
-    )
+    # Unselected modes share the sidebar surface, text and state treatment.
+    configure_plain("SidebarMode.TButton", sidebar_mode_element, colors["panel_alt"], colors["text"])
+    for option, spec in style.map("Sidebar.TButton").items():
+        style.map("SidebarMode.TButton", **{option: spec})
     configure_plain("SidebarModeSelected.TButton", sidebar_mode_selected_element, colors["panel_alt"], sidebar_selected_text)
     style.map(
         "SidebarModeSelected.TButton",
         background=[
-            ("disabled", colors["mode_idle"]),
+            ("disabled", colors["panel_alt"]),
             ("active", sidebar_selected_fill),
             ("pressed", sidebar_selected_fill),
         ],
@@ -746,6 +728,8 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
     对 ttk 和普通 Tk 组件应用统一主题。
     """
     colors = get_colors(theme)
+    root.winfo_toplevel()._piezo_theme = theme
+    title_weight = page_title_weight(root)
     selected_bg = colors["primary_hover"]
     selected_edge = "#1E40AF" if theme != "dark" else "#1E3A8A"
     sidebar_selected_fill = selected_bg if theme != "dark" else "#2871FA"
@@ -829,20 +813,20 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
         "Title.TLabel",
         background=colors["bg"],
         foreground=colors["text"],
-        font=("Microsoft YaHei UI", title_size, "bold"),
+        font=("Microsoft YaHei UI", title_size, title_weight),
     )
     style.configure(
         "Prominent.TLabel",
         background=colors["bg"],
         foreground=colors["text"],
-        font=("Microsoft YaHei UI", prominent_size, "bold"),
+        font=("Microsoft YaHei UI", prominent_size, title_weight),
     )
     chip_title_size = int(getattr(root, "_piezo_chip_title_font_size", 0) or max(prominent_size, 28))
     style.configure(
         "ChipTitle.TLabel",
         background=colors["bg"],
         foreground=colors["text"],
-        font=("Microsoft YaHei UI", chip_title_size, "bold"),
+        font=("Microsoft YaHei UI", chip_title_size, title_weight),
     )
     style.configure(
         "Wordmark.TLabel",
@@ -931,7 +915,7 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
             ("Danger.TButton", colors["panel"], colors["danger"]),
             ("Bg.TButton", colors["bg"], colors["text"]),
             ("Sidebar.TButton", colors["panel_alt"], colors["text"]),
-            ("SidebarMode.TButton", colors["mode_idle"], "#FFFFFF"),
+            ("SidebarMode.TButton", colors["panel_alt"], colors["text"]),
         ):
             style.configure(
                 button_style,
@@ -972,7 +956,7 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
             ("Flash.TButton", colors["panel"], selected_bg, selected_edge),
             ("BgSelected.TButton", colors["bg"], selected_bg, selected_edge),
             ("SidebarSelected.TButton", colors["panel_alt"], sidebar_selected_fill, sidebar_selected_edge),
-            ("SidebarModeSelected.TButton", colors["mode_idle"], sidebar_selected_fill, sidebar_selected_edge),
+            ("SidebarModeSelected.TButton", colors["panel_alt"], sidebar_selected_fill, sidebar_selected_edge),
         ):
             style.configure(
                 button_style,

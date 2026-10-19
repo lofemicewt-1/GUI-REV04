@@ -68,7 +68,7 @@ class SidebarSelectionColorTests(unittest.TestCase):
                     )
             self.assertEqual(
                 style.lookup("SidebarModeSelected.TButton", "background", ["disabled"]),
-                colors["mode_idle"],
+                colors["panel_alt"],
                 theme,
             )
             self.assertEqual(
@@ -77,7 +77,7 @@ class SidebarSelectionColorTests(unittest.TestCase):
                 theme,
             )
 
-    def test_unselected_mode_stays_distinct_and_disabled_wins(self) -> None:
+    def test_unselected_mode_has_sidebar_surface_and_disabled_wins(self) -> None:
         for theme in ("light", "dark"):
             apply_theme(self.root, theme)
             colors = get_colors(theme)
@@ -85,11 +85,24 @@ class SidebarSelectionColorTests(unittest.TestCase):
             idle = store["sidebar_mode"]["normal"]
             disabled = store["sidebar_mode_selected"]["disabled"]
             selected = store["sidebar"]["pressed"]
-            self.assertEqual(_pixel(idle, 16, 16), _rgb(colors["mode_idle"]), theme)
-            self.assertEqual(_pixel(disabled, 16, 16), _rgb(colors["mode_idle"]), theme)
+            self.assertEqual(_pixel(idle, 16, 16), _rgb(colors["panel_alt"]), theme)
+            self.assertEqual(_pixel(disabled, 16, 16), _rgb(colors["panel_alt"]), theme)
             self.assertNotEqual(_pixel(disabled, 16, 16), _pixel(selected, 16, 16), theme)
             style = ttk.Style(self.root)
-            self.assertEqual(style.lookup("SidebarMode.TButton", "background"), colors["mode_idle"], theme)
+            self.assertEqual(style.lookup("SidebarMode.TButton", "background"), colors["panel_alt"], theme)
+
+    def test_unselected_mode_pixels_and_state_maps_match_chip_buttons(self) -> None:
+        for theme in ("light", "dark", "light"):
+            apply_theme(self.root, theme)
+            store = self.root._rounded_button_images[theme]
+            style = ttk.Style(self.root)
+            for state in ("normal", "pressed", "disabled"):
+                self.assertEqual(_pixels(store["sidebar_mode"][state]),
+                                 _pixels(store["sidebar"][state]))
+            for states in ([], ["active"], ["disabled"], ["disabled", "active"]):
+                for option in ("background", "foreground", "bordercolor"):
+                    self.assertEqual(style.lookup("SidebarMode.TButton", option, states),
+                                     style.lookup("Sidebar.TButton", option, states))
 
     def test_dark_selected_fill_is_distinct_from_unselected_mode(self) -> None:
         apply_theme(self.root, "dark")
@@ -100,11 +113,11 @@ class SidebarSelectionColorTests(unittest.TestCase):
         self.assertGreater(distance, 80, (selected, idle))
         self.assertEqual(selected, _pixel(store["sidebar_mode_selected"]["pressed"], 16, 16))
         self.assertEqual(selected, (0x28, 0x71, 0xFA))
-        self.assertEqual(idle, (0x17, 0x3B, 0x70))
+        self.assertEqual(idle, _rgb(get_colors("dark")["panel_alt"]))
         style = ttk.Style(self.root)
         self.assertEqual(style.lookup("SidebarSelected.TButton", "foreground").lower(), "#05070d")
         self.assertEqual(style.lookup("SidebarModeSelected.TButton", "foreground").lower(), "#05070d")
-        self.assertEqual(style.lookup("SidebarMode.TButton", "foreground").lower(), "#ffffff")
+        self.assertEqual(style.lookup("SidebarMode.TButton", "foreground").lower(), get_colors("dark")["text"].lower())
 
 
 if __name__ == "__main__":

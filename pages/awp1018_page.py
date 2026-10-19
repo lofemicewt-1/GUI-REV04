@@ -8,6 +8,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
+from core.lazy_pages import LazyPages
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -44,7 +45,6 @@ from core.base_tool import (
 )
 from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
 from pages.gpio_controls import GpioControlGroup, GpioControlPanel, active_serial_identity
-from core.ui_dispatch import post_to_ui
 
 
 class AWP1018Page(BasePage):
@@ -63,7 +63,7 @@ class AWP1018Page(BasePage):
         self.status_var = tk.StringVar(value="")
         self.current_mode = "awp1018_normal_mode"
         self.mode_buttons: dict[str, ttk.Button] = {}
-        self.mode_pages: dict[str, ttk.Frame] = {}
+        self.mode_pages = LazyPages(self._install_mode_page)
         self._labels: dict[str, ttk.Label] = {}
         self._buttons: dict[str, ttk.Button] = {}
         self._build_ui()
@@ -88,14 +88,21 @@ class AWP1018Page(BasePage):
         self.mode_container.rowconfigure(0, weight=1)
         self.mode_container.columnconfigure(0, weight=1)
 
-        footer, actions, reg_panel, identity = self.make_merged_footer()
-        footer.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        self.footer_scroll, footer_content = self.make_vertical_scroll_area(self, horizontal=False)
+        self.footer_scroll.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        footer_content.columnconfigure(0, weight=1)
+        footer, actions, reg_panel, identity = self.make_merged_footer(footer_content)
+        footer.grid(row=0, column=0, sticky="ew")
+        self._footer_panel = footer
+        self._footer_fit_job = None
+        footer.bind("<Configure>", self._queue_footer_fit)
+        self.bind("<Configure>", self._queue_footer_fit, add="+")
         self._build_state_actions(actions)
         reg_panel.columnconfigure(8, weight=1)
         self._build_register_bar(reg_panel)
         self._build_identity_bar(identity)
 
-        self.mode_pages["awp1018_normal_mode"] = AWP1018NormalModePage(
+        self.mode_pages.register("awp1018_normal_mode", lambda: AWP1018NormalModePage(
             self.mode_container,
             self.ctx,
             import_page_settings=self.import_settings,
@@ -104,8 +111,8 @@ class AWP1018Page(BasePage):
             gpio_group=self.gpio_controls,
             on_gpio_mode_success=self._on_gpio_mode_success,
             on_gpio_mode_failure=self._on_gpio_mode_failure,
-        )
-        self.mode_pages["awp1018_diff_mode"] = AWP1018NormalModePage(
+        ))
+        self.mode_pages.register("awp1018_diff_mode", lambda: AWP1018NormalModePage(
             self.mode_container,
             self.ctx,
             diff_mode=True,
@@ -115,22 +122,41 @@ class AWP1018Page(BasePage):
             gpio_group=self.gpio_controls,
             on_gpio_mode_success=self._on_gpio_mode_success,
             on_gpio_mode_failure=self._on_gpio_mode_failure,
-        )
-        self.mode_pages["full_mode"] = AWP1018FullModePage(
+        ))
+        self.mode_pages.register("full_mode", lambda: AWP1018FullModePage(
             self.mode_container,
             self.ctx,
             gpio_group=self.gpio_controls,
             on_gpio_mode_success=self._on_gpio_mode_success,
             on_gpio_mode_failure=self._on_gpio_mode_failure,
-        )
-
-        for page in self.mode_pages.values():
-            page.grid(row=0, column=0, sticky="nsew")
-            page.grid_remove()
+        ))
 
         self.refresh_language()
         self._on_addr_changed()
         self.show_mode(self.current_mode)
+
+    def _install_mode_page(self, _name: str, page: ttk.Frame) -> None:
+        page.grid(row=0, column=0, sticky="nsew")
+        page.grid_remove()
+        refresh = getattr(self.ctx.app, "_refresh_widget_fonts", None)
+        if callable(refresh):
+            refresh(page)
+
+    def _queue_footer_fit(self, _event=None) -> None:
+        if self._footer_fit_job is None:
+            self._footer_fit_job = self.after(0, self._fit_footer_height)
+
+    def _fit_footer_height(self) -> None:
+        self._footer_fit_job = None
+        try:
+            if self.winfo_height() <= 1:
+                return
+            available = max(96, int(self.winfo_height() * .35))
+            desired = min(self._footer_panel.winfo_reqheight() + 16, available)
+            if self.footer_scroll.canvas.winfo_reqheight() != desired:
+                self.footer_scroll.canvas.configure(height=desired)
+        except tk.TclError:
+            pass
 
     def _build_state_actions(self, parent: tk.Misc) -> None:
         buttons = (
@@ -361,8 +387,8 @@ class AWP1018Page(BasePage):
                 error_kind = "read_failed"
                 error_detail = str(exc)
             try:
-                post_to_ui(
-                    self,
+                self.after(
+                    0,
                     self._finish_awp1018_txt_export,
                     page,
                     page_state,
@@ -445,7 +471,7 @@ class AWP1018Page(BasePage):
             except Exception as exc:
                 error = str(exc)
             try:
-                post_to_ui(self, self._finish_awp1018_txt_import, preset, error)
+                self.after(0, self._finish_awp1018_txt_import, preset, error)
             except tk.TclError:
                 pass
 
@@ -696,7 +722,7 @@ class AWP1018Page(BasePage):
             self._set_diff_mode_registers(True)
         elif update_chip and mode == "awp1018_normal_mode":
             self._set_diff_mode_registers(False)
-        for page in self.mode_pages.values():
+        for page in dict.values(self.mode_pages):
             page.grid_remove()
         page = self.mode_pages[mode]
         page.grid()
@@ -708,7 +734,7 @@ class AWP1018Page(BasePage):
         # page can use a maximized viewport while Normal/Diff retain their
         # vertical scroll range.
         try:
-            self.after_idle(self._sync_mode_scroll_layout)
+            self.after(0, self._sync_mode_scroll_layout)
         except tk.TclError:
             pass
 
@@ -744,7 +770,7 @@ class AWP1018Page(BasePage):
             return
         navigation = getattr(getattr(self.ctx, "app", None), "navigation", None)
         pages = getattr(navigation, "pages", {})
-        awp1221 = pages.get("awp1221") if isinstance(pages, dict) else None
+        awp1221 = dict.get(pages, "awp1221") if isinstance(pages, dict) else None
         if awp1221 is None:
             return
         source_identity = active_serial_identity(self.ctx, self.page_name)
@@ -762,7 +788,7 @@ class AWP1018Page(BasePage):
             return
         navigation = getattr(getattr(self.ctx, "app", None), "navigation", None)
         pages = getattr(navigation, "pages", {})
-        awp1221 = pages.get("awp1221") if isinstance(pages, dict) else None
+        awp1221 = dict.get(pages, "awp1221") if isinstance(pages, dict) else None
         if awp1221 is None:
             return
         source_identity = active_serial_identity(self.ctx, self.page_name)
@@ -825,7 +851,7 @@ class AWP1018Page(BasePage):
             btn.configure(text=self.tr(key))
         for key, btn in self.mode_buttons.items():
             btn.configure(text=self.tr(key))
-        for page in self.mode_pages.values():
+        for page in dict.values(self.mode_pages):
             if hasattr(page, "refresh_language"):
                 page.refresh_language()
         gpio_controls = getattr(self, "gpio_controls", None)
@@ -834,7 +860,7 @@ class AWP1018Page(BasePage):
 
     def refresh_theme(self) -> None:
         super().refresh_theme()
-        for page in self.mode_pages.values():
+        for page in dict.values(self.mode_pages):
             if hasattr(page, "refresh_theme"):
                 page.refresh_theme()
 
@@ -4110,7 +4136,7 @@ class AWP1018NormalModePage(BasePage):
         def worker() -> None:
             resp = self.ctx.serial.write_register_value(dev, reg, value, bits=16)
             try:
-                post_to_ui(self, finish, resp.ok, resp.error)
+                self.after(0, finish, resp.ok, resp.error)
             except tk.TclError:
                 pass
 
@@ -4752,7 +4778,7 @@ class AWP1018NormalModePage(BasePage):
 
     def _handle_serial_status_log(self, line: str) -> None:
         try:
-            post_to_ui(self, self._process_serial_status_log, line)
+            self.after(0, self._process_serial_status_log, line)
         except Exception:
             pass
 

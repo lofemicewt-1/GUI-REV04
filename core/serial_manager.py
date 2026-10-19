@@ -27,13 +27,6 @@ except Exception:
     serial = None
 
 
-# CFGEND/CFGDEL rewrite up to 256 EEPROM bytes (~3.3 ms each on AVR, ~0.85 s)
-# and CFGAPPLY drives many I2C writes before replying, which can exceed the
-# default 0.8 s command timeout.  A late reply would otherwise be reported as
-# "No response" and then leak into the next command's read.
-CFG_EEPROM_WRITE_TIMEOUT_S = 3.0
-
-
 def is_fatal_serial_exception(exc: BaseException) -> bool:
     """Return whether a transport exception invalidates the current handle.
 
@@ -56,46 +49,6 @@ def is_fatal_serial_exception(exc: BaseException) -> bool:
 class SerialPortInfo:
     device: str
     name: str
-    bluetooth: bool = False
-
-
-BLUETOOTH_PORT_ERROR = "BLUETOOTH_PORT"
-CONNECT_CANCELLED_ERROR = "CONNECT_CANCELLED"
-# Handshake writes are a few bytes; never let one block the connect for long.
-CONNECT_WRITE_TIMEOUT_S = 0.3
-_BLUETOOTH_MARKERS = ("bluetooth", "\u84dd\u7259", "bthenum", "bthmodem", "rfcomm")
-# Ports seen as Bluetooth by the last enumeration.  Module level so every
-# SerialManager (the Router creates one per port) refuses them, not only the
-# scanner that listed them.
-_known_bluetooth_ports: set[str] = set()
-_known_bluetooth_lock = threading.Lock()
-
-
-def is_bluetooth_port_info(device: str, *texts: str) -> bool:
-    """True for Bluetooth SPP/RFCOMM serial ports (never the communication board)."""
-
-    device_text = str(device or "")
-    base = device_text.replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if base.startswith("rfcomm"):
-        return True
-    joined = " ".join(str(t or "") for t in texts).lower()
-    return any(marker in joined for marker in _BLUETOOTH_MARKERS)
-
-
-def is_known_bluetooth_port(port: str | None) -> bool:
-    if not port:
-        return False
-    if is_bluetooth_port_info(port):
-        return True
-    key = str(port).upper()
-    with _known_bluetooth_lock:
-        return key in _known_bluetooth_ports
-
-
-def _remember_bluetooth_ports(ports: set[str]) -> None:
-    with _known_bluetooth_lock:
-        _known_bluetooth_ports.clear()
-        _known_bluetooth_ports.update(p.upper() for p in ports)
 
 
 class SerialManager:
@@ -112,11 +65,6 @@ class SerialManager:
     def __init__(self, timeout: float = 0.8) -> None:
         self._serial = None
         self._lock = threading.RLock()
-        # Set for the whole open+handshake.  While connecting the manager is
-        # NOT reported connected and other threads never wait on ``_lock``
-        # (which connect holds for up to CONNECT_READY_TIMEOUT).
-        self._connecting_thread: int | None = None
-        self._connect_cancel = threading.Event()
         self._command_lock = threading.RLock()
         self._transaction_state_lock = threading.Lock()
         self._transaction_owner: int | None = None
@@ -330,13 +278,13 @@ class SerialManager:
                 self._rx_frame_chars.append(ch)
             else:
                 self._rx_loose_chars.append(ch)
-                self._rx_last_loose_at = time.monotonic()
+                self._rx_last_loose_at = time.time()
         return frames
 
     def _flush_rx_loose_if_due(self, *, final: bool = False) -> None:
         if not self._rx_loose_chars:
             return
-        if not final and time.monotonic() - self._rx_last_loose_at <= 0.08:
+        if not final and time.time() - self._rx_last_loose_at <= 0.08:
             return
         text = "".join(self._rx_loose_chars)
         self._rx_loose_chars = []
@@ -429,21 +377,7 @@ class SerialManager:
 
     @property
     def is_connected(self) -> bool:
-        if self._connecting_thread is not None:
-            return False
         return self._serial is not None and getattr(self._serial, "is_open", False)
-
-    @property
-    def is_connecting(self) -> bool:
-        return self._connecting_thread is not None
-
-    def cancel_connect(self) -> None:
-        """Ask an in-progress connect to stop.  Never blocks; safe from any thread.
-
-        The connecting thread notices within ~0.2 s (read timeout) and closes
-        the port itself.
-        """
-        self._connect_cancel.set()
 
     def list_ports(self) -> list[str]:
         return [info.device for info in self.list_port_info()]
@@ -455,31 +389,20 @@ class SerialManager:
             return []
 
         ports: dict[str, str] = {}
-        bluetooth: set[str] = set()
 
         try:
             for p in serial.tools.list_ports.comports():
                 if p.device and p.device not in ports:
                     ports[p.device] = self._port_display_name(p)
-                    if is_bluetooth_port_info(
-                        p.device,
-                        getattr(p, "description", "") or "",
-                        getattr(p, "hwid", "") or "",
-                        getattr(p, "manufacturer", "") or "",
-                        getattr(p, "name", "") or "",
-                    ):
-                        bluetooth.add(p.device)
         except Exception as exc:
             self.last_error = str(exc)
-        else:
-            _remember_bluetooth_ports(bluetooth)
 
         if sys.platform.startswith("win") and not ports and probe_missing:
             for port in self._scan_windows_com_ports():
                 ports[port] = port
 
         return [
-            SerialPortInfo(device=port, name=name, bluetooth=port in bluetooth or is_bluetooth_port_info(port))
+            SerialPortInfo(device=port, name=name)
             for port, name in sorted(ports.items(), key=lambda item: self._port_sort_key(item[0]))
         ]
 
@@ -503,8 +426,6 @@ class SerialManager:
 
         for i in range(1, 257):
             port = f"COM{i}"
-            if is_known_bluetooth_port(port):
-                continue  # opening a Bluetooth SPP port blocks for seconds
             try:
                 s = serial.Serial(port=port, baudrate=115200, timeout=0.05, write_timeout=0.05)
                 s.close()
@@ -525,14 +446,10 @@ class SerialManager:
     def connect(self, port: str, baudrate: int = 115200) -> SerialResponse:
         if serial is None:
             return SerialResponse(False, error="pyserial is not installed. Please run: pip install pyserial")
-        if is_known_bluetooth_port(port):
-            return SerialResponse(False, error=f"{BLUETOOTH_PORT_ERROR} {port}")
 
-        self._connect_cancel.clear()
         with self._lock:
             try:
                 self.disconnect()
-                self._connecting_thread = threading.get_ident()
 
                 open_port = port
                 if sys.platform.startswith("win") and port.upper().startswith("COM"):
@@ -561,8 +478,6 @@ class SerialManager:
                 self._transport_error = ""
 
                 ready = self._complete_connect_handshake()
-                if ready.ok and self._connect_cancel.is_set():
-                    ready = SerialResponse(False, error=CONNECT_CANCELLED_ERROR)
                 if not ready.ok:
                     try:
                         self._serial.close()
@@ -575,7 +490,6 @@ class SerialManager:
                     return ready
 
                 self.connection_generation += 1
-                self._connecting_thread = None
                 self._start_monitor()
                 return SerialResponse(True, data=self.board_identity)
             except Exception as exc:
@@ -585,16 +499,8 @@ class SerialManager:
                 self.board_ready = False
                 self.last_error = str(exc)
                 return SerialResponse(False, error=str(exc))
-            finally:
-                self._connecting_thread = None
 
     def disconnect(self) -> None:
-        connecting = self._connecting_thread
-        if connecting is not None and connecting != threading.get_ident():
-            # Never wait for a connect in progress (it holds _lock while the
-            # board resets / sends READY).  Cancel it; it closes the port.
-            self._connect_cancel.set()
-            return
         self._monitor_stop.set()
         with self._lock:
             if self._serial is not None:
@@ -667,15 +573,13 @@ class SerialManager:
         handle = self._serial
         if handle is None or not getattr(handle, "is_open", False):
             return False
-        deadline = time.monotonic() + max(0.0, timeout)
+        deadline = time.time() + max(0.0, timeout)
         saved_timeout = getattr(handle, "timeout", self.timeout)
         try:
-            while time.monotonic() < deadline:
+            while time.time() < deadline:
                 if self.board_ready:
                     return True
-                if self._connect_cancel.is_set():
-                    return False
-                remaining = deadline - time.monotonic()
+                remaining = deadline - time.time()
                 handle.timeout = min(0.2, max(0.01, remaining))
                 try:
                     data = handle.read(1)
@@ -704,22 +608,11 @@ class SerialManager:
         self.emit_log(f"TX {command}")
         saved_timeout = getattr(handle, "timeout", self.timeout)
         try:
-            saved_write_timeout = getattr(handle, "write_timeout", None)
-            try:
-                handle.write_timeout = CONNECT_WRITE_TIMEOUT_S
-            except Exception:
-                pass
-            try:
-                handle.write(command.encode("ascii", errors="ignore"))
-                handle.flush()
-            finally:
-                try:
-                    handle.write_timeout = saved_write_timeout
-                except Exception:
-                    pass
-            deadline = time.monotonic() + self.timeout
+            handle.write(command.encode("ascii", errors="ignore"))
+            handle.flush()
+            deadline = time.time() + self.timeout
             handle.timeout = min(0.2, self.timeout)
-            while time.monotonic() < deadline and not self._connect_cancel.is_set():
+            while time.time() < deadline:
                 try:
                     data = handle.read(1)
                 except Exception as exc:
@@ -772,8 +665,6 @@ class SerialManager:
                     self.board_ready = True
                     self.board_identity = "CAP FLAG3"
                     return SerialResponse(True, data=self.board_identity)
-        if self._connect_cancel.is_set():
-            return SerialResponse(False, error=CONNECT_CANCELLED_ERROR)
         remaining = self.CONNECT_READY_TIMEOUT - self.CONNECT_READY_PROBE_S
         if remaining > 0 and self._wait_for_ready_notification(remaining):
             return SerialResponse(True, data=self.board_identity)
@@ -849,7 +740,6 @@ class SerialManager:
         *,
         expect_response: bool = True,
         display_body: str | None = None,
-        response_timeout: float | None = None,
     ) -> SerialResponse:
         """
         body does not include ^ or ~, for example:
@@ -893,18 +783,13 @@ class SerialManager:
                     if not expect_response:
                         return SerialResponse(True, data=cmd)
 
-                    data = self._read_frame(handle, timeout=response_timeout)
+                    data = self._read_frame(handle)
                     if not data:
                         error = f"No response for command: {display_cmd}"
                         self.emit_log(f"ERROR {error}")
                         return SerialResponse(False, error=error)
                     self._update_board_ready_from_frame(data)
                     self.emit_log(f"MCU ^{data}~")
-                    # Success/failure semantics are unchanged (callers decide);
-                    # this only states where the firmware said it failed.
-                    description = base_tool.describe_firmware_error(data)
-                    if description is not None:
-                        self.emit_log(f"ERROR {description}")
                     return SerialResponse(True, data=data)
                 except Exception as exc:
                     marked = self._mark_transport_failure(exc, handle)
@@ -921,7 +806,7 @@ class SerialManager:
             # released so a listener cannot re-enter transport/Tk code.
             self._dispatch_event_queue()
 
-    def _read_frame(self, serial_handle: Any = None, *, timeout: float | None = None) -> str:
+    def _read_frame(self, serial_handle: Any = None) -> str:
         """
         Read one Arduino ^...~ frame.
 
@@ -934,9 +819,9 @@ class SerialManager:
         if handle is None or not getattr(handle, "is_open", False):
             return ""
 
-        deadline = time.monotonic() + (self.timeout if timeout is None else max(self.timeout, timeout))
+        deadline = time.time() + self.timeout
 
-        while time.monotonic() < deadline:
+        while time.time() < deadline:
             try:
                 b = handle.read(1)
             except Exception as exc:
@@ -961,9 +846,9 @@ class SerialManager:
         if handle is None or not getattr(handle, "is_open", False):
             return
 
-        deadline = time.monotonic() + 0.03
+        deadline = time.time() + 0.03
         chars: list[str] = []
-        while time.monotonic() < deadline:
+        while time.time() < deadline:
             try:
                 waiting = getattr(handle, "in_waiting", 0)
                 if not waiting:
@@ -1043,6 +928,10 @@ class SerialManager:
             self._publish_captured_logs(captured)
         return response
 
+    def read_board_flag_for_poll(self) -> SerialResponse:
+        """Read FLAG for Home polling and mute only a successfully idle reply."""
+        return self.read_board_flag(suppress_idle=True)
+
     @staticmethod
     def _status_frame(response: SerialResponse) -> str:
         if not response.ok:
@@ -1067,9 +956,7 @@ class SerialManager:
         try:
             parser(self._status_frame(response))
         except (TypeError, ValueError) as exc:
-            description = base_tool.describe_firmware_error(response.data)
-            error = base_tool.format_firmware_error(response.data) if description else str(exc)
-            return SerialResponse(False, data=response.data, error=error)
+            return SerialResponse(False, data=response.data, error=str(exc))
         return response
 
     def read_status_capabilities(self) -> SerialResponse:
@@ -1139,6 +1026,11 @@ class SerialManager:
         ):
             return SerialResponse(False, data=response.data, error=response.data or "MON reply mismatch")
         return response
+
+    def read_status_snapshot(self) -> SerialResponse:
+        return self._validated_status_command(
+            chip_status_cache.build_stat_body(), chip_status_cache.parse_stat_frame
+        )
 
     def acknowledge_interrupt(self, sequence: int) -> SerialResponse:
         return base_tool.acknowledge_interrupt(self.send_command, sequence)
@@ -1225,7 +1117,7 @@ class SerialManager:
 
     def _cfg_response(self, response: SerialResponse) -> SerialResponse:
         if response.ok and response.data.strip().upper().startswith("ERR "):
-            return SerialResponse(False, data=response.data, error=base_tool.format_firmware_error(response.data))
+            return SerialResponse(False, data=response.data, error=response.data)
         return response
 
     def cfg_query(self) -> SerialResponse:
@@ -1246,7 +1138,7 @@ class SerialManager:
 
     def cfg_end(self, slot: int) -> SerialResponse:
         """End preset upload: CFGEND <slot> -> ^CFGEND OK CRC=<crc>~"""
-        return self._cfg_response(self.send_command(base_tool.build_cfg_end_command(slot), response_timeout=CFG_EEPROM_WRITE_TIMEOUT_S))
+        return self._cfg_response(self.send_command(base_tool.build_cfg_end_command(slot)))
 
     def cfg_use(self, slot: int) -> SerialResponse:
         """Mark a slot as active boot preset: CFGUSE <slot> -> ^CFGUSE OK <slot>~"""
@@ -1254,11 +1146,11 @@ class SerialManager:
 
     def cfg_apply(self, slot: int) -> SerialResponse:
         """Apply a stored preset immediately: CFGAPPLY <slot> -> ^CFGAPPLY OK <slot>~ or ^ERR CFG_UNSUPPORTED~"""
-        return self._cfg_response(self.send_command(base_tool.build_cfg_apply_command(slot), response_timeout=CFG_EEPROM_WRITE_TIMEOUT_S))
+        return self._cfg_response(self.send_command(base_tool.build_cfg_apply_command(slot)))
 
     def cfg_delete(self, slot: int) -> SerialResponse:
         """Clear a stored preset slot: CFGDEL <slot> -> ^CFGDEL OK <slot>~"""
-        return self._cfg_response(self.send_command(base_tool.build_cfg_delete_command(slot), response_timeout=CFG_EEPROM_WRITE_TIMEOUT_S))
+        return self._cfg_response(self.send_command(base_tool.build_cfg_delete_command(slot)))
 
     def sync_config_preset(self, slot: int, payload: bytes, *, set_active: bool = True) -> SerialResponse:
         """
@@ -1556,16 +1448,6 @@ class SerialRouter:
         self.state.serial_connected = bool(self.connected_ports())
         return resp
 
-    def cancel_connect(self, port: str | None) -> None:
-        """Non-blocking: ask a connect in progress on ``port`` to stop."""
-        manager = self._managers.get(str(port or "").strip())
-        if manager is not None:
-            manager.cancel_connect()
-
-    def is_port_connecting(self, port: str | None) -> bool:
-        manager = self._managers.get(str(port or "").strip())
-        return manager is not None and manager.is_connecting
-
     def disconnect(self, port: str | None = None) -> None:
         selected = port or self.selected_port_for_page()
         if selected is None:
@@ -1818,12 +1700,14 @@ class SerialRouter:
         if self._current_manager() is None and name in {
             "send_command",
             "read_board_flag",
+            "read_board_flag_for_poll",
             "acknowledge_interrupt",
             "read_status_capabilities",
             "set_status_session",
             "configure_status_target",
             "clear_status_target",
             "set_status_monitor",
+            "read_status_snapshot",
             "read_gpio",
             "configure_gpio",
             "read_adc",
