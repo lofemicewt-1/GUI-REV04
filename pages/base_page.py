@@ -163,6 +163,7 @@ class VerticalScrollArea(ttk.Frame):
         min_content_width: int = 0,
         propagate_width: bool = False,
         propagate_height: bool = False,
+        clamp_width: bool = False,
     ) -> None:
         super().__init__(parent, style="App.TFrame")
         self.ctx = ctx
@@ -170,6 +171,7 @@ class VerticalScrollArea(ttk.Frame):
         self.min_content_width = max(0, min_content_width)
         self.propagate_width = bool(propagate_width)
         self.propagate_height = bool(propagate_height)
+        self.clamp_width = bool(clamp_width)
         self._scrollbar_visible = False
         self._horizontal_scrollbar_visible = False
         self._layout_job: str | None = None
@@ -242,7 +244,7 @@ class VerticalScrollArea(ttk.Frame):
             natural_width, natural_height = self._natural_content_size()
             canvas_width = max(1, self.canvas.winfo_width())
             canvas_height = max(1, self.canvas.winfo_height())
-            if self.horizontal:
+            if self.horizontal and not (self.clamp_width and canvas_width > 1):
                 width = max(natural_width, canvas_width)
             else:
                 width = canvas_width
@@ -260,7 +262,7 @@ class VerticalScrollArea(ttk.Frame):
             if tuple(map(float, self.canvas.tk.splitlist(self.canvas.cget("scrollregion")))) != region:
                 self.canvas.configure(scrollregion=region)
             needs_scrollbar = height > canvas_height
-            needs_horizontal_scrollbar = self.horizontal and width > canvas_width
+            needs_horizontal_scrollbar = self.horizontal and not self.clamp_width and width > canvas_width
             if needs_scrollbar and not self._scrollbar_visible:
                 self.scrollbar.grid(row=0, column=1, sticky="ns")
                 self._scrollbar_visible = True
@@ -289,7 +291,7 @@ class VerticalScrollArea(ttk.Frame):
 
     def _sync_content_width(self, event: tk.Event) -> None:
         try:
-            if self.horizontal:
+            if self.horizontal and not (self.clamp_width and event.width > 1):
                 width = max(1, event.width, self.min_content_width, self.content.winfo_reqwidth())
             else:
                 width = max(1, event.width)
@@ -738,6 +740,7 @@ class BasePage(ttk.Frame):
         min_content_width: int = 0,
         propagate_width: bool = False,
         propagate_height: bool = False,
+        clamp_width: bool = False,
     ) -> tuple[VerticalScrollArea, ttk.Frame]:
         area = VerticalScrollArea(
             parent,
@@ -746,6 +749,7 @@ class BasePage(ttk.Frame):
             min_content_width=min_content_width,
             propagate_width=propagate_width,
             propagate_height=propagate_height,
+            clamp_width=clamp_width,
         )
         self._vertical_scroll_areas.append(area)
         return area, area.content

@@ -2050,25 +2050,42 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                      "wave": (0, 3), "repeat": (0, 4), "event_mode": (1, 0)}
         original = {(0, 0): "ovv_time", (0, 2): "jump_target", (1, 0): "threshold",
                     (1, 2): "event_mode", (3, 0): "wave", (3, 2): "repeat"}
+        pairs: dict[str, list[tk.Widget | None]] = {}
+        checks: list[tk.Widget] = []
         for widget in parent.winfo_children():
             info = widget.grid_info()
             old_row, old_column = int(info["row"]), int(info["column"])
             if old_row == 4:
+                checks.append(widget)
                 widget.grid_configure(row=3, column=2 if old_column == 0 else 3,
                                       columnspan=1 if old_column == 0 else 2,
                                       padx=(0, 8), pady=0, sticky="w")
                 continue
             key = original.get((old_row, old_column - old_column % 2))
             if key is not None:
+                pairs.setdefault(key, [None, None])[old_column % 2] = widget
                 field_row, field_column = positions[key]
                 widget.grid_configure(row=field_row * 2 + old_column % 2,
                                       column=field_column, columnspan=2 if key == "event_mode" else 1,
-                                      padx=(0, 12), pady=(0, 3), sticky="w")
+                                      padx=(0, 12), pady=(0, 3),
+                                      sticky="ew" if old_column % 2 else "w")
                 if isinstance(widget, ttk.Combobox):
                     widths = {"repeat": 5, "wave": max(len(label) for label, _ in AWP1221_SERIAL_WAVEFORMS) + 1}
                     widget.configure(width=widths.get(key, 8))
         for column in range(5):
-            parent.columnconfigure(column, minsize=0, weight=0)
+            parent.columnconfigure(column, minsize=0, weight=1)
+        order = ("ovv_time", "jump_target", "threshold", "wave", "repeat")
+        layouts = getattr(self, "_button_stage_layouts", None)
+        if layouts is None:
+            self._button_stage_layouts = []
+            self._button_stage_columns = 5
+            layouts = self._button_stage_layouts
+        layouts.append({
+            "frame": parent,
+            "fields": [(pairs[key][0], pairs[key][1]) for key in order],
+            "event": (pairs["event_mode"][0], pairs["event_mode"][1]),
+            "checks": tuple(checks),
+        })
         threshold_holder = parent.grid_slaves(row=1, column=2)[0]
         for child in threshold_holder.winfo_children():
             if isinstance(child, ttk.Entry):
@@ -4954,13 +4971,18 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 label.bind("<Configure>", reflow, add="+")
 
     def _queue_button_adc_reflow(self, section: ttk.Frame, _event: tk.Event | None = None) -> None:
-        if getattr(self, "_button_adc_reflow_job", None) is not None or getattr(self, "_button_adc_reflowing", False):
+        if (
+            getattr(self, "_button_adc_reflow_job", None) is not None
+            or getattr(self, "_button_adc_reflowing", False)
+            or getattr(self, "_button_stage_reflowing", False)
+        ):
             return
         def run() -> None:
             self._button_adc_reflow_job = None
             try:
                 if section.winfo_exists():
                     self._reflow_button_adc_settings(section)
+                    self._reflow_button_stage_fields(section)
             except tk.TclError:
                 pass
         try:
@@ -5029,6 +5051,64 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 section.columnconfigure(column, weight=0)
         finally:
             self._button_adc_reflowing = False
+
+    def _reflow_button_stage_fields(self, section: ttk.Frame, *, columns: int | None = None) -> None:
+        layouts = getattr(self, "_button_stage_layouts", ())
+        if not layouts or not section.winfo_exists() or getattr(self, "_button_stage_reflowing", False):
+            return
+        current = getattr(self, "_button_stage_columns", 5)
+        if columns is None:
+            width = self._button_adc_decision_width(section)
+            if width <= 1:
+                return
+            fields = layouts[0]["fields"]
+            needed = sum(
+                max(label.winfo_reqwidth(), value.winfo_reqwidth()) + 12
+                for label, value in fields
+            ) + 24
+            wide = 5
+            slack = 16
+            if current == wide:
+                columns = wide if width + slack >= needed else 3
+            else:
+                columns = wide if width >= needed + slack else 3
+        if columns == current:
+            return
+        self._button_stage_reflowing = True
+        self._button_stage_columns = columns
+        try:
+            for layout in layouts:
+                self._apply_button_stage_columns(layout, columns)
+        finally:
+            self._button_stage_reflowing = False
+
+    def _apply_button_stage_columns(self, layout: dict, columns: int) -> None:
+        parent = layout["frame"]
+        for index, (label, value) in enumerate(layout["fields"]):
+            field_row, column = divmod(index, columns)
+            label.grid_configure(row=field_row * 2, column=column, columnspan=1,
+                                 sticky="w", padx=(0, 12), pady=(0, 3))
+            value.grid_configure(row=field_row * 2 + 1, column=column, columnspan=1,
+                                 sticky="ew", padx=(0, 12), pady=(0, 3))
+        rows = (len(layout["fields"]) + columns - 1) // columns
+        base = rows * 2
+        event_label, event_value = layout["event"]
+        event_label.grid_configure(row=base, column=0, columnspan=min(2, columns),
+                                   sticky="w", padx=(0, 12), pady=(4, 3))
+        event_value.grid_configure(row=base + 1, column=0, columnspan=min(2, columns),
+                                   sticky="w", padx=(0, 12), pady=(0, 3))
+        checks = layout["checks"]
+        if columns >= 5 and len(checks) >= 2:
+            checks[0].grid_configure(row=base + 1, column=2, columnspan=1,
+                                     sticky="w", padx=(0, 8), pady=0)
+            checks[1].grid_configure(row=base + 1, column=3, columnspan=2,
+                                     sticky="w", padx=(0, 8), pady=0)
+        else:
+            for offset, check in enumerate(checks):
+                check.grid_configure(row=base + 2 + offset, column=0, columnspan=columns,
+                                     sticky="w", padx=(0, 8), pady=(4, 0))
+        for column in range(6):
+            parent.columnconfigure(column, weight=1 if column < columns else 0, minsize=0)
 
     def _build_adc_readout(self, section: ttk.Frame, *, row: int) -> None:
         adc_value_label = ttk.Label(section, style="Panel.TLabel")
@@ -6252,6 +6332,7 @@ class AWP1221Page(BasePage):
             self,
             horizontal=True,
             propagate_height=True,
+            clamp_width=True,
         )
         self.mode_scroll.grid(row=1, column=0, sticky="nsew")
         # Leave a small gutter so mode headers and panel edges are not flush
@@ -6981,6 +7062,7 @@ class AWP1221Page(BasePage):
     def show_mode(self, mode: str) -> None:
         if mode not in self.mode_pages:
             return
+        self.mode_scroll.clamp_width = mode == "button_mode"
         previous_page = self.mode_pages.get(self.current_mode)
         next_page = self.mode_pages[mode]
         if previous_page is not None and previous_page is not next_page and hasattr(previous_page, "on_hide"):
