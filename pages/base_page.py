@@ -673,6 +673,133 @@ def _prominent_title(title_key: str) -> bool:
 
 
 _TITLE_TEXT_PAD = 2
+_TITLE_FONTS: dict[tuple[Any, ...], tkfont.Font] = {}
+_TITLE_METRICS: dict[tuple[Any, ...], tuple[int, int]] = {}
+_TITLE_WIDTHS: dict[tuple[Any, ...], int] = {}
+_TITLE_REALIZED: set[tuple[Any, ...]] = set()
+_TITLE_FONT_SEQ = 0
+
+
+def _title_scaling(widget: tk.Misc) -> str:
+    try:
+        return str(widget.tk.call("tk", "scaling"))
+    except tk.TclError:
+        return ""
+
+
+def _title_font_attrs(font: tuple[Any, ...]) -> tuple[Any, ...]:
+    family = "TkDefaultFont"
+    size = 0
+    weight = "normal"
+    slant = "roman"
+    underline = 0
+    overstrike = 0
+    if font:
+        family = str(font[0])
+        index = 1
+        if len(font) > 1:
+            try:
+                size = int(font[1])
+                index = 2
+            except (TypeError, ValueError):
+                size = 0
+        for part in font[index:]:
+            token = str(part).lower()
+            if token in {"bold", "normal"}:
+                weight = token
+            elif token in {"italic", "roman"}:
+                slant = token
+            elif token == "underline":
+                underline = 1
+            elif token == "overstrike":
+                overstrike = 1
+    return (family, size, weight, slant, underline, overstrike)
+
+
+def _title_font(widget: tk.Misc, font: tuple[Any, ...]) -> tkfont.Font:
+    global _TITLE_FONT_SEQ
+    attrs = _title_font_attrs(font)
+    key = (id(widget.tk), attrs)
+    cached = _TITLE_FONTS.get(key)
+    if cached is not None:
+        return cached
+    family, size, weight, slant, underline, overstrike = attrs
+    _TITLE_FONT_SEQ += 1
+    cached = tkfont.Font(
+        root=widget,
+        name=f"piezoCanvasTitle{_TITLE_FONT_SEQ}",
+        family=family,
+        size=int(size),
+        weight=str(weight),
+        slant=str(slant),
+        underline=bool(underline),
+        overstrike=bool(overstrike),
+    )
+    _TITLE_FONTS[key] = cached
+    return cached
+
+
+def _title_metrics(widget: tk.Misc, font: tuple[Any, ...]) -> tuple[int, int]:
+    key = (_title_font_attrs(font), _title_scaling(widget))
+    hit = _TITLE_METRICS.get(key)
+    if hit is None:
+        info = _title_font(widget, font).metrics()
+        hit = (int(info["linespace"]), int(info["ascent"]))
+        _TITLE_METRICS[key] = hit
+    return hit
+
+
+def _title_text_width(widget: tk.Misc, font: tuple[Any, ...], text: str) -> int:
+    key = (_title_font_attrs(font), _title_scaling(widget), text)
+    hit = _TITLE_WIDTHS.get(key)
+    if hit is None:
+        hit = int(_title_font(widget, font).measure(text))
+        _TITLE_WIDTHS[key] = hit
+    return hit
+
+
+def _title_font_holder(widget: tk.Misc) -> tk.Label:
+    owner = widget._root()
+    holder = getattr(owner, "_piezo_title_font_holder", None)
+    if holder is None:
+        holder = tk.Label(owner)
+        owner._piezo_title_font_holder = holder
+    return holder
+
+
+def _ensure_title_font(widget: tk.Misc, font: tuple[Any, ...]) -> None:
+    attrs = _title_font_attrs(font)
+    key = (id(widget.tk), attrs)
+    if key in _TITLE_REALIZED:
+        return
+    probe = _title_font(widget, font)
+    try:
+        _title_font_holder(widget).configure(font=probe.name)
+    except tk.TclError:
+        return
+    _title_metrics(widget, font)
+    _TITLE_REALIZED.add(key)
+
+
+def _warm_title_fonts(widget: tk.Misc) -> None:
+    try:
+        root = widget.winfo_toplevel()
+    except tk.TclError:
+        return
+    weight = page_title_weight(root)
+    title_size = int(getattr(root, "_piezo_title_font_size", 18) or 18)
+    prominent = int(getattr(root, "_piezo_prominent_title_font_size", title_size + 1) or (title_size + 1))
+    chip = int(getattr(root, "_piezo_chip_title_font_size", 0) or 0)
+    if not chip:
+        height = int(getattr(root, "_piezo_top_chrome_height", 0) or 42)
+        chip = _font_size_for_pixel_height(root, "Microsoft YaHei UI", "bold", height)
+        try:
+            setattr(root, "_piezo_chip_title_font_size", chip)
+        except (tk.TclError, AttributeError):
+            pass
+    for size in {int(title_size), int(prominent), int(chip)}:
+        _ensure_title_font(widget, ("Microsoft YaHei UI", size, weight))
+        _ensure_title_font(widget, ("Microsoft YaHei UI", size, weight, "underline"))
 
 
 def _colors_of(widget: tk.Misc | None) -> dict[str, str]:
@@ -699,6 +826,9 @@ class CanvasTitle(tk.Canvas):
         self._underline = False
         self._font: tuple[Any, ...] = ("Microsoft YaHei UI", 18, "bold")
         self._item: int | None = None
+        self._fit_key: tuple[Any, ...] | None = None
+        self._fit_job: str | None = None
+        self._item_font: str | None = None
         kwargs.pop("highlightthickness", None)
         kwargs.pop("bd", None)
         kwargs.pop("borderwidth", None)
@@ -713,6 +843,10 @@ class CanvasTitle(tk.Canvas):
             takefocus=0,
             **kwargs,
         )
+        _warm_title_fonts(self)
+        self._font = self._role_font()
+        self._underline = any(str(part).lower() == "underline" for part in self._font)
+        self._text = str(text) if text else ""
         self._item = self.create_text(
             _TITLE_TEXT_PAD,
             _TITLE_TEXT_PAD,
@@ -722,9 +856,7 @@ class CanvasTitle(tk.Canvas):
             tags=("title",),
         )
         self._register_title()
-        self._apply_font(self._role_font())
-        if text:
-            self.configure(text=text)
+        self._queue_fit()
 
     def _register_title(self) -> None:
         widget: tk.Misc | None = self.master
@@ -757,21 +889,70 @@ class CanvasTitle(tk.Canvas):
             return (*font, "underline")
         return font
 
+    def _queue_fit(self) -> None:
+        if self._fit_job is not None:
+            return
+        try:
+            self._fit_job = self.after_idle(self._idle_fit)
+        except tk.TclError:
+            self._fit()
+
+    def _idle_fit(self) -> None:
+        self._fit_job = None
+        self._fit()
+
+    def _cancel_queued_fit(self) -> None:
+        job = self._fit_job
+        if job is None:
+            return
+        self._fit_job = None
+        try:
+            self.after_cancel(job)
+        except tk.TclError:
+            pass
+
     def _apply_font(self, font: tuple[Any, ...]) -> None:
-        self._font = tuple(font)
-        self._underline = any(str(part).lower() == "underline" for part in self._font)
+        font = tuple(font)
+        self._underline = any(str(part).lower() == "underline" for part in font)
+        changed = font != self._font or self._fit_key is None
+        self._font = font
         if self._item is None:
             return
-        self.itemconfigure(self._item, font=self._font)
-        self._fit()
+        if changed:
+            self._cancel_queued_fit()
+            self._fit()
+            return
+        self._repaint()
+
+    def _repaint(self) -> None:
+        if self._item is None:
+            return
+        background = self._background()
+        try:
+            current_bg = str(self.cget("background"))
+        except tk.TclError:
+            return
+        if current_bg.lower() != background.lower():
+            super().configure(background=background)
+        self.itemconfigure(self._item, fill=self._foreground())
 
     def _fit(self) -> None:
         if self._item is None:
             return
-        probe = tkfont.Font(root=self, font=self._font)
-        width = max(_TITLE_TEXT_PAD * 2, int(probe.measure(self._text)) + _TITLE_TEXT_PAD * 2)
-        height = max(_TITLE_TEXT_PAD * 2, int(probe.metrics("linespace")) + _TITLE_TEXT_PAD * 2)
+        self._cancel_queued_fit()
+        probe = _title_font(self, self._font)
+        if self._item_font != probe.name:
+            self.itemconfigure(self._item, font=probe.name)
+            self._item_font = probe.name
+        linespace, _ascent = _title_metrics(self, self._font)
+        width = max(_TITLE_TEXT_PAD * 2, _title_text_width(self, self._font, self._text) + _TITLE_TEXT_PAD * 2)
+        height = max(_TITLE_TEXT_PAD * 2, linespace + _TITLE_TEXT_PAD * 2)
+        foreground = self._foreground()
         background = self._background()
+        key = (self._font, self._text, foreground, background.lower(), width, height)
+        if key == self._fit_key:
+            return
+        self._fit_key = key
         try:
             current_w = int(float(self.cget("width")))
             current_h = int(float(self.cget("height")))
@@ -781,7 +962,7 @@ class CanvasTitle(tk.Canvas):
             current_bg = ""
         if current_w != width or current_h != height or current_bg.lower() != background.lower():
             super().configure(width=width, height=height, background=background)
-        self.itemconfigure(self._item, text=self._text, fill=self._foreground(), font=self._font)
+        self.itemconfigure(self._item, text=self._text, fill=foreground, font=probe.name)
         self.coords(self._item, _TITLE_TEXT_PAD, _TITLE_TEXT_PAD)
 
     def refresh(self) -> None:
@@ -802,10 +983,20 @@ class CanvasTitle(tk.Canvas):
         text = kwargs.pop("text", None)
         font = kwargs.pop("font", None)
         foreground = kwargs.pop("foreground", kwargs.pop("fg", None))
+        changed = False
         if font is not None:
-            self._apply_font(self._font_tuple(font))
+            new_font = self._font_tuple(font)
+            self._underline = any(str(part).lower() == "underline" for part in new_font)
+            if new_font != self._font or self._fit_key is None:
+                self._font = new_font
+                changed = True
         if text is not None:
-            self._text = str(text)
+            new_text = str(text)
+            if new_text != self._text or self._fit_key is None:
+                self._text = new_text
+                changed = True
+        if changed or self._fit_key is None:
+            self._cancel_queued_fit()
             self._fit()
         if foreground is not None and self._item is not None:
             self.itemconfigure(self._item, fill=foreground)
@@ -830,6 +1021,7 @@ class CanvasTitle(tk.Canvas):
         return self.cget(key)
 
     def destroy(self) -> None:
+        self._cancel_queued_fit()
         widget: tk.Misc | None = getattr(self, "master", None)
         while widget is not None:
             titles = getattr(widget, "_canvas_titles", None)
@@ -1061,6 +1253,7 @@ class BasePage(ttk.Frame):
         *,
         show_logo: bool = True,
     ) -> ttk.Frame:
+        _warm_title_fonts(self)
         header = ttk.Frame(parent, style="App.TFrame")
         header.columnconfigure(0, weight=1)
 
@@ -1168,6 +1361,7 @@ class BasePage(ttk.Frame):
         height = int(getattr(self.winfo_toplevel(), "_piezo_top_chrome_height", 0)) or 42
         size = _font_size_for_pixel_height(self.winfo_toplevel(), "Microsoft YaHei UI", "bold", height)
         setattr(self.winfo_toplevel(), "_piezo_chip_title_font_size", size)
+        _warm_title_fonts(self)
         return size
 
     def _refresh_chip_titles(self) -> None:
