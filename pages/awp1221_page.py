@@ -110,7 +110,7 @@ AWP1221_SINC_SERIAL_GROUPS = (
 
 
 def awp1221_sinc_serial_group_label(serial: str, start_slice: int, end_slice: int) -> str:
-    """Format a page-only SINC serial group with its explicit hexadecimal range."""
+    """Format a page-only SINC serial group with its hexadecimal slice range."""
     serial = str(serial).strip()
     start_slice = int(start_slice)
     end_slice = int(end_slice)
@@ -120,7 +120,7 @@ def awp1221_sinc_serial_group_label(serial: str, start_slice: int, end_slice: in
         raise ValueError("SINC serial end must be in range 0..31")
     if end_slice < start_slice:
         raise ValueError("SINC serial end must not precede its start")
-    return f"{serial} (0x{start_slice:02X}-0x{end_slice:02X}, {end_slice - start_slice + 1} slices)"
+    return f"{serial} 0x{start_slice:02X}-0x{end_slice:02X}"
 
 
 AWP1221_SINC_SERIAL_OPTIONS = tuple(
@@ -660,7 +660,7 @@ def awp1221_waveform_offset_voltage(offset_code: int) -> float:
 def awp1221_waveform_offset_label(offset_code: int) -> str:
     voltage = awp1221_waveform_offset_voltage(offset_code)
     voltage_text = "0" if voltage == 0 else f"{voltage:+.5f}".rstrip("0").rstrip(".")
-    return f"0x{offset_code:02X} - {voltage_text} V"
+    return f"0x{offset_code:02X} {voltage_text} V"
 
 
 def awp1221_waveform_coarse_amplitude_voltage(code: int) -> float:
@@ -861,7 +861,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
     WAVEFORM_SOURCES = ("ROM", "RAM")
     WAVEFORM_SOURCE_CODES = {"ROM": 0b10, "RAM": 0b01}
     MICRO_BIAS_OPTIONS = tuple(
-        f"{code:02b} - +{awp1221_waveform_fine_amplitude_voltage(code):g} V (200 V / 128)"
+        f"{code:02b} - +{awp1221_waveform_fine_amplitude_voltage(code):g} V"
         for code in range(AWP1221_FINE_AMPLITUDE_CODE_MASK + 1)
     )
     ROM_WAVEFORMS = ("SINE", "Gauss", "Fixed-slope Ramp", "DC", "SINC")
@@ -1205,6 +1205,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         body.rowconfigure(0, weight=1)
 
         left_scroll, left = self.make_vertical_scroll_area(body, propagate_width=True)
+        left_scroll.horizontal = False
         left_scroll.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         left.configure(style="Panel.TFrame", padding=(14, 14, 14, 28))
         left.columnconfigure(0, weight=1)
@@ -1261,6 +1262,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
         log_frame = self.make_serial_log(right, height=7, subscribe=True)
         log_frame.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        self._hide_serial_log_hscroll(log_frame)
 
         self._show_stage(0)
         self.refresh_language()
@@ -1349,8 +1351,22 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._communication_log_toggle = toggle
         log_frame = self.make_serial_log(extra, height=3, subscribe=True)
         log_frame.grid(row=0, column=0, sticky="ew", pady=(8, 0))
+        self._hide_serial_log_hscroll(log_frame)
         self.refresh_language()
         self._schedule_button_rom_preview()
+
+    def _hide_serial_log_hscroll(self, frame: ttk.Frame) -> None:
+        text = getattr(self, "_serial_log_text", None)
+        if text is not None:
+            text.configure(wrap="word")
+        for child in frame.winfo_children():
+            if child.winfo_class() != "TScrollbar":
+                continue
+            try:
+                if str(child.cget("orient")) == "horizontal":
+                    child.grid_remove()
+            except tk.TclError:
+                pass
 
     def _toggle_communication_log(self) -> None:
         panel = self._communication_log_panel
@@ -1426,14 +1442,14 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 if widget.master != controls:
                     continue
                 if isinstance(widget, (ttk.Entry, ttk.Combobox)):
-                    widget.configure(width=13)
+                    widget.configure(width=16)
                     self._tooltips.append(SimpleTooltip(widget, lambda value=widget: value.get()))
                 elif isinstance(widget, ttk.Label):
-                    widget.configure(wraplength=175)
+                    widget.configure(wraplength=200)
         self._button_waveform_layout_ready = True
-        self._waveform_selector_form.configure(width=570)
+        self._waveform_selector_form.configure(width=680)
         self._waveform_selector_form.grid_propagate(False)
-        self._waveform_selector_shell.columnconfigure(0, weight=0, minsize=570)
+        self._waveform_selector_shell.columnconfigure(0, weight=0, minsize=680)
         self._waveform_selector_shell.columnconfigure(1, weight=3)
         self.rom_canvas.configure(height=400)
         self._tooltips.append(SimpleTooltip(self._selector_widgets["awp1221_rom_offset"][0],
@@ -1479,7 +1495,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 visible_info = bool(widget.winfo_manager())
                 widget.grid_configure(row=info_row, column=0, columnspan=3, sticky="w",
                                       padx=0, pady=(2, 3))
-                widget.configure(wraplength=535)
+                widget.configure(wraplength=640)
                 if not visible_info:
                     widget.grid_remove()
             info_row += 1
@@ -1491,6 +1507,87 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                       sticky="e", padx=(0, 12))
         else:
             hint.grid_remove()
+
+    def _layout_full_waveform_form(self) -> None:
+        if self.mode_key == "button_mode":
+            return
+        scroll = getattr(self, "_waveform_selector_scroll", None)
+        if scroll is None:
+            return
+        scroll.horizontal = False
+        content = scroll.content
+        content.columnconfigure(0, weight=1, minsize=0)
+        content.columnconfigure(1, weight=0, minsize=0)
+        content.columnconfigure(2, weight=0, minsize=0)
+        order = (
+            "awp1221_auto_serial",
+            "awp1221_sinc_serial_group",
+            "awp1221_rom_slice",
+            "awp1221_rom_source",
+            "awp1221_rom_waveform",
+            "awp1221_sinc_slice_group",
+            "awp1221_sinc_depth",
+            "awp1221_sinc_depth_hint",
+            "awp1221_sinc_max_voltage",
+            "awp1221_sinc_min_voltage",
+            "awp1221_sinc_time1",
+            "awp1221_sinc_time2",
+            "awp1221_sinc_time3",
+            "awp1221_sinc_time4",
+            "awp1221_sinc_sin_repeat",
+            "awp1221_rom_micro_bias",
+            "awp1221_rom_amplitude",
+            "awp1221_rom_peak_to_peak",
+            "awp1221_rom_depth",
+            "awp1221_rom_half_cycle",
+            "awp1221_rom_phase",
+            "awp1221_rom_offset",
+            "awp1221_rom_point_time",
+            "awp1221_rom_repeat",
+            "awp1221_rom_infinite_loop",
+            "awp1221_sinc_match",
+            "awp1221_sinc_haptic_period",
+            "awp1221_sinc_group_hint",
+            "awp1221_sinc_hint",
+            "awp1221_waveform_word3_pending",
+        )
+        row = 0
+        min_voltage_row = None
+        for key in order:
+            widgets = [widget for widget in self._selector_widgets.get(key, ())
+                       if widget.winfo_manager() == "grid"]
+            if not widgets:
+                continue
+            for widget in widgets:
+                if isinstance(widget, (ttk.Combobox, ttk.Entry)):
+                    widget.configure(width=12)
+                    widget.grid_configure(row=row, column=0, columnspan=2, sticky="ew",
+                                          padx=0, pady=(0, 6))
+                elif isinstance(widget, ttk.Checkbutton):
+                    widget.grid_configure(row=row, column=0, columnspan=2, sticky="w",
+                                          padx=0, pady=(0, 6))
+                else:
+                    try:
+                        widget.configure(wraplength=210)
+                    except tk.TclError:
+                        pass
+                    widget.grid_configure(row=row, column=0, columnspan=2, sticky="ew",
+                                          padx=0, pady=(4, 0))
+                    if key == "awp1221_sinc_min_voltage":
+                        min_voltage_row = row
+                row += 1
+        help_widget = getattr(self, "_sinc_min_voltage_help", None)
+        if help_widget is not None:
+            if min_voltage_row is None:
+                help_widget.grid_remove()
+            else:
+                help_widget.grid(row=min_voltage_row, column=1, columnspan=1,
+                                 sticky="e", padx=(4, 0), pady=0)
+        for widget in self._selector_widgets.get("awp1221_rom_preview_captions", ()):
+            try:
+                widget.configure(wraplength=210)
+            except tk.TclError:
+                pass
 
     def _schedule_button_adc_diagram(self) -> None:
         if getattr(self, "_button_adc_diagram_job", None) is not None:
@@ -1722,7 +1819,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         else:
             controls_scroll, controls = self.make_vertical_scroll_area(form_column)
             controls_scroll.grid(row=0, column=0, sticky="nsew")
-            controls_scroll.canvas.configure(width=280)
+            controls_scroll.horizontal = False
+            controls_scroll.canvas.configure(width=200)
             self._waveform_selector_scroll = controls_scroll
         controls.configure(style="Panel.TFrame")
         controls.columnconfigure(1, weight=1)
@@ -2911,7 +3009,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             scroll.canvas.configure(height=1)
         shell.rowconfigure(1, weight=1)
         shell.columnconfigure(1, weight=1)
-        shell.columnconfigure(0, weight=0, minsize=570)
+        shell.columnconfigure(0, weight=0, minsize=680)
         if holder is not None:
             holder.rowconfigure(0, weight=1)
             holder.rowconfigure(1, weight=0)
@@ -3458,6 +3556,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._sync_sram_editor_visibility()
         if self.mode_key == "button_mode":
             self._layout_button_waveform_form()
+        else:
+            self._layout_full_waveform_form()
         selected_tab = "sram" if self._sram_source_selected() else "sinc" if is_sinc else "rom"
         for key, button in getattr(self, "_button_wave_tabs", {}).items():
             button.configure(style="Selected.TButton" if key == selected_tab else "Secondary.TButton")
@@ -4379,15 +4479,15 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
     def _section_label(self, parent: tk.Misc, key: str, *, row: int) -> ttk.Label:
         label = ttk.Label(parent, style="SectionTitle.TLabel")
-        label.grid(row=row, column=0, columnspan=4, sticky="w", pady=(12, 5))
+        label.grid(row=row, column=0, columnspan=2, sticky="w", pady=(12, 5))
         self._register_text(label, key)
         return label
 
     def _build_adc_stage(self, parent: ttk.Frame, stage_index: int) -> None:
-        parent.columnconfigure(0, weight=0, minsize=126)
-        parent.columnconfigure(1, weight=1, minsize=180)
-        parent.columnconfigure(2, weight=0, minsize=126)
-        parent.columnconfigure(3, weight=1, minsize=180)
+        parent.columnconfigure(0, weight=0, minsize=0)
+        parent.columnconfigure(1, weight=1, minsize=0)
+        parent.columnconfigure(2, weight=0, minsize=0)
+        parent.columnconfigure(3, weight=0, minsize=0)
 
         release_var = tk.StringVar(value=AWP1221_ADC_TIME_LABELS[0])
         press_var = tk.StringVar(value=AWP1221_ADC_TIME_LABELS[0])
@@ -4436,7 +4536,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         press_time_combo.grid(row=0, column=1, sticky="ew", pady=5)
         self._bind_live_choice(press_time_combo, commit_stage)
-        self._form_label(parent, "awp1221_release_ovv_time", row=0, column=2)
+        self._form_label(parent, "awp1221_release_ovv_time", row=1, column=0)
         release_time_combo = ttk.Combobox(
             parent,
             textvariable=release_var,
@@ -4444,10 +4544,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             state="readonly",
             width=16,
         )
-        release_time_combo.grid(row=0, column=3, sticky="ew", pady=5)
+        release_time_combo.grid(row=1, column=1, sticky="ew", pady=5)
         self._bind_live_choice(release_time_combo, commit_stage)
 
-        self._form_label(parent, "awp1221_press_jump_target", row=1, column=0)
+        self._form_label(parent, "awp1221_press_jump_target", row=2, column=0)
         press_jump_combo = ttk.Combobox(
             parent,
             textvariable=press_threshold["next_config"],
@@ -4455,9 +4555,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             state="readonly",
             width=12,
         )
-        press_jump_combo.grid(row=1, column=1, sticky="ew", pady=5)
+        press_jump_combo.grid(row=2, column=1, sticky="ew", pady=5)
         self._bind_live_choice(press_jump_combo, commit_stage)
-        self._form_label(parent, "awp1221_release_jump_target", row=1, column=2)
+        self._form_label(parent, "awp1221_release_jump_target", row=3, column=0)
         release_jump_combo = ttk.Combobox(
             parent,
             textvariable=release_threshold["next_config"],
@@ -4465,21 +4565,21 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             state="readonly",
             width=12,
         )
-        release_jump_combo.grid(row=1, column=3, sticky="ew", pady=5)
+        release_jump_combo.grid(row=3, column=1, sticky="ew", pady=5)
         self._bind_live_choice(release_jump_combo, commit_stage)
 
-        self._form_label(parent, "awp1221_press_threshold", row=2, column=0)
+        self._form_label(parent, "awp1221_press_threshold", row=4, column=0)
         threshold_entries["press"] = self._threshold_entry_with_hint(
-            parent, press_threshold["threshold"], row=2, column=1
+            parent, press_threshold["threshold"], row=4, column=1
         )
         self._bind_live_text(threshold_entries["press"], commit_stage)
-        self._form_label(parent, "awp1221_release_threshold", row=2, column=2)
+        self._form_label(parent, "awp1221_release_threshold", row=5, column=0)
         threshold_entries["release"] = self._threshold_entry_with_hint(
-            parent, release_threshold["threshold"], row=2, column=3
+            parent, release_threshold["threshold"], row=5, column=1
         )
         self._bind_live_text(threshold_entries["release"], commit_stage)
 
-        self._form_label(parent, "awp1221_press_waveform", row=3, column=0)
+        self._form_label(parent, "awp1221_press_waveform", row=6, column=0)
         press_wave_combo = ttk.Combobox(
             parent,
             textvariable=wave_vars["press_wave"],
@@ -4487,10 +4587,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             state="readonly",
             width=12,
         )
-        press_wave_combo.grid(row=3, column=1, sticky="ew", pady=5)
+        press_wave_combo.grid(row=6, column=1, sticky="ew", pady=5)
         self._bind_live_choice(press_wave_combo, commit_stage)
         self._full_wave_combos.append(press_wave_combo)
-        self._form_label(parent, "awp1221_release_waveform", row=3, column=2)
+        self._form_label(parent, "awp1221_release_waveform", row=7, column=0)
         release_wave_combo = ttk.Combobox(
             parent,
             textvariable=wave_vars["release_wave"],
@@ -4498,12 +4598,12 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             state="readonly",
             width=12,
         )
-        release_wave_combo.grid(row=3, column=3, sticky="ew", pady=5)
+        release_wave_combo.grid(row=7, column=1, sticky="ew", pady=5)
         self._bind_live_choice(release_wave_combo, commit_stage)
         self._full_wave_combos.append(release_wave_combo)
 
         repeat_values = tuple(str(value) for value in range(8))
-        self._form_label(parent, "awp1221_press_repeat", row=4, column=0)
+        self._form_label(parent, "awp1221_press_repeat", row=8, column=0)
         press_repeat_combo = ttk.Combobox(
             parent,
             textvariable=wave_vars["press_repeat"],
@@ -4511,9 +4611,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             state="readonly",
             width=12,
         )
-        press_repeat_combo.grid(row=4, column=1, sticky="ew", pady=5)
+        press_repeat_combo.grid(row=8, column=1, sticky="ew", pady=5)
         self._bind_live_choice(press_repeat_combo, commit_stage)
-        self._form_label(parent, "awp1221_release_repeat", row=4, column=2)
+        self._form_label(parent, "awp1221_release_repeat", row=9, column=0)
         release_repeat_combo = ttk.Combobox(
             parent,
             textvariable=wave_vars["release_repeat"],
@@ -4521,13 +4621,12 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             state="readonly",
             width=12,
         )
-        release_repeat_combo.grid(row=4, column=3, sticky="ew", pady=5)
+        release_repeat_combo.grid(row=9, column=1, sticky="ew", pady=5)
         self._bind_live_choice(release_repeat_combo, commit_stage)
 
         debounce_row = ttk.Frame(parent, style="Panel.TFrame")
-        debounce_row.grid(row=5, column=0, columnspan=4, sticky="ew", pady=5)
-        for column in range(3):
-            debounce_row.columnconfigure(column, weight=1)
+        debounce_row.grid(row=10, column=0, columnspan=2, sticky="ew", pady=5)
+        debounce_row.columnconfigure(0, weight=1)
         self._form_check(
             debounce_row,
             "awp1221_press_debounce_enable",
@@ -4540,8 +4639,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             debounce_row,
             "awp1221_release_debounce_enable",
             release_threshold["debounce_enabled"],
-            row=0,
-            column=1,
+            row=1,
+            column=0,
             command=commit_stage,
         )
         self._form_check_with_help(
@@ -4549,15 +4648,15 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             "awp1221_adc_precision",
             use_high_12_bits,
             "awp1221_adc_precision_tip",
-            row=0,
-            column=2,
+            row=2,
+            column=0,
             command=commit_stage,
         )
         self._form_check(
             parent,
             "awp1221_press_below_threshold",
             press_threshold["below_threshold"],
-            row=6,
+            row=11,
             column=0,
             columnspan=2,
             command=commit_stage,
@@ -4566,19 +4665,19 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             parent,
             "awp1221_release_below_threshold",
             release_threshold["below_threshold"],
-            row=6,
-            column=2,
+            row=12,
+            column=0,
             columnspan=2,
             command=commit_stage,
         )
-        self._section_label(parent, "awp1221_adc_event_mode", row=7)
+        self._section_label(parent, "awp1221_adc_event_mode", row=13)
         press_mode_radio = ttk.Radiobutton(
             parent,
             variable=event_mode_var,
             value="press",
             command=lambda index=stage_index: self._on_full_event_mode(index),
         )
-        press_mode_radio.grid(row=8, column=0, columnspan=2, sticky="w", pady=5)
+        press_mode_radio.grid(row=14, column=0, columnspan=2, sticky="w", pady=5)
         self._register_text(press_mode_radio, "awp1221_press_mode")
         release_mode_radio = ttk.Radiobutton(
             parent,
@@ -4586,14 +4685,14 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             value="release",
             command=lambda index=stage_index: self._on_full_event_mode(index),
         )
-        release_mode_radio.grid(row=8, column=2, columnspan=2, sticky="w", pady=5)
+        release_mode_radio.grid(row=15, column=0, columnspan=2, sticky="w", pady=5)
         self._register_text(release_mode_radio, "awp1221_release_mode")
 
-        self._section_label(parent, "awp1221_event_actions", row=10)
+        self._section_label(parent, "awp1221_event_actions", row=16)
         press_actions = ttk.Frame(parent, style="Panel.TFrame")
-        press_actions.grid(row=11, column=0, columnspan=2, sticky="ew")
+        press_actions.grid(row=17, column=0, columnspan=2, sticky="ew")
         release_actions = ttk.Frame(parent, style="Panel.TFrame")
-        release_actions.grid(row=11, column=2, columnspan=2, sticky="ew", padx=(12, 0))
+        release_actions.grid(row=18, column=0, columnspan=2, sticky="ew")
         self._form_check(
             press_actions,
             "awp1221_press_stop_adc",
@@ -4611,19 +4710,19 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             command=commit_stage,
         )
 
-        self._form_label(parent, "awp1221_press_slope_threshold", row=12, column=0)
+        self._form_label(parent, "awp1221_press_slope_threshold", row=19, column=0)
         press_slope_entry = ttk.Entry(parent, textvariable=slope_vars["press_slope"], width=12)
-        press_slope_entry.grid(row=12, column=1, sticky="ew", pady=5)
+        press_slope_entry.grid(row=19, column=1, sticky="ew", pady=5)
         self._bind_live_text(press_slope_entry, commit_stage)
-        self._form_label(parent, "awp1221_release_slope_threshold", row=12, column=2)
+        self._form_label(parent, "awp1221_release_slope_threshold", row=20, column=0)
         release_slope_entry = ttk.Entry(parent, textvariable=slope_vars["release_slope"], width=12)
-        release_slope_entry.grid(row=12, column=3, sticky="ew", pady=5)
+        release_slope_entry.grid(row=20, column=1, sticky="ew", pady=5)
         self._bind_live_text(release_slope_entry, commit_stage)
         self._form_check(
             parent,
             "awp1221_press_slope_below",
             slope_vars["press_below"],
-            row=13,
+            row=21,
             column=0,
             columnspan=2,
             command=commit_stage,
@@ -4632,8 +4731,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             parent,
             "awp1221_release_slope_below",
             slope_vars["release_below"],
-            row=13,
-            column=2,
+            row=22,
+            column=0,
             columnspan=2,
             command=commit_stage,
         )
@@ -4778,14 +4877,14 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, 4))
         frame.columnconfigure(1, weight=1)
         heading = ttk.Label(frame, style="Panel.TLabel")
-        heading.grid(row=0, column=0, columnspan=2, sticky="w")
+        heading.grid(row=0, column=0, sticky="w")
         heading.configure(text=f"{name} ({pin})")
         mcu_label = ttk.Label(
             frame,
             textvariable=host.gpio_mcu_role_vars[index],
             style="Muted.TLabel",
         )
-        mcu_label.grid(row=0, column=2, columnspan=2, sticky="e")
+        mcu_label.grid(row=0, column=1, sticky="e")
         host._refresh_gpio_mcu_label(index)
         self._form_label(frame, "awp1221_gpio_category", row=1, column=0)
         category = ttk.Combobox(
@@ -4793,25 +4892,25 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             textvariable=host.gpio_category_vars[index],
             values=tuple(label for key, label in GPIO_CATEGORY_LABELS.items() if key != "debug"),
             state="readonly",
-            width=22,
+            width=16,
         )
         category.grid(row=1, column=1, sticky="ew", pady=3)
         category.bind(
             "<<ComboboxSelected>>",
             lambda _event, channel=index: host._on_gpio_category_selected(channel),
         )
-        self._form_label(frame, "awp1221_gpio_function", row=1, column=2)
+        self._form_label(frame, "awp1221_gpio_function", row=2, column=0)
         function = ttk.Combobox(
             frame,
             textvariable=host.gpio_function_vars[index],
             values=host._gpio_function_labels(index),
             state="readonly",
-            width=28,
+            width=16,
         )
-        function.grid(row=1, column=3, sticky="ew", pady=3)
+        function.grid(row=2, column=1, sticky="ew", pady=3)
         host.gpio_function_combos[index].append(function)
         drive = ttk.Frame(frame, style="Panel.TFrame")
-        drive.grid(row=2, column=0, columnspan=4, sticky="w", pady=3)
+        drive.grid(row=3, column=0, columnspan=2, sticky="w", pady=3)
         high_btn = ttk.Button(
             drive,
             style="Secondary.TButton",
@@ -4829,10 +4928,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         host.gpio_action_widgets[index].extend((high_btn, low_btn))
         host._sync_gpio_actions(index)
         ttk.Label(frame, textvariable=host.gpio_chip_status_vars[index], style="Muted.TLabel").grid(
-            row=3, column=0, columnspan=2, sticky="w"
+            row=4, column=0, columnspan=2, sticky="w"
         )
         ttk.Label(frame, textvariable=host.gpio_mcu_status_vars[index], style="Muted.TLabel").grid(
-            row=3, column=2, columnspan=2, sticky="e"
+            row=5, column=0, columnspan=2, sticky="w"
         )
 
     def _build_adc_settings(self, parent: ttk.Frame, *, row: int) -> None:
@@ -4937,7 +5036,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._add_help_button(zps_frame, 0, 5, "awp1221_sleep_sensitivity_help")
 
         if self.mode_key != "button_mode":
-            self._build_adc_readout(section, row=5)
+            self._stack_full_adc_settings(section)
+            self._build_adc_readout(section, row=8)
         else:
             # Global ADC values: labels always stay on one line; the six fields
             # use a single row when wide enough, otherwise three per row.
@@ -4969,6 +5069,46 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             section.bind("<Configure>", reflow, add="+")
             for label, _value in self._button_adc_fields:
                 label.bind("<Configure>", reflow, add="+")
+
+    def _stack_full_adc_settings(self, section: ttk.Frame) -> None:
+        pairs: dict[tuple[int, int], list[tk.Widget | None]] = {}
+        zps = None
+        title = None
+        for widget in section.winfo_children():
+            info = widget.grid_info()
+            if not info:
+                continue
+            row, column = int(info["row"]), int(info["column"])
+            if row == 0:
+                title = widget
+            elif row == 4:
+                zps = widget
+            elif row in (1, 2, 3):
+                pairs.setdefault((row, column // 2), [None, None])[column % 2] = widget
+        section.columnconfigure(0, weight=0, minsize=0)
+        section.columnconfigure(1, weight=1, minsize=0)
+        section.columnconfigure(2, weight=0, minsize=0)
+        section.columnconfigure(3, weight=0, minsize=0)
+        if title is not None:
+            title.grid_configure(columnspan=2)
+        for index, key in enumerate(((1, 0), (1, 1), (2, 0), (2, 1), (3, 0), (3, 1))):
+            label, value = pairs[key]
+            if label is None or value is None:
+                continue
+            label.grid_configure(row=1 + index, column=0, columnspan=1, sticky="w",
+                                 padx=(0, 8), pady=5)
+            value.grid_configure(row=1 + index, column=1, columnspan=1, sticky="ew",
+                                 padx=0, pady=5)
+            if isinstance(value, (ttk.Combobox, ttk.Entry)):
+                value.configure(width=12)
+        if zps is None:
+            return
+        zps.grid_configure(row=7, column=0, columnspan=2, sticky="ew")
+        children = [child for child in zps.winfo_children() if child.grid_info()]
+        children.sort(key=lambda child: int(child.grid_info()["column"]))
+        for index, child in enumerate(children):
+            child.grid_configure(row=index // 2, column=index % 2, sticky="w",
+                                 padx=(0, 8), pady=2)
 
     def _queue_button_adc_reflow(self, section: ttk.Frame, _event: tk.Event | None = None) -> None:
         if (
@@ -5112,12 +5252,13 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
     def _build_adc_readout(self, section: ttk.Frame, *, row: int) -> None:
         adc_value_label = ttk.Label(section, style="Panel.TLabel")
-        adc_value_label.grid(row=row, column=0, sticky="w", pady=(0, 5), padx=(0, 8))
+        button_mode = self.mode_key == "button_mode"
+        adc_value_label.grid(row=row, column=0, columnspan=1 if button_mode else 2,
+                             sticky="w", pady=(0, 5), padx=(0, 8))
         self._register_text(adc_value_label, "button_adc_value")
         adc_display = ttk.Frame(section, style="Panel.TFrame")
-        button_mode = self.mode_key == "button_mode"
-        adc_display.grid(row=row + 1 if button_mode else row, column=0 if button_mode else 1,
-                         columnspan=4 if button_mode else 3, sticky="ew", pady=(0, 5))
+        adc_display.grid(row=row + 1, column=0, columnspan=4 if button_mode else 2,
+                         sticky="ew", pady=(0, 5))
         adc_display.columnconfigure(0, weight=1)
         ttk.Entry(adc_display, textvariable=self.adc_value_var, state="readonly").grid(row=0, column=0, sticky="ew")
         bits = ttk.Frame(adc_display, style="Panel.TFrame")
@@ -5125,14 +5266,20 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._adc_bit_labels = []
         for column, bit in enumerate((15, 11, 7, 3) if self.mode_key == "button_mode" else range(15, -1, -1)):
             bits.columnconfigure(column, weight=1, uniform="adc_bits")
-            label = tk.Label(bits, text=f"{bit}\n—", padx=10 if self.mode_key == "button_mode" else 3, pady=3,
-                             font=("Consolas", 12 if self.mode_key == "button_mode" else 9), borderwidth=0)
+            label = tk.Label(
+                bits,
+                text=f"{bit}\n—",
+                padx=8 if self.mode_key == "button_mode" else 2,
+                pady=3,
+                font=("Consolas", 12 if self.mode_key == "button_mode" else 9),
+                borderwidth=0,
+            )
             label.grid(row=0, column=column, sticky="ew", padx=1)
             self._adc_bit_labels.append(label)
         self._refresh_adc_bits()
 
         adc_buttons = ttk.Frame(section, style="Panel.TFrame")
-        adc_buttons.grid(row=row + (2 if button_mode else 1), column=0, columnspan=4, sticky="ew", pady=(2, 0))
+        adc_buttons.grid(row=row + 2, column=0, columnspan=4 if button_mode else 2, sticky="ew", pady=(2, 0))
         for column in range(3):
             adc_buttons.columnconfigure(column, weight=1)
 
