@@ -75,14 +75,64 @@ class AWP1221SramEditor(BasePage):
         self.rom_canvas.grid(row=2, column=0, sticky="nsew")
         self._init_sram_editor(controls)
         self._sram_frame.grid()
-        self.rom_canvas.bind("<Configure>", lambda _event: self._draw_sram_waveform())
-        plot.bind("<Configure>", self._sync_sram_plot_wraplength, add="+")
-        self.bind("<Configure>", self._sync_sram_editor_layout, add="+")
+        self.rom_canvas.bind("<Configure>", self._schedule_sram_redraw)
+        plot.bind("<Configure>", self._schedule_sram_plot_wrap, add="+")
+        self.bind("<Configure>", self._schedule_sram_layout, add="+")
+
+    def _schedule_sram_redraw(self, _event=None) -> None:
+        if getattr(self, "_sram_redraw_job", None) is not None:
+            return
+        def run() -> None:
+            self._sram_redraw_job = None
+            try:
+                if not self.winfo_ismapped():
+                    return
+                if self._sram_input_invalid or self._sram_result is not None or self._sram_preview_points:
+                    self._paint_sram_preview()
+                else:
+                    self._draw_sram_waveform()
+            except tk.TclError:
+                pass
+        try:
+            self._sram_redraw_job = self.after_idle(run)
+        except tk.TclError:
+            self._sram_redraw_job = None
+
+    def _schedule_sram_layout(self, _event=None) -> None:
+        if getattr(self, "_sram_layout_job", None) is not None:
+            return
+        def run() -> None:
+            self._sram_layout_job = None
+            try:
+                self._sync_sram_editor_layout()
+            except tk.TclError:
+                pass
+        try:
+            self._sram_layout_job = self.after_idle(run)
+        except tk.TclError:
+            self._sram_layout_job = None
+
+    def _schedule_sram_plot_wrap(self, _event=None) -> None:
+        if getattr(self, "_sram_wrap_job", None) is not None:
+            return
+        def run() -> None:
+            self._sram_wrap_job = None
+            try:
+                self._sync_sram_plot_wraplength()
+            except tk.TclError:
+                pass
+        try:
+            self._sram_wrap_job = self.after_idle(run)
+        except tk.TclError:
+            self._sram_wrap_job = None
 
     def _sync_sram_plot_wraplength(self, _event=None) -> None:
         if not hasattr(self, "_sram_plot"):
             return
         plot_wrap = max(320, self._sram_plot.winfo_width() - 8)
+        if plot_wrap == getattr(self, "_sram_plot_wrap", None):
+            return
+        self._sram_plot_wrap = plot_wrap
         self._sram_metric_label.configure(wraplength=plot_wrap)
         self._sram_frequency_label.configure(wraplength=plot_wrap)
 
@@ -103,7 +153,11 @@ class AWP1221SramEditor(BasePage):
             background=colors.get("canvas_bg", colors["panel"]),
             highlightbackground=colors.get("border", colors["panel"]),
         )
-        self._draw_sram_waveform()
+        self._sram_paint_key = None
+        if self._sram_result is not None or self._sram_preview_points or self._sram_input_invalid:
+            self._paint_sram_preview()
+        else:
+            self._draw_sram_waveform()
 
     def _sync_sram_editor_layout(self, _event=None) -> None:
         if self._sram_reflowing or not hasattr(self, "_sram_plot"):
@@ -260,8 +314,13 @@ class AWP1221SramEditor(BasePage):
             self._sram_metric_label.configure(wraplength=plot_wrap)
             self._sram_frequency_label.configure(wraplength=plot_wrap)
         self._refresh_ratio_labels()
+        self._sram_paint_key = None
         if self.rom_waveform_var.get() == "SRAM":
-            self._draw_sram_waveform()
+            result = getattr(self, "_sram_result", None)
+            if result is not None:
+                self._publish_sram_result(result)
+            else:
+                self._draw_sram_waveform()
 
     def _ratio_row_label(self, index: int, count: int) -> str:
         span = f"P{index}→P{index + 1}"
@@ -751,8 +810,33 @@ class AWP1221SramEditor(BasePage):
                 f"{interval} 间隔 · {percent:.2f}%",
                 f"{interval} intervals · {percent:.2f}%"))
 
+    def _sram_paint_signature(self):
+        canvas = self.rom_canvas
+        try:
+            size = (canvas.winfo_width(), canvas.winfo_height())
+        except tk.TclError:
+            return None
+        colors = self.colors
+        return (
+            size,
+            self._sram_preview_points,
+            tuple(self._sram_preview_controls or ()),
+            self._sram_preview_intervals,
+            self._sample_time(),
+            colors.get("primary"),
+            colors.get("border"),
+            colors.get("panel"),
+            colors.get("muted"),
+            colors.get("canvas_bg"),
+            getattr(self, "language", None),
+            bool(self._sram_input_invalid),
+        )
+
     def _paint_sram_preview(self) -> None:
         canvas = self.rom_canvas
+        signature = self._sram_paint_signature()
+        if signature is not None and signature == getattr(self, "_sram_paint_key", None) and canvas.find_withtag("sram-curve"):
+            return
         canvas.delete("all")
         left, top, width, height = self._sram_geometry()
         colors = self.colors
@@ -786,6 +870,7 @@ class AWP1221SramEditor(BasePage):
             y = top + height * (1 - (value + 100) / 200)
             canvas.create_oval(x - 5, y - 5, x + 5, y + 5, fill=colors["panel"], outline=colors["primary"], width=2)
         self._update_ratio_actuals()
+        self._sram_paint_key = signature
 
     def _place_axis_text(self, canvas, x, y, text, anchor, fill, placed) -> None:
         item = canvas.create_text(x, y, text=text, anchor=anchor, fill=fill, tags="sram-axis")
@@ -936,6 +1021,15 @@ class AWP1221SramEditor(BasePage):
         self._sram_poll_after = self.after(40, poll)
 
     def _sram_destroy(self, event) -> None:
-        if event.widget is self and self._sram_poll_after is not None:
-            self.after_cancel(self._sram_poll_after)
+        if event.widget is not self:
+            return
+        for name in ("_sram_poll_after", "_sram_redraw_job", "_sram_layout_job", "_sram_wrap_job"):
+            job = getattr(self, name, None)
+            if not job:
+                continue
+            try:
+                self.after_cancel(job)
+            except tk.TclError:
+                pass
+            setattr(self, name, None)
             self._sram_poll_after = None

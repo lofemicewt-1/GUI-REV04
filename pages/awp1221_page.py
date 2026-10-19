@@ -1313,7 +1313,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._button_adc_canvas = tk.Canvas(diagram, width=260, height=200,
                                              highlightthickness=0)
         self._button_adc_canvas.grid(row=0, column=0, sticky="nsew")
-        self._button_adc_canvas.bind("<Configure>", lambda _event: self._draw_button_adc_diagram())
+        self._button_adc_canvas.bind("<Configure>", lambda _event: self._schedule_button_adc_diagram())
         adc_panel = self._button_section(middle, "awp1221_button_adc_settings", row=0)
         adc_panel.grid_configure(column=1, sticky="nsew")
         adc_panel.columnconfigure(0, weight=1)
@@ -1350,7 +1350,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         log_frame = self.make_serial_log(extra, height=3, subscribe=True)
         log_frame.grid(row=0, column=0, sticky="ew", pady=(8, 0))
         self.refresh_language()
-        self.after_idle(self._draw_button_rom_preview)
+        self._schedule_button_rom_preview()
 
     def _toggle_communication_log(self) -> None:
         panel = self._communication_log_panel
@@ -1379,9 +1379,26 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         try:
             area._sync_scroll_region()
             if self._communication_log_panel.winfo_manager():
-                self.after_idle(lambda: area.canvas.yview_moveto(1))
+                self._queue_communication_log_scroll()
         finally:
             self._comm_log_syncing = False
+
+    def _queue_communication_log_scroll(self) -> None:
+        if getattr(self, "_comm_log_scroll_job", None) is not None:
+            return
+        def run() -> None:
+            self._comm_log_scroll_job = None
+            try:
+                host = self.host
+                if host is None or not self._communication_log_panel.winfo_manager():
+                    return
+                host.mode_scroll.canvas.yview_moveto(1)
+            except tk.TclError:
+                pass
+        try:
+            self._comm_log_scroll_job = self.after_idle(run)
+        except tk.TclError:
+            self._comm_log_scroll_job = None
 
     def _button_section(self, parent: tk.Misc, key: str, *, row: int) -> ttk.LabelFrame:
         section = ttk.LabelFrame(parent, padding=10)
@@ -1476,18 +1493,49 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             hint.grid_remove()
 
     def _schedule_button_adc_diagram(self) -> None:
-        if getattr(self, "_button_adc_diagram_pending", False):
+        if getattr(self, "_button_adc_diagram_job", None) is not None:
             return
-        self._button_adc_diagram_pending = True
-
         def run() -> None:
-            self._button_adc_diagram_pending = False
-            self._draw_button_adc_diagram()
-
+            self._button_adc_diagram_job = None
+            try:
+                if not self.winfo_ismapped():
+                    return
+                canvas = getattr(self, "_button_adc_canvas", None)
+                if canvas is not None and canvas.winfo_width() <= 1:
+                    retries = getattr(self, "_button_adc_diagram_retries", 0)
+                    if retries < 2:
+                        self._button_adc_diagram_retries = retries + 1
+                        self._schedule_button_adc_diagram()
+                    return
+                self._button_adc_diagram_retries = 0
+                self._draw_button_adc_diagram()
+            except tk.TclError:
+                pass
         try:
-            self.after_idle(run)
+            self._button_adc_diagram_job = self.after_idle(run)
         except tk.TclError:
-            self._button_adc_diagram_pending = False
+            self._button_adc_diagram_job = None
+
+    def _button_adc_diagram_signature(self):
+        canvas = getattr(self, "_button_adc_canvas", None)
+        if canvas is None:
+            return None
+        try:
+            size = (canvas.winfo_width(), canvas.winfo_height())
+        except tk.TclError:
+            return None
+        if size[0] <= 1 or size[1] <= 1:
+            return None
+        stages = tuple(
+            (variables["event_mode"].get(), variables["threshold"].get(), variables["jump_target"].get())
+            for variables in getattr(self, "_button_stage_vars", ())
+        )
+        colors = self.colors
+        return (
+            size, stages, getattr(self, "_visible_button_stage_index", 0),
+            colors.get("primary"), colors.get("canvas_bg"), colors.get("muted"), colors.get("border"),
+            getattr(self, "language", None),
+        )
 
     @staticmethod
     def _signed_threshold_value(text: Any) -> int | None:
@@ -1515,6 +1563,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         canvas = getattr(self, "_button_adc_canvas", None)
         if canvas is None:
             return
+        signature = self._button_adc_diagram_signature()
+        if signature is None or signature == getattr(self, "_button_adc_diagram_drawn", None):
+            return
+        self._button_adc_diagram_drawn = signature
         colors = self.colors
         background = colors.get("canvas_bg", "#FFFFFF")
         primary = colors.get("primary", "#2F6FDE")
@@ -1827,7 +1879,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             height=280,
         )
         self.rom_canvas.grid(row=2, column=0, sticky="nsew")
-        self.rom_canvas.bind("<Configure>", lambda _event: self._draw_button_rom_preview())
+        self.rom_canvas.bind("<Configure>", lambda _event: self._schedule_button_rom_preview())
         self._bind_rom_preview_traces()
         for variable in (self.rom_micro_bias_var, self.rom_vpk_var):
             variable.trace_add("write", lambda *_: self._refresh_waveform_peak_to_peak())
@@ -2587,7 +2639,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self._remember_board_rom()
         self._sync_auto_serial_page_state()
         self._refresh_waveform_controls()
-        self._draw_button_rom_preview()
+        self._schedule_button_rom_preview()
         if snapshot.kind != "sinc" or int(device_addr) != self.device_addr():
             return
         try:
@@ -2861,7 +2913,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self.rom_micro_bias_var,
             self.rom_offset_var,
         ):
-            variable.trace_add("write", lambda *_: self._draw_button_rom_preview())
+            variable.trace_add("write", lambda *_: self._schedule_button_rom_preview())
 
     def _waveform_options(self) -> tuple[str, ...]:
         if self._auto_serial_enabled():
@@ -3032,7 +3084,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._invalidate_sinc_verified()
         self._refresh_sinc_group_hint()
         self._refresh_sinc_match()
-        self._draw_button_rom_preview()
+        self._schedule_button_rom_preview()
 
     def _on_sinc_serial_changed(self) -> None:
         try:
@@ -3065,7 +3117,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._refresh_sinc_window_options()
         self._refresh_sinc_group_hint()
         self._refresh_waveform_controls()
-        self._draw_button_rom_preview()
+        self._schedule_button_rom_preview()
 
     def _sinc_window_options(self, serial: str) -> tuple[str, ...]:
         windows = awp1221_sinc_slice_windows(serial)
@@ -3380,7 +3432,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             write_button.configure(state="normal")
         self._refresh_sinc_window_options()
         self._refresh_sinc_group_hint()
-        self._draw_button_rom_preview()
+        self._schedule_button_rom_preview()
         self._set_selector_row_visible("awp1221_auto_serial", not self._sram_source_selected())
         self._set_selector_row_visible("awp1221_rom_waveform", not self._sram_source_selected())
         if self._sram_source_selected():
@@ -3412,7 +3464,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self.rom_depth_combo.configure(values=options)
         if self.rom_depth_var.get() not in options:
             self.rom_depth_var.set(options[0])
-        self._draw_button_rom_preview()
+        self._schedule_button_rom_preview()
 
     def _trigger_waveform_options(self) -> tuple[str, ...]:
         options = [f"slice{value}" for value in range(AWP1221_WAVEFORM_SLICE_COUNT)]
@@ -3849,9 +3901,67 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         return True
 
+    def _schedule_button_rom_preview(self, *_args) -> None:
+        if getattr(self, "_rom_preview_job", None) is not None:
+            return
+        def run() -> None:
+            self._rom_preview_job = None
+            try:
+                if not self.winfo_ismapped():
+                    return
+                if not hasattr(self, "rom_canvas") or self.rom_canvas.winfo_width() <= 1:
+                    retries = getattr(self, "_rom_preview_retries", 0)
+                    if retries < 2:
+                        self._rom_preview_retries = retries + 1
+                        self._schedule_button_rom_preview()
+                    return
+                self._rom_preview_retries = 0
+                self._draw_button_rom_preview()
+            except tk.TclError:
+                pass
+        try:
+            self._rom_preview_job = self.after_idle(run)
+        except tk.TclError:
+            self._rom_preview_job = None
+
+    def _button_rom_preview_signature(self):
+        canvas = getattr(self, "rom_canvas", None)
+        if canvas is None:
+            return None
+        try:
+            size = (canvas.winfo_width(), canvas.winfo_height())
+        except tk.TclError:
+            return None
+        if size[0] <= 1 or size[1] <= 1:
+            return None
+        colors = getattr(self.ctx, "colors", {})
+        theme = (
+            colors.get("primary"), colors.get("border"), colors.get("canvas_bg"),
+            getattr(self, "language", None), self.mode_key,
+        )
+        if self._sinc_selected():
+            try:
+                plan = self._build_current_sinc_plan()
+            except (TypeError, ValueError, AttributeError) as exc:
+                return ("sinc-error", size, str(exc), theme)
+            return ("sinc", size, plan, theme)
+        try:
+            return (
+                "rom", size, theme,
+                self.rom_waveform_var.get(), self.rom_depth_var.get(), self.rom_point_time_var.get(),
+                self.rom_phase_var.get(), self.rom_half_cycle_var.get(), self.rom_vpk_var.get(),
+                self.rom_micro_bias_var.get(), self.rom_offset_var.get(),
+            )
+        except (AttributeError, tk.TclError):
+            return None
+
     def _draw_button_rom_preview(self) -> None:
         if not hasattr(self, "rom_canvas"):
             return
+        signature = self._button_rom_preview_signature()
+        if signature is None or signature == getattr(self, "_rom_preview_drawn", None):
+            return
+        self._rom_preview_drawn = signature
         if self._sinc_selected():
             self._draw_sinc_preview()
             return
@@ -4843,35 +4953,40 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             for label, _value in self._button_adc_fields:
                 label.bind("<Configure>", reflow, add="+")
 
-    def _queue_button_adc_reflow(self, section: ttk.Frame, *, confirm: bool = False) -> None:
-        if not confirm:
-            self._button_adc_width_retries = 0
+    def _queue_button_adc_reflow(self, section: ttk.Frame, _event: tk.Event | None = None) -> None:
         if getattr(self, "_button_adc_reflow_job", None) is not None or getattr(self, "_button_adc_reflowing", False):
             return
         def run() -> None:
             self._button_adc_reflow_job = None
-            self._reflow_button_adc_settings(section)
+            try:
+                if section.winfo_exists():
+                    self._reflow_button_adc_settings(section)
+            except tk.TclError:
+                pass
         try:
             self._button_adc_reflow_job = self.after_idle(run)
         except tk.TclError:
             self._button_adc_reflow_job = None
 
-    def _button_adc_layout_settled(self) -> bool:
+    def _button_adc_decision_width(self, section: ttk.Frame) -> int:
+        try:
+            width = section.winfo_width()
+        except tk.TclError:
+            return 0
+        if width <= 1:
+            return width
         host = getattr(self, "host", None)
         area = getattr(host, "mode_scroll", None) if host is not None else None
         if area is None:
-            return True
+            return width
         try:
-            if not area.winfo_ismapped():
-                return False
             canvas_width = area.canvas.winfo_width()
             window_width = area._window_item_span("width")
-            natural_width, _height = area._natural_content_size()
         except tk.TclError:
-            return False
-        if canvas_width <= 1 or window_width <= 1 or natural_width <= 1:
-            return False
-        return window_width == max(natural_width, canvas_width)
+            return width
+        if canvas_width > 1 and window_width > canvas_width:
+            return max(1, int(width * canvas_width / window_width))
+        return width
 
     def _reflow_button_adc_settings(self, section: ttk.Frame, *, columns: int | None = None) -> None:
         fields = getattr(self, "_button_adc_fields", ())
@@ -4879,31 +4994,24 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             return
         current = getattr(self, "_button_adc_columns", 0)
         if columns is None:
-            width = section.winfo_width()
-            if width <= 1 or not self._button_adc_layout_settled():
+            width = self._button_adc_decision_width(section)
+            if width <= 1:
+                retries = getattr(self, "_button_adc_size_retries", 0)
+                if retries < 3:
+                    self._button_adc_size_retries = retries + 1
+                    self._queue_button_adc_reflow(section)
                 return
-            seen = getattr(self, "_button_adc_seen_width", None)
-            if seen != width:
-                self._button_adc_seen_width = width
-                retries = getattr(self, "_button_adc_width_retries", 0) + 1
-                self._button_adc_width_retries = retries
-                if retries <= 4:
-                    self._queue_button_adc_reflow(section, confirm=True)
-                return
-            self._button_adc_width_retries = 0
+            self._button_adc_size_retries = 0
             needed = sum(max(label.winfo_reqwidth(), value.winfo_reqwidth()) + 14
                          for label, value in fields)
             wide = len(fields)
             slack = 24
             if current == wide:
                 columns = wide if width + slack >= needed else 3
-            elif current == 3:
-                columns = wide if width >= needed + slack else 3
             else:
-                columns = wide if width >= needed else 3
+                columns = wide if width >= needed + slack else 3
         if columns == current:
             return
-        self._button_adc_seen_width = None
         self._button_adc_reflowing = True
         self._button_adc_columns = columns
         try:
@@ -5299,7 +5407,25 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._adc_detection_device_addr = None
         self._refresh_adc_read_buttons()
 
+    def _cancel_idle_job(self, name: str) -> None:
+        job = getattr(self, name, None)
+        if not job:
+            return
+        try:
+            self.after_cancel(job)
+        except tk.TclError:
+            pass
+        setattr(self, name, None)
+
     def destroy(self) -> None:
+        for name in (
+            "_button_adc_reflow_job",
+            "_comm_log_layout_job",
+            "_comm_log_scroll_job",
+            "_button_adc_diagram_job",
+            "_rom_preview_job",
+        ):
+            self._cancel_idle_job(name)
         self.on_hide()
         try:
             self.ctx.serial.remove_log_listener(self._adc_trigger_log_listener)
@@ -6030,8 +6156,11 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 button.configure(text=self.tr(board_keys.get(key, key)))
             self._refresh_adc_read_buttons()
             self._refresh_sinc_slice_time_labels()
-            self._draw_button_rom_preview()
-            self._draw_button_adc_diagram()
+            self._schedule_button_rom_preview()
+            self._schedule_button_adc_diagram()
+            fields = getattr(self, "_button_adc_fields", ())
+            if fields:
+                self._queue_button_adc_reflow(fields[0][0].master)
             sram_editor = getattr(self, "sram_editor", None)
             if sram_editor is not None:
                 sram_editor.refresh_language()
@@ -6055,7 +6184,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
     def refresh_theme(self) -> None:
         super().refresh_theme()
         self._refresh_adc_bits()
-        self._draw_button_adc_diagram()
+        self._button_adc_diagram_drawn = None
+        self._schedule_button_adc_diagram()
         self._draw_button_en_switch()
         colors = self.ctx.colors
         canvas = getattr(self, "rom_canvas", None)
@@ -6067,7 +6197,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 )
             except tk.TclError:
                 pass
-            self._draw_button_rom_preview()
+            self._rom_preview_drawn = None
+            self._schedule_button_rom_preview()
         editor = getattr(self, "sram_editor", None)
         if editor is not None and hasattr(editor, "refresh_theme"):
             editor.refresh_theme()
@@ -6164,25 +6295,37 @@ class AWP1221Page(BasePage):
     def _install_mode_page(self, _name: str, page: AWP1221ModePage) -> None:
         page.grid(row=0, column=0, sticky="nsew")
         page.grid_remove()
+        if not self.winfo_ismapped():
+            return
         refresh = getattr(self.ctx.app, "_refresh_widget_fonts", None)
         if callable(refresh):
             refresh(page)
 
     def _queue_footer_fit(self, _event=None) -> None:
-        if self._footer_fit_job is None:
+        if self._footer_fit_job is not None:
+            return
+        try:
             self._footer_fit_job = self.after(0, self._fit_footer_height)
+        except tk.TclError:
+            self._footer_fit_job = None
 
     def _fit_footer_height(self) -> None:
         self._footer_fit_job = None
         try:
-            if self.winfo_height() <= 1:
+            height = self.winfo_height()
+            if height <= 1:
                 return
-            available = max(96, int(self.winfo_height() * .35))
-            desired = min(self._footer_panel.winfo_reqheight() + 16, available)
-            if self.footer_scroll.canvas.winfo_reqheight() != desired:
-                self.footer_scroll.canvas.configure(height=desired)
+            footer_req = self._footer_panel.winfo_reqheight()
+            desired = min(footer_req + 16, max(96, int(height * .35)))
+            key = (height, footer_req, desired)
+            if key == getattr(self, "_footer_fit_key", None):
+                return
+            self._footer_fit_key = key
+            canvas = self.footer_scroll.canvas
+            if int(canvas.winfo_reqheight()) != desired:
+                canvas.configure(height=desired)
         except tk.TclError:
-            pass
+            self._footer_fit_key = None
 
     def _build_state_actions(self, parent: ttk.Frame) -> None:
         button_styles = {
@@ -6856,9 +6999,16 @@ class AWP1221Page(BasePage):
         # the new request, then re-run the fill/scroll calculation so Full
         # mode remains reachable after Button mode and vice versa.
         try:
-            self.after(0, self._sync_mode_scroll_layout)
+            job = getattr(self, "_mode_scroll_layout_job", None)
+            if job is not None:
+                self.after_cancel(job)
+            self._mode_scroll_layout_job = self.after(0, self._run_mode_scroll_layout)
         except tk.TclError:
-            pass
+            self._mode_scroll_layout_job = None
+
+    def _run_mode_scroll_layout(self) -> None:
+        self._mode_scroll_layout_job = None
+        self._sync_mode_scroll_layout()
 
     def _sync_mode_scroll_layout(self) -> None:
         try:
@@ -6872,6 +7022,18 @@ class AWP1221Page(BasePage):
         current_page = self.mode_pages.get(self.current_mode)
         if current_page is not None:
             current_page.on_hide()
+
+    def destroy(self) -> None:
+        for name in ("_footer_fit_job", "_mode_scroll_layout_job"):
+            job = getattr(self, name, None)
+            if not job:
+                continue
+            try:
+                self.after_cancel(job)
+            except tk.TclError:
+                pass
+            setattr(self, name, None)
+        super().destroy()
 
     def on_show(self) -> None:
         super().on_show()

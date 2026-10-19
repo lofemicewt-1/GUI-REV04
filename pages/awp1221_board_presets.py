@@ -273,4 +273,4 @@ class AWP1221BoardPresetMixin:
         finally:
             self._board_rom_loading = self._sinc_loading_group = False
         self._refresh_waveform_controls()
-        self._draw_button_rom_preview()
+        self._schedule_button_rom_preview()
