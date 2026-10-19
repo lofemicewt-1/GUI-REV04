@@ -465,8 +465,6 @@ class ButtonModePage(BasePage):
         self._detect_await_adc_busy = False
         self._detect_adc_busy_tries = 0
         self._detect_poll_job: str | None = None
-        self._preset_tooltip: tk.Toplevel | None = None
-        self._preset_tooltip_label: tk.Label | None = None
         self._tooltips: list[SimpleTooltip] = []
 
         self._build_ui()
@@ -952,16 +950,12 @@ class ButtonModePage(BasePage):
         count_var: tk.StringVar,
         waveform_var: tk.StringVar,
     ) -> None:
-        def show(event: tk.Event, cv: tk.StringVar = count_var, wv: tk.StringVar = waveform_var) -> None:
+        def text(cv: tk.StringVar = count_var, wv: tk.StringVar = waveform_var) -> str:
             time_text, freq_text = self._repeat_playback_metrics(cv, wv)
-            self._show_tooltip_text(
-                event,
-                self.tr("repeat_playback_hover_tip").format(time=time_text, freq=freq_text),
-            )
+            return self.tr("repeat_playback_hover_tip").format(time=time_text, freq=freq_text)
 
         for widget in widgets:
-            widget.bind("<Enter>", show, add="+")
-            widget.bind("<Leave>", lambda _event: self._hide_preset_tooltip(), add="+")
+            self._tooltips.append(SimpleTooltip(widget, text))
 
     def _add_combo(self, parent: tk.Misc, row: int, key: str, variable: tk.StringVar, values: list[str]) -> None:
         label = ttk.Label(parent, style="Panel.TLabel")
@@ -996,10 +990,9 @@ class ButtonModePage(BasePage):
             self._set_sense_status_color(self.STATUS_READY_COLOR)
         else:
             self._set_sense_status_color(self.STATUS_IDLE_COLOR)
-        self._refresh_preset_tooltip_theme()
 
     def destroy(self) -> None:
-        self._hide_preset_tooltip()
+        self._hide_tooltips()
         if self._adc_realtime_job is not None:
             try:
                 self.after_cancel(self._adc_realtime_job)
@@ -1015,93 +1008,14 @@ class ButtonModePage(BasePage):
 
     def _bind_action_tooltip(self, button: ttk.Button, button_key: str) -> None:
         tooltip_key = self.ACTION_TOOLTIP_KEYS[button_key]
-        button.bind("<Enter>", lambda event, key=tooltip_key: self._show_action_tooltip(event, key), add="+")
-        button.bind("<Leave>", lambda _event: self._hide_preset_tooltip(), add="+")
-        button.bind("<ButtonPress>", lambda _event: self._hide_preset_tooltip(), add="+")
+        self._tooltips.append(SimpleTooltip(button, lambda key=tooltip_key: self.tr(key)))
 
-    def _show_action_tooltip(self, event: tk.Event, tooltip_key: str) -> None:
-        self._show_tooltip_text(event, self.tr(tooltip_key))
-
-    def _show_preset_tooltip(self, event: tk.Event, preset_index: int) -> None:
-        text = self._software_preset_tooltip_text(preset_index)
-        if not text:
-            return
-        self._show_tooltip_text(event, text)
-
-    def _show_tooltip_text(self, event: tk.Event, text: str) -> None:
-        widget = event.widget
-        try:
-            if isinstance(widget, ttk.Button) and widget.instate(["disabled"]):
-                return
-        except tk.TclError:
-            return
-
-        tooltip = self._ensure_preset_tooltip()
-        if self._preset_tooltip_label is None:
-            return
-        self._preset_tooltip_label.configure(text=text)
-        self._refresh_preset_tooltip_theme()
-
-        try:
-            tooltip.withdraw()
-            tooltip.update_idletasks()
-            x = widget.winfo_rootx()
-            y = widget.winfo_rooty() + widget.winfo_height() + 8
-            width = tooltip.winfo_reqwidth()
-            height = tooltip.winfo_reqheight()
-            screen_width = tooltip.winfo_screenwidth()
-            screen_height = tooltip.winfo_screenheight()
-            x = min(max(8, x), max(8, screen_width - width - 8))
-            if y + height + 8 > screen_height:
-                y = max(8, widget.winfo_rooty() - height - 8)
-            y = min(max(8, y), max(8, screen_height - height - 8))
-            tooltip.geometry(f"+{x}+{y}")
-            tooltip.deiconify()
-            tooltip.lift()
-        except tk.TclError:
-            pass
-
-    def _ensure_preset_tooltip(self) -> tk.Toplevel:
-        if self._preset_tooltip is not None and self._preset_tooltip.winfo_exists():
-            return self._preset_tooltip
-
-        tooltip = tk.Toplevel(self)
-        tooltip.withdraw()
-        tooltip.overrideredirect(True)
-        try:
-            tooltip.attributes("-topmost", True)
-        except tk.TclError:
-            pass
-        label = tk.Label(tooltip, justify="left", padx=10, pady=8, borderwidth=0)
-        label.pack()
-        self._preset_tooltip = tooltip
-        self._preset_tooltip_label = label
-        return tooltip
-
-    def _refresh_preset_tooltip_theme(self) -> None:
-        label = self._preset_tooltip_label
-        tooltip = self._preset_tooltip
-        if label is None or tooltip is None:
-            return
-        try:
-            tooltip.configure(bg=self.colors["border"])
-            label.configure(
-                bg=self.colors["panel"],
-                fg=self.colors["text"],
-                font=("Microsoft YaHei UI", int(getattr(self.winfo_toplevel(), "_piezo_body_font_size", 12))),
-            )
-        except tk.TclError:
-            pass
-
-    def _hide_preset_tooltip(self) -> None:
-        tooltip = self._preset_tooltip
-        if tooltip is None:
-            return
-        try:
-            tooltip.withdraw()
-        except tk.TclError:
-            self._preset_tooltip = None
-            self._preset_tooltip_label = None
+    def _hide_tooltips(self) -> None:
+        for tooltip in self._tooltips:
+            try:
+                tooltip._hide()
+            except tk.TclError:
+                pass
 
     def export_user_preset_script(self) -> None:
         try:
@@ -2472,7 +2386,7 @@ class ButtonModePage(BasePage):
 
     def _set_preset_buttons_state(self, state: str) -> None:
         if state == "disabled":
-            self._hide_preset_tooltip()
+            self._hide_tooltips()
         for index in range(1, 4):
             button = self._buttons.get(f"button_mode_preset_{index}")
             if button is not None:

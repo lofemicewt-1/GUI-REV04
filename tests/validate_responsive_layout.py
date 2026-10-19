@@ -365,7 +365,7 @@ class ResponsiveLayoutValidator:
                 "AWP192x waveform generator",
                 "AWP192x ADC detect",
             ],
-            "static_floating_overlays": ["SimpleTooltip", "AWP192x preset tooltip"],
+            "static_floating_overlays": ["SimpleTooltip"],
         }
 
     def _set_size_and_scale(self, width: int, height: int, scale: float) -> tuple[int, int]:
