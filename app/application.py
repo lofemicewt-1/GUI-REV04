@@ -3916,16 +3916,38 @@ class PiezoApplication:
         mono_size = int(getattr(self.root, "_piezo_mono_font_size", 9))
 
         flags_cache: dict[str, tuple[bool, bool]] = {}
+
         def current_font_flags(widget: tk.Misc) -> tuple[bool, bool]:
             try:
                 spec = widget.cget("font")
                 key = str(spec)
-                if key not in flags_cache:
+                cached = flags_cache.get(key)
+                if cached is not None:
+                    return cached
+                parts = tuple(str(part) for part in self.root.tk.splitlist(spec))
+                flags: tuple[bool, bool] | None = None
+                if len(parts) >= 2:
+                    try:
+                        int(parts[1])
+                    except ValueError:
+                        flags = None
+                    else:
+                        styles = {part.lower() for part in parts[2:]}
+                        flags = ("bold" in styles, "underline" in styles)
+                if flags is None:
                     actual = tkfont.Font(root=self.root, font=spec).actual()
-                    flags_cache[key] = (actual.get("weight") == "bold", bool(actual.get("underline")))
-                return flags_cache[key]
+                    flags = (actual.get("weight") == "bold", bool(actual.get("underline")))
+                flags_cache[key] = flags
+                return flags
             except (tk.TclError, AttributeError):
                 return False, False
+
+        def same_font(widget: tk.Misc, font: tuple[Any, ...]) -> bool:
+            try:
+                parts = tuple(str(part) for part in self.root.tk.splitlist(widget.cget("font")))
+            except (tk.TclError, AttributeError):
+                return False
+            return parts == tuple(str(part) for part in font)
 
         def apply(widget: tk.Misc) -> None:
             try:
@@ -3933,7 +3955,6 @@ class PiezoApplication:
             except Exception:
                 style_name = ""
 
-            bold, underline = current_font_flags(widget)
             font: tuple[Any, ...] | None = None
 
             if isinstance(widget, tk.Text):
@@ -3942,27 +3963,35 @@ class PiezoApplication:
                 if style_name in {"Wordmark.TLabel", "ChipTitle.TLabel"}:
                     font = None
                 elif style_name == "Prominent.TLabel":
+                    _, underline = current_font_flags(widget)
                     prominent_size = int(getattr(self.root, "_piezo_prominent_title_font_size", title_size + 1))
                     font = ("Microsoft YaHei UI", prominent_size, page_title_weight(self.root), *(() if not underline else ("underline",)))
                 elif style_name == "Title.TLabel":
+                    _, underline = current_font_flags(widget)
                     font = ("Microsoft YaHei UI", title_size, page_title_weight(self.root), *(() if not underline else ("underline",)))
                 elif style_name == "PanelTitle.TLabel":
+                    _, underline = current_font_flags(widget)
                     font = ("Microsoft YaHei UI", title_size, "bold", *(() if not underline else ("underline",)))
                 elif style_name == "SectionTitle.TLabel":
+                    _, underline = current_font_flags(widget)
                     font = ("Microsoft YaHei UI", body_size, "bold", *(() if not underline else ("underline",)))
                 elif style_name == "SidebarTitle.TLabel":
+                    _, underline = current_font_flags(widget)
                     sidebar_title_size = int(getattr(self.root, "_piezo_sidebar_title_font_size", title_size))
                     font = ("Microsoft YaHei UI", sidebar_title_size, "bold", *(() if not underline else ("underline",)))
                 elif style_name == "SidebarVersion.TLabel":
                     font = ("Microsoft YaHei UI", small_size)
                 else:
+                    bold, underline = current_font_flags(widget)
                     font = ("Microsoft YaHei UI", body_size, *(("bold",) if bold else ()), *(("underline",) if underline else ()))
             elif isinstance(widget, (tk.Label, tk.Button, tk.Entry, tk.Spinbox, tk.Checkbutton, tk.Radiobutton)):
+                bold, underline = current_font_flags(widget)
                 font = ("Microsoft YaHei UI", body_size, *(("bold",) if bold else ()), *(("underline",) if underline else ()))
             elif isinstance(widget, (ttk.Entry, ttk.Combobox, ttk.Spinbox, ttk.Checkbutton, ttk.Radiobutton)):
+                bold, underline = current_font_flags(widget)
                 font = ("Microsoft YaHei UI", body_size, *(("bold",) if bold else ()), *(("underline",) if underline else ()))
 
-            if font is not None:
+            if font is not None and not same_font(widget, font):
                 try:
                     widget.configure(font=font)
                 except tk.TclError:

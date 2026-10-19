@@ -471,6 +471,33 @@ class FooterSplit(ttk.Frame):
 _CHIP_TITLE_KEYS = {"awp1921_1923", "awp1921", "awp1923", "awp1922", "awp1018", "awp1221"}
 
 
+def _font_probe(root: tk.Misc, family: str, weight: str) -> tkfont.Font:
+    owner = root._root()
+    probes = getattr(owner, "_motion_font_probes", None)
+    if probes is None:
+        probes = owner._motion_font_probes = {}
+    key = (family, weight)
+    probe = probes.get(key)
+    if probe is None:
+        probe = probes[key] = tkfont.Font(root=owner, family=family, size=12, weight=weight)
+    return probe
+
+
+def _font_linespace(root: tk.Misc, family: str, weight: str, size: int) -> int:
+    owner = root._root()
+    scaling = str(root.tk.call("tk", "scaling"))
+    cache = getattr(owner, "_motion_font_linespace_cache", None)
+    if cache is None:
+        cache = owner._motion_font_linespace_cache = {}
+    key = (family, weight, scaling, int(size))
+    hit = cache.get(key)
+    if hit is None:
+        probe = _font_probe(root, family, weight)
+        probe.configure(size=int(size))
+        hit = cache[key] = int(probe.metrics("linespace"))
+    return hit
+
+
 def _font_size_for_pixel_height(root: tk.Misc, family: str, weight: str, target_px: int) -> int:
     owner = root._root()
     cache = getattr(owner, "_motion_font_height_cache", None)
@@ -488,17 +515,43 @@ def _wordmark_width(root: tk.Misc, family: str, size: int, weight: str) -> int:
     if cache is None:
         cache = owner._motion_wordmark_width_cache = {}
     key = (family, size, weight, str(root.tk.call("tk", "scaling")))
-    if key not in cache:
-        cache[key] = tkfont.Font(root=root, family=family, size=size, weight=weight).measure("PIEZO CONTROL")
-    return cache[key]
+    hit = cache.get(key)
+    if hit is None:
+        probe = _font_probe(root, family, weight)
+        probe.configure(size=int(size))
+        hit = cache[key] = int(probe.measure("PIEZO CONTROL"))
+    return hit
+
+
+def _fit_font_size(root: tk.Misc, family: str, weight: str, target: int) -> int | None:
+    ref = _font_linespace(root, family, weight, 12)
+    if ref > target:
+        return 12
+    est = max(12, min(72, int(target * 12 / ref)))
+    steps = 0
+    if _font_linespace(root, family, weight, est) <= target:
+        while est < 72 and _font_linespace(root, family, weight, est + 1) <= target:
+            est += 1
+            steps += 1
+            if steps > 8:
+                return None
+        return est
+    while est > 12 and _font_linespace(root, family, weight, est) > target:
+        est -= 1
+        steps += 1
+        if steps > 8:
+            return None
+    return est
 
 
 def _font_size_for_pixel_height_uncached(root: tk.Misc, family: str, weight: str, target_px: int) -> int:
     target = max(12, int(target_px))
+    fitted = _fit_font_size(root, family, weight, target)
+    if fitted is not None:
+        return fitted
     chosen = 12
     for size in range(12, 73):
-        probe = tkfont.Font(root=root, family=family, size=size, weight=weight)
-        if probe.metrics("linespace") <= target:
+        if _font_linespace(root, family, weight, size) <= target:
             chosen = size
             continue
         break
@@ -760,6 +813,12 @@ class BasePage(ttk.Frame):
             sizer = tk.Frame(header, width=1, highlightthickness=0, bd=0, bg=bg)
             sizer.grid(row=0, column=2, rowspan=3)
             header._chrome_sizer = sizer
+        try:
+            same = int(sizer.cget("height")) == target and str(sizer.cget("bg")) == bg
+        except (tk.TclError, ValueError):
+            same = False
+        if same:
+            return
         sizer.configure(height=target, bg=bg)
 
     def _configure_title_link(self, title: ttk.Label, title_key: str) -> None:
@@ -855,11 +914,18 @@ class BasePage(ttk.Frame):
         size = preferred
         own_row = False
         if available > 0:
-            while size > 16:
-                if _wordmark_width(self.winfo_toplevel(), family, size, weight) <= available:
-                    break
-                size -= 1
-            own_row = _wordmark_width(self.winfo_toplevel(), family, size, weight) > available
+            root = self.winfo_toplevel()
+            if size > 16 and _wordmark_width(root, family, size, weight) > available:
+                lo, hi = 16, size - 1
+                size = 16
+                while lo <= hi:
+                    mid = (lo + hi) // 2
+                    if _wordmark_width(root, family, mid, weight) <= available:
+                        size = mid
+                        lo = mid + 1
+                    else:
+                        hi = mid - 1
+            own_row = _wordmark_width(root, family, size, weight) > available
         text_color = self.ctx.colors.get("text", "#111827")
         key = ("wordmark", height, theme, text_color, size, own_row)
         if getattr(label, "_logo_key", None) == key:
