@@ -56,16 +56,16 @@ def logo_asset(theme: str) -> Path | None:
     return None
 
 
-def scale_photoimage(
-    image: tk.PhotoImage,
+def _photo_target_size(
+    src_w: int,
+    src_h: int,
     *,
     max_width: int | None = None,
     max_height: int | None = None,
     enlarge: float = 1.0,
-) -> tk.PhotoImage:
-    """Scale a PhotoImage with integer zoom/subsample, closer than one subsample step."""
-    src_w = max(1, int(image.width()))
-    src_h = max(1, int(image.height()))
+) -> tuple[int, int]:
+    src_w = max(1, int(src_w))
+    src_h = max(1, int(src_h))
     limit_w = src_w if max_width is None else max(1, int(max_width))
     limit_h = src_h if max_height is None else max(1, int(max_height))
     target_w = src_w
@@ -92,15 +92,15 @@ def scale_photoimage(
         target_w = min(target_w, limit_w)
     if max_height is not None:
         target_h = min(target_h, limit_h)
-    return _resample_photoimage(image, target_w, target_h)
+    return target_w, target_h
 
 
-def _resample_photoimage(image: tk.PhotoImage, target_w: int, target_h: int) -> tk.PhotoImage:
-    src_w = max(1, int(image.width()))
-    src_h = max(1, int(image.height()))
+def _resample_factors(src_w: int, src_h: int, target_w: int, target_h: int) -> tuple[int, int]:
+    src_w = max(1, int(src_w))
+    src_h = max(1, int(src_h))
     scale = min(max(1, target_w) / src_w, max(1, target_h) / src_h)
     if abs(scale - 1.0) < 0.02:
-        return image
+        return 1, 1
     best_n, best_d = 1, 1
     best_err = abs(1.0 - scale)
     for denominator in range(1, 13):
@@ -113,6 +113,54 @@ def _resample_photoimage(image: tk.PhotoImage, target_w: int, target_h: int) -> 
         err = abs((numerator / denominator) - scale)
         if err < best_err - 1e-9 or (abs(err - best_err) <= 1e-9 and numerator + denominator < best_n + best_d):
             best_n, best_d, best_err = numerator, denominator, err
+    if best_n == best_d:
+        return 1, 1
+    return best_n, best_d
+
+
+def photoimage_scale_token(
+    src_w: int,
+    src_h: int,
+    *,
+    max_width: int | None = None,
+    max_height: int | None = None,
+    enlarge: float = 1.0,
+) -> tuple[int, int]:
+    """Quantize a requested size to the zoom/subsample pair scale_photoimage would use."""
+    target_w, target_h = _photo_target_size(
+        src_w,
+        src_h,
+        max_width=max_width,
+        max_height=max_height,
+        enlarge=enlarge,
+    )
+    return _resample_factors(src_w, src_h, target_w, target_h)
+
+
+def scale_photoimage(
+    image: tk.PhotoImage,
+    *,
+    max_width: int | None = None,
+    max_height: int | None = None,
+    enlarge: float = 1.0,
+) -> tk.PhotoImage:
+    """Scale a PhotoImage with integer zoom/subsample, closer than one subsample step."""
+    src_w = max(1, int(image.width()))
+    src_h = max(1, int(image.height()))
+    target_w, target_h = _photo_target_size(
+        src_w,
+        src_h,
+        max_width=max_width,
+        max_height=max_height,
+        enlarge=enlarge,
+    )
+    return _resample_photoimage(image, target_w, target_h)
+
+
+def _resample_photoimage(image: tk.PhotoImage, target_w: int, target_h: int) -> tk.PhotoImage:
+    src_w = max(1, int(image.width()))
+    src_h = max(1, int(image.height()))
+    best_n, best_d = _resample_factors(src_w, src_h, target_w, target_h)
     if best_n == best_d:
         return image
     scaled = image
@@ -332,22 +380,19 @@ def _button_render_tile(root: tk.Misc, source: tk.PhotoImage, border: int) -> tk
     return cache[key]
 
 
-def _configure_rounded_button_styles(
-    root: tk.Misc,
-    style: ttk.Style,
-    theme: str,
-    colors: dict[str, str],
-    selected_center: str,
-    selected_edge: str,
-    scale: float,
-    body_size: int,
-) -> None:
-    # The image border also contributes to the button's content inset.
-    # With a 12 pt label, these insets give ~115 x 43 px (formerly 143 x 55).
+def _selection_palette(theme: str) -> tuple[dict[str, str], str, str, str, str, str]:
+    colors = get_colors(theme)
+    selected_center = colors["primary_hover"]
+    selected_edge = "#1E40AF" if theme != "dark" else "#1E3A8A"
+    sidebar_selected_fill = selected_center if theme != "dark" else "#2871FA"
+    sidebar_selected_edge = selected_edge if theme != "dark" else "#173B70"
+    sidebar_selected_text = "#FFFFFF" if theme != "dark" else "#05070D"
+    return colors, selected_center, selected_edge, sidebar_selected_fill, sidebar_selected_edge, sidebar_selected_text
+
+
+def _build_rounded_button_images(root: tk.Misc, theme: str) -> dict[str, dict[str, tk.PhotoImage]]:
+    colors, selected_center, selected_edge, sidebar_selected_fill, sidebar_selected_edge, _text = _selection_palette(theme)
     radius = 8
-    # Keep the rounded corner and inner shadow out of the repeating edge strips.
-    slice_border = radius + 3
-    image_store = getattr(root, "_rounded_button_images", {})
 
     def make_set(
         surface: str,
@@ -388,26 +433,18 @@ def _configure_rounded_button_styles(
             ),
         }
 
-    sidebar_selected_fill = selected_center if theme != "dark" else "#2871FA"
-    sidebar_selected_edge = selected_edge if theme != "dark" else "#173B70"
-    sidebar_selected_text = "#FFFFFF" if theme != "dark" else "#05070D"
-    if theme not in image_store or "panel" not in image_store[theme]:
-        image_store[theme] = {
-            "panel": make_set(colors["panel"]),
-            "bg": make_set(colors["bg"]),
-            "sidebar": make_set(
-                colors["panel_alt"],
-                selected_fill=sidebar_selected_fill,
-                selected_border=sidebar_selected_edge,
-            ),
-        }
-        setattr(root, "_rounded_button_images", image_store)
-
-    store = image_store[theme]
-    if "sidebar_mode" not in store:
-        store["sidebar_mode"] = store["sidebar"]
-        selected_image = store["sidebar"]["pressed"]
-        store["sidebar_mode_selected"] = {
+    sidebar = make_set(
+        colors["panel_alt"],
+        selected_fill=sidebar_selected_fill,
+        selected_border=sidebar_selected_edge,
+    )
+    selected_image = sidebar["pressed"]
+    return {
+        "panel": make_set(colors["panel"]),
+        "bg": make_set(colors["bg"]),
+        "sidebar": sidebar,
+        "sidebar_mode": sidebar,
+        "sidebar_mode_selected": {
             "normal": selected_image,
             "pressed": selected_image,
             "disabled": _make_rounded_button_image(
@@ -419,7 +456,46 @@ def _configure_rounded_button_styles(
                 radius=radius,
                 shadow=0.0,
             ),
-        }
+        },
+    }
+
+
+def ensure_rounded_button_images(root: tk.Misc, theme: str) -> dict[str, dict[str, tk.PhotoImage]]:
+    image_store = getattr(root, "_rounded_button_images", None)
+    if not isinstance(image_store, dict):
+        image_store = {}
+        setattr(root, "_rounded_button_images", image_store)
+    store = image_store.get(theme)
+    if not isinstance(store, dict) or "panel" not in store or "sidebar_mode_selected" not in store:
+        store = _build_rounded_button_images(root, theme)
+        image_store[theme] = store
+    return store
+
+
+def prebuild_rounded_button_images(root: tk.Misc) -> None:
+    for theme_name in ("light", "dark"):
+        ensure_rounded_button_images(root, theme_name)
+
+
+def _configure_rounded_button_styles(
+    root: tk.Misc,
+    style: ttk.Style,
+    theme: str,
+    colors: dict[str, str],
+    selected_center: str,
+    selected_edge: str,
+    scale: float,
+    body_size: int,
+) -> None:
+    # The image border also contributes to the button's content inset.
+    # With a 12 pt label, these insets give ~115 x 43 px (formerly 143 x 55).
+    radius = 8
+    # Keep the rounded corner and inner shadow out of the repeating edge strips.
+    slice_border = radius + 3
+    sidebar_selected_fill = selected_center if theme != "dark" else "#2871FA"
+    sidebar_selected_edge = selected_edge if theme != "dark" else "#173B70"
+    sidebar_selected_text = "#FFFFFF" if theme != "dark" else "#05070D"
+    store = ensure_rounded_button_images(root, theme)
 
     panel_images = store["panel"]
     bg_images = store["bg"]
@@ -727,14 +803,9 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
     """
     对 ttk 和普通 Tk 组件应用统一主题。
     """
-    colors = get_colors(theme)
+    colors, selected_bg, selected_edge, sidebar_selected_fill, sidebar_selected_edge, sidebar_selected_text = _selection_palette(theme)
     root.winfo_toplevel()._piezo_theme = theme
     title_weight = page_title_weight(root)
-    selected_bg = colors["primary_hover"]
-    selected_edge = "#1E40AF" if theme != "dark" else "#1E3A8A"
-    sidebar_selected_fill = selected_bg if theme != "dark" else "#2871FA"
-    sidebar_selected_edge = selected_edge if theme != "dark" else "#173B70"
-    sidebar_selected_text = "#FFFFFF" if theme != "dark" else "#05070D"
     scale = max(0.75, min(1.35, window_scale))
     base_font_size = max(8, min(18, int(font_size)))
     body_size = max(8, min(24, _scaled(base_font_size, scale)))
@@ -896,6 +967,7 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
         pass
 
     try:
+        prebuild_rounded_button_images(root)
         _configure_rounded_button_styles(
             root,
             style,
