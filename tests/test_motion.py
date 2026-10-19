@@ -169,23 +169,73 @@ class TkMotionTests(unittest.TestCase):
         self.root.destroy()
         self.assertEqual(self.errors, [])
 
-    def test_quick_popdown_close_disable_and_reopen_restore_geometry(self):
-        combo = ttk.Combobox(self.root, values=list(range(20)), state="readonly", height=5)
+    def test_popdown_opens_at_full_height_without_grow(self):
+        combo = ttk.Combobox(self.root, values=[f"v{i}" for i in range(20)], state="readonly", height=5)
         combo.pack()
+        combo.current(0)
         self.root.update()
         call = self.root.tk.call
-        for immediate in (True, False):
-            call("ttk::combobox::Post", str(combo))
-            pump(self.root, 0.02 if immediate else 0.3)
-            self.animator.set_enabled(False)
-            self.micro.reset()
-            path = str(combo)+".popdown"
+        path = str(combo)+".popdown"
+        lb = path+".f.l"
+        heights = []
+
+        def on_configure(event):
+            if str(event.widget) == path:
+                heights.append(int(event.height))
+
+        self.root.bind_class("ComboboxPopdown", "<Configure>", on_configure, add="+")
+
+        def assert_full(expect_top):
+            self.root.update_idletasks()
+            full_h = int(call("winfo", "reqheight", path))
+            shown = int(call("winfo", "height", path))
+            lb_h = int(call("winfo", "reqheight", lb))
+            self.assertGreater(full_h, 8)
+            self.assertGreaterEqual(full_h, lb_h)
+            self.assertLessEqual(full_h - lb_h, 8)
+            self.assertEqual(shown, full_h)
+            self.assertFalse(self.animator.is_running(("popdown", path)))
             self.assertEqual(float(call("wm", "attributes", path, "-alpha")), 1)
             self.assertEqual(str(call("winfo", "manager", path+".f")), "grid")
-            call("ttk::combobox::Unpost", str(combo))
-            self.root.update()
-            self.animator.set_enabled(True)
-        self.assertFalse(self.micro._popdowns)
+            n = int(call(lb, "size"))
+            top = round(float(call(lb, "yview")[0]) * n)
+            self.assertEqual(top, expect_top)
+            self.assertTrue(call(lb, "bbox", expect_top))
+            return full_h
+
+        call("ttk::combobox::Post", str(combo))
+        full = assert_full(0)
+        self.assertTrue(heights)
+        self.assertEqual(heights[0], full)
+        self.assertEqual(set(heights), {full})
+        pump(self.root, 0.25)
+        self.assertEqual(int(call("winfo", "height", path)), full)
+        self.assertEqual(set(heights), {full})
+        self.animator.set_enabled(False)
+        self.micro.reset()
+        self.assertEqual(int(call("winfo", "height", path)), full)
+        self.assertEqual(float(call("wm", "attributes", path, "-alpha")), 1)
+        self.assertEqual(str(call("winfo", "manager", path+".f")), "grid")
+        call("ttk::combobox::Unpost", str(combo))
+        self.root.update()
+        self.animator.set_enabled(True)
+
+        before = list(heights)
+        call("ttk::combobox::Post", str(combo))
+        self.assertEqual(assert_full(0), full)
+        self.assertEqual(heights, before)
+        call("ttk::combobox::Unpost", str(combo))
+        self.root.update()
+
+        combo.current(17)
+        self.root.update()
+        call("ttk::combobox::Post", str(combo))
+        n = int(call(lb, "size"))
+        lines = int(call(lb, "cget", "-height"))
+        self.assertEqual(assert_full(min(17, n - lines)), full)
+        self.assertTrue(call(lb, "bbox", 17))
+        self.assertEqual(set(heights), {full})
+        call("ttk::combobox::Unpost", str(combo))
 
     def test_worker_callback_is_on_main_thread_and_late_post_is_dropped(self):
         import threading

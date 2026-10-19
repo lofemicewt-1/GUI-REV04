@@ -10,8 +10,8 @@ Everything is cheap by construction:
 Items:
   combobox value change  -> 120 ms accent sweep under the field (snap), then
                             120 ms fade back (ease-out)
-  combobox list open     -> 200 ms expand of the popdown (height 35%->100%,
-                            alpha 0->1 where supported), ease-out
+  combobox list open     -> full height immediately (no grow); first-open
+                            view is corrected so the selection is visible
   toggles (check/radio)  -> 60 ms accent pulse on state change
   auxiliary panel        -> 300 ms opacity entrance (ordinary Toplevel only)
   theme switch           -> 450 ms cross-fade of a snapshot of the old theme
@@ -23,7 +23,6 @@ Items:
 from __future__ import annotations
 
 import time
-import re
 import tkinter as tk
 from typing import Callable
 
@@ -58,7 +57,6 @@ class MicroAnimations:
         self._combo_bar = self._bar()
         self._toggle_bar = self._bar()
         self._bindings = []
-        self._popdowns: dict[str, Callable[[], None]] = {}
         self._panels: dict[str, tk.Misc] = {}
         self._closed = False
         self._hover_widget: tk.Misc | None = None
@@ -70,7 +68,6 @@ class MicroAnimations:
             self._bind(cls, "<ButtonRelease-1>", self._on_btn_release, add="+")
         self._bind("TCombobox", "<<ComboboxSelected>>", self._on_combo_selected, add="+")
         self._bind("ComboboxPopdown", "<Map>", self._on_popdown_map, add="+")
-        self._bind("ComboboxPopdown", "<Unmap>", self._on_popdown_unmap, add="+")
         self._bind("Toplevel", "<Map>", self._on_panel_map, add="+")
         self._bind("Toplevel", "<Unmap>", self._on_panel_unmap, add="+")
         self._bind("Toplevel", "<Destroy>", self._on_panel_unmap, add="+")
@@ -85,9 +82,6 @@ class MicroAnimations:
 
     def reset(self) -> None:
         self._hide_all()
-        for path, restore in list(self._popdowns.items()):
-            self.animator.cancel(("popdown", path))
-            restore()
         for path in list(self._panels):
             self.animator.cancel(("panel", path), finish=True)
 
@@ -289,21 +283,6 @@ class MicroAnimations:
         except (tk.TclError, ValueError, TypeError, IndexError):
             pass
 
-    def _on_popdown_unmap(self, event: tk.Event) -> None:
-        """Closed mid-expand: hand the frame back to grid so the next Post's
-        `winfo reqheight` (popdown size) is correct."""
-        path = str(event.widget)
-        call = self.root.tk.call
-        try:
-            if call("winfo", "toplevel", path) != path:
-                return
-            self.animator.cancel(("popdown", path))
-            restore = self._popdowns.get(path)
-            if restore is not None:
-                restore()
-        except tk.TclError:
-            pass
-
     def _on_popdown_map(self, event: tk.Event) -> None:
         path = str(event.widget)
         call = self.root.tk.call
@@ -313,63 +292,6 @@ class MicroAnimations:
         except tk.TclError:
             return
         self._fix_popdown_view(call, path)
-        if not self.animator.enabled:
-            return
-        try:
-            geo = str(call("wm", "geometry", path))
-            match = re.fullmatch(r"(\d+)x(\d+)([+-]\d+)([+-]\d+)", geo)
-            if match is None:
-                return
-            wd, ht, x, y = map(int, match.groups())
-            owner = path.rsplit(".popdown", 1)[0]
-            above = y < int(call("winfo", "rooty", owner))
-        except (tk.TclError, ValueError):
-            return
-        if ht < 8:
-            return
-        stats["popdown"] += 1
-        alpha = True
-        try:
-            call("wm", "attributes", path, "-alpha", 0.0)
-        except tk.TclError:
-            alpha = False
-
-        # Keep the list content at its final size, anchored at the top: only
-        # the toplevel's height grows (window clipping), so items never
-        # reflow or scroll mid-animation.
-        frame = f"{path}.f"
-        pinned = False
-        try:
-            call("grid", "remove", frame)
-            call("place", frame, "-x", 0, "-y", 0, "-relwidth", 1.0, "-height", ht)
-            pinned = True
-        except tk.TclError:
-            pass
-
-        def unpin() -> None:
-            self._popdowns.pop(path, None)
-            try:
-                call("wm", "geometry", path, geo)
-                if alpha:
-                    call("wm", "attributes", path, "-alpha", 1.0)
-                if pinned:
-                    call("place", "forget", frame)
-                    call("grid", frame)
-            except tk.TclError:
-                pass
-        self._popdowns[path] = unpin
-
-        def step(p: float) -> None:
-            try:
-                h = max(1, round(ht * (0.35 + 0.65 * p)))
-                top = y + ht - h if above else y
-                call("wm", "geometry", path, f"{wd}x{h}{x:+d}{top:+d}")
-                if alpha:
-                    call("wm", "attributes", path, "-alpha", min(1.0, 0.2 + 0.8 * p))
-            except tk.TclError:
-                pass
-
-        self.animator.animate(("popdown", path), anim.DUR_BASE, _timed(step), ease=anim.EASE_OUT, done=unpin)
 
     # -- toggles ------------------------------------------------------------
     def _on_toggle_release(self, event: tk.Event) -> None:
