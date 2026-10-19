@@ -43,7 +43,7 @@ from core.base_tool import (
     SerialResponse,
     execute_register_script_operations,
 )
-from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
+from pages.base_page import BasePage, CanvasTitle, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
 from pages.gpio_controls import GpioControlGroup, GpioControlPanel, active_serial_identity
 from styles.fonts import page_title_weight
 
@@ -6029,7 +6029,7 @@ class AWP1018ReservedModePage(BasePage):
         panel.grid(row=0, column=0, sticky="nsew")
         panel.columnconfigure(0, weight=1)
 
-        self.title_label = ttk.Label(panel, style="Prominent.TLabel")
+        self.title_label = CanvasTitle(panel, style="Prominent.TLabel")
         self.title_label.grid(row=0, column=0, sticky="w")
 
         self.hint_label = ttk.Label(panel, style="Muted.TLabel", wraplength=720)

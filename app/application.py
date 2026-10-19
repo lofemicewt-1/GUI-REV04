@@ -4019,18 +4019,40 @@ class PiezoApplication:
             self.navigation.refresh_theme()
             if refresh_widget_fonts:
                 self._refresh_widget_fonts()
-            if applying_theme and nav is not None:
-                try:
-                    self.root.update_idletasks()
-                except tk.TclError:
-                    pass
         finally:
             if applying_theme and nav is not None:
-                nav._suspend_brand_configure = False
-                try:
-                    nav._redraw_sidebar_brand()
-                except tk.TclError:
-                    pass
+                self._schedule_brand_settle(nav)
+
+    def _schedule_brand_settle(self, nav: Any) -> None:
+        pending = getattr(self, "_brand_settle_after", None)
+        if pending is not None:
+            try:
+                self.root.after_cancel(pending)
+            except tk.TclError:
+                pass
+            self._brand_settle_after = None
+        self._brand_settle_gen = int(getattr(self, "_brand_settle_gen", 0)) + 1
+        generation = self._brand_settle_gen
+
+        def settle() -> None:
+            if getattr(self, "_brand_settle_gen", None) != generation:
+                return
+            self._brand_settle_after = None
+            nav._suspend_brand_configure = False
+            try:
+                nav._redraw_sidebar_brand()
+            except tk.TclError:
+                pass
+
+        try:
+            self._brand_settle_after = self.root.after_idle(settle)
+        except tk.TclError:
+            self._brand_settle_after = None
+            nav._suspend_brand_configure = False
+            try:
+                nav._redraw_sidebar_brand()
+            except tk.TclError:
+                pass
 
     def _on_root_configure(self, event: tk.Event) -> None:
         if event.widget is not self.root:

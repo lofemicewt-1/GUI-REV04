@@ -43,7 +43,7 @@ from core.base_tool import (
     parse_register_script,
     run_async_write,
 )
-from pages.base_page import BasePage, SimpleTooltip
+from pages.base_page import BasePage, CanvasTitle, SimpleTooltip
 from pages.awp1221_board_presets import AWP1221BoardPresetMixin
 from pages.awp1221_realtime_sram import (
     AWP1221RealtimeMixin,
@@ -1178,8 +1178,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         header = ttk.Frame(self, style="App.TFrame")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         header.columnconfigure(1, weight=1)
-        self.mode_title_label = ttk.Label(header, style="Prominent.TLabel")
+        self.mode_title_label = CanvasTitle(header, style="Prominent.TLabel")
         self.mode_title_label.grid(row=0, column=0, sticky="w")
+        self.bind_text(self.mode_title_label, self.mode_key)
 
         preset_frame = ttk.Frame(header, style="App.TFrame")
         preset_frame.grid(row=0, column=1, sticky="ew", padx=(24, 0))
@@ -2261,8 +2262,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         header.columnconfigure(1, weight=1)
 
-        self.mode_title_label = ttk.Label(header, style="Prominent.TLabel")
+        self.mode_title_label = CanvasTitle(header, style="Prominent.TLabel")
         self.mode_title_label.grid(row=0, column=0, sticky="w")
+        self.bind_text(self.mode_title_label, self.mode_key)
 
         preset_frame = ttk.Frame(header, style="App.TFrame")
         preset_frame.grid(row=0, column=1, sticky="ew", padx=(24, 0))
