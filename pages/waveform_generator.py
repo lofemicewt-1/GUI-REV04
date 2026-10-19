@@ -345,7 +345,10 @@ class WaveformGeneratorPage(BasePage):
         for var in [*self.serial_slice_vars, *self.serial_repeat_vars]:
             var.trace_add("write", lambda *_: self._on_serial_param_changed())
 
-        self.canvas.bind("<Configure>", lambda _event: self._redraw_active_plot())
+        self._plot_redraw_job: str | None = None
+        self._plot_drawn_size: tuple[int, int] | None = None
+        self.canvas.bind("<Configure>", self._queue_plot_redraw)
+        self.bind("<Destroy>", self._cancel_plot_redraw, add="+")
 
         self.refresh_language()
         self._update_waveform_specific_fields()
@@ -916,14 +919,48 @@ class WaveformGeneratorPage(BasePage):
         skip_index_table = waveform_type == "imported" and self._imported_values is not None and len(self._imported_values) >= self.SRAM_DISPLAY_POINTS
         self._draw_plot(self._make_address_voltages(voltages, start_addr, values=values, skip_index_table=skip_index_table))
 
-    def _redraw_active_plot(self) -> None:
-        if self.waveform_type_var.get() == "serial":
-            self._preview_serial_waveform()
+    def _cancel_plot_redraw(self, event: tk.Event | None = None) -> None:
+        if event is not None and event.widget is not self:
             return
-        if self._plot_mode == "chip" and self._chip_voltages:
-            self._draw_plot(self._chip_voltages)
-        else:
-            self._preview_waveform()
+        job = self._plot_redraw_job
+        self._plot_redraw_job = None
+        if job is None:
+            return
+        try:
+            self.after_cancel(job)
+        except tk.TclError:
+            pass
+
+    def _queue_plot_redraw(self, _event: tk.Event | None = None) -> None:
+        if self._plot_redraw_job is not None:
+            try:
+                self.after_cancel(self._plot_redraw_job)
+            except tk.TclError:
+                pass
+            self._plot_redraw_job = None
+        try:
+            self._plot_redraw_job = self.after(16, self._redraw_active_plot)
+        except tk.TclError:
+            self._plot_redraw_job = None
+
+    def _redraw_active_plot(self) -> None:
+        self._plot_redraw_job = None
+        try:
+            if not self.canvas.winfo_exists():
+                return
+            size = (int(self.canvas.winfo_width()), int(self.canvas.winfo_height()))
+        except tk.TclError:
+            return
+        if size[0] <= 1 or size[1] <= 1 or size == self._plot_drawn_size:
+            return
+        if self.waveform_type_var.get() == "serial":
+            self._draw_serial_plot(self._serial_preview_segments())
+            return
+        samples = getattr(self, "_last_plot_samples", None)
+        if samples:
+            self._draw_plot(samples)
+            return
+        self._preview_waveform()
 
     def show_current_waveform(self) -> None:
         self._plot_mode = "current"
@@ -1012,6 +1049,7 @@ class WaveformGeneratorPage(BasePage):
                 text=self.tr("serial_preview_empty"),
                 fill=colors["muted"],
             )
+            self._plot_drawn_size = (width, height)
             return
 
         point_offset = 0
@@ -1048,6 +1086,7 @@ class WaveformGeneratorPage(BasePage):
 
         if len(line_points) >= 4:
             canvas.create_line(*line_points, fill=colors["primary"], width=2, smooth=False)
+        self._plot_drawn_size = (width, height)
 
     def _safe_start_addr(self) -> int:
         try:
@@ -1075,6 +1114,7 @@ class WaveformGeneratorPage(BasePage):
         return samples
 
     def _draw_plot(self, voltages: list[float | None]) -> None:
+        self._last_plot_samples = voltages
         canvas = self.canvas
         canvas.delete("all")
 
@@ -1122,6 +1162,7 @@ class WaveformGeneratorPage(BasePage):
             elif len(pts) == 2:
                 x, y = pts
                 canvas.create_oval(x - 3, y - 3, x + 3, y + 3, fill=colors["primary"], outline="")
+        self._plot_drawn_size = (w, h)
 
     def _draw_allocated_ranges(self, canvas: tk.Canvas, axis_x: float, top: float, height: float) -> None:
         colors = self.colors
