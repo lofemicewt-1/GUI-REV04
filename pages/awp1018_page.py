@@ -45,6 +45,7 @@ from core.base_tool import (
 )
 from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
 from pages.gpio_controls import GpioControlGroup, GpioControlPanel, active_serial_identity
+from styles.fonts import page_title_weight
 
 
 class AWP1018Page(BasePage):
@@ -138,6 +139,10 @@ class AWP1018Page(BasePage):
     def _install_mode_page(self, _name: str, page: ttk.Frame) -> None:
         page.grid(row=0, column=0, sticky="nsew")
         page.grid_remove()
+        restore = getattr(page, "_restore_scaled_fonts", None)
+        if callable(restore):
+            restore()
+            return
         refresh = getattr(self.ctx.app, "_refresh_widget_fonts", None)
         if callable(refresh):
             refresh(page)
@@ -1115,6 +1120,11 @@ class AWP1018NormalModePage(BasePage):
         self._board_preset_buttons: dict[str, ttk.Button] = {}
         self._board_preset_result_queue: queue.Queue[tuple[str, str, Any]] = queue.Queue()
         self._board_preset_poll_active = False
+        self._rom_draw_job: str | None = None
+        self._rom_drawing = False
+        self._rom_painted_size: tuple[int, int] | None = None
+        self._rom_draw_retries = 0
+        self._sinc_segment_cache: tuple[Any, list] | None = None
 
         self._build_ui()
         self.ctx.serial.add_log_listener(self._handle_serial_status_log)
@@ -1284,7 +1294,7 @@ class AWP1018NormalModePage(BasePage):
         log_frame = self.make_serial_log(right, height=7, subscribe=True)
         log_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
 
-        self.rom_waveform_var.trace_add("write", lambda *_: self._draw_rom_waveform())
+        self.rom_waveform_var.trace_add("write", self._queue_rom_waveform_draw)
         self.rom_waveform_var.trace_add("write", lambda *_: self._refresh_rom_depth_options())
         for var in (
             self.rom_depth_var,
@@ -1302,7 +1312,7 @@ class AWP1018NormalModePage(BasePage):
             self.diff_single_waveform_var,
             *self.diff_serial4_segment_vars,
         ):
-            var.trace_add("write", lambda *_: self._draw_rom_waveform())
+            var.trace_add("write", self._queue_rom_waveform_draw)
         if self.diff_mode:
             self.diff_serial_var.trace_add("write", lambda *_: self._refresh_diff_slice_group_options())
             self.diff_serial_var.trace_add("write", lambda *_: self._refresh_diff_waveform_controls())
@@ -1313,11 +1323,11 @@ class AWP1018NormalModePage(BasePage):
         self.adc_sample_update_var.trace_add("write", lambda *_: self._on_adc_sample_update_changed())
         self.return_bit_time_var.trace_add("write", lambda *_: self._on_return_bit_config_changed())
         self.dac_sample_rate_var.trace_add("write", lambda *_: self._on_dac_sample_rate_changed())
-        self.rom_canvas.bind("<Configure>", lambda _event: self._draw_rom_waveform())
+        self.rom_canvas.bind("<Configure>", self._on_rom_canvas_configure)
 
         self.refresh_language()
         self._show_stage("Stage0")
-        self._draw_rom_waveform()
+        self._queue_rom_waveform_draw()
 
     def _build_stage_selector(self, parent: tk.Misc, row: int) -> None:
         frame = ttk.Frame(parent, style="Panel.TFrame")
@@ -2413,8 +2423,8 @@ class AWP1018NormalModePage(BasePage):
             self.diff_play_hint_label.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(8, 0))
 
             self._build_rom_preview(parent)
-            self._refresh_rom_depth_options()
             self._refresh_diff_waveform_controls()
+            self._refresh_rom_depth_options()
             return
 
         self._add_selector_combo(
@@ -2596,7 +2606,7 @@ class AWP1018NormalModePage(BasePage):
         self.rom_depth_combo.configure(values=options)
         if current not in options:
             self.rom_depth_var.set(options[0])
-        self._draw_rom_waveform()
+        self._queue_rom_waveform_draw()
 
     def _diff_sinc_slice_group_options(self) -> list[str]:
         serial = self.diff_serial_var.get()
@@ -2678,9 +2688,10 @@ class AWP1018NormalModePage(BasePage):
 
     def _set_selector_row_visible(self, key: str, visible: bool) -> None:
         for widget in self._selector_widgets.get(key, []):
-            if visible:
+            managed = bool(widget.winfo_manager())
+            if visible and not managed:
                 widget.grid()
-            else:
+            elif not visible and managed:
                 widget.grid_remove()
 
     def _serial4_end_option(self) -> str:
@@ -3994,6 +4005,22 @@ class AWP1018NormalModePage(BasePage):
         return t1, t2, t3
 
     def _diff_sinc_actual_segments(self) -> list[tuple[int, int, float, int, float]]:
+        try:
+            cache_key = (
+                self.diff_sinc_max_voltage_var.get(),
+                self.diff_sinc_min_voltage_var.get(),
+            )
+        except Exception:
+            cache_key = None
+        cached = getattr(self, "_sinc_segment_cache", None)
+        if cache_key is not None and cached is not None and cached[0] == cache_key:
+            return cached[1]
+        segments = self._compute_diff_sinc_actual_segments()
+        if cache_key is not None:
+            self._sinc_segment_cache = (cache_key, segments)
+        return segments
+
+    def _compute_diff_sinc_actual_segments(self) -> list[tuple[int, int, float, int, float]]:
         max_voltage, min_voltage, _t1, _t2, _t3, _depth = self._diff_sinc_params()
         signed_min = -abs(min_voltage)
 
@@ -5042,15 +5069,146 @@ class AWP1018NormalModePage(BasePage):
             values.append(max(-95.0, min(95.0, value)))
         return values
 
+    def _cancel_rom_draw_job(self) -> None:
+        job = getattr(self, "_rom_draw_job", None)
+        if job is None:
+            return
+        try:
+            self.after_cancel(job)
+        except tk.TclError:
+            pass
+        self._rom_draw_job = None
+
+    def _queue_rom_waveform_draw(self, *_args) -> None:
+        if getattr(self, "_rom_drawing", False) or getattr(self, "_rom_draw_job", None) is not None:
+            return
+        try:
+            self._rom_draw_job = self.after_idle(self._run_queued_rom_waveform_draw)
+        except tk.TclError:
+            self._rom_draw_job = None
+
+    def _run_queued_rom_waveform_draw(self) -> None:
+        self._rom_draw_job = None
+        canvas = getattr(self, "rom_canvas", None)
+        if canvas is None:
+            return
+        try:
+            width = int(canvas.winfo_width())
+            height = int(canvas.winfo_height())
+            mapped = bool(canvas.winfo_ismapped())
+        except tk.TclError:
+            return
+        if width <= 1 or height <= 1:
+            retries = getattr(self, "_rom_draw_retries", 0)
+            if mapped and retries < 4:
+                self._rom_draw_retries = retries + 1
+                self._queue_rom_waveform_draw()
+            return
+        self._rom_draw_retries = 0
+        self._draw_rom_waveform()
+
+    def _on_rom_canvas_configure(self, event: tk.Event) -> None:
+        if getattr(self, "_rom_drawing", False):
+            return
+        canvas = getattr(self, "rom_canvas", None)
+        if event.widget is not canvas:
+            return
+        try:
+            size = (int(event.width), int(event.height))
+        except (TypeError, ValueError, tk.TclError):
+            size = None
+        if size and size[0] > 1 and size[1] > 1 and size == getattr(self, "_rom_painted_size", None):
+            return
+        self._queue_rom_waveform_draw()
+
+    def _restore_scaled_fonts(self) -> None:
+        root = self.winfo_toplevel()
+        body = int(getattr(root, "_piezo_body_font_size", 12))
+        prominent = int(getattr(root, "_piezo_prominent_title_font_size", body + 9))
+        title = int(getattr(root, "_piezo_title_font_size", body + 8))
+        mono = int(getattr(root, "_piezo_mono_font_size", 9))
+        small = max(7, body - 1)
+        sidebar = int(getattr(root, "_piezo_sidebar_title_font_size", title))
+        weight = page_title_weight(root)
+        family = "Microsoft YaHei UI"
+
+        def desired(widget: tk.Misc) -> tuple[Any, ...] | None:
+            if isinstance(widget, tk.Text):
+                return ("Consolas", mono)
+            if isinstance(widget, tk.Label):
+                spec = str(widget.cget("font"))
+                parts: list[Any] = [family, body]
+                if "bold" in spec:
+                    parts.append("bold")
+                if "underline" in spec:
+                    parts.append("underline")
+                return tuple(parts)
+            if not isinstance(widget, ttk.Widget):
+                return None
+            style = str(widget.cget("style"))
+            underline = "underline" in str(widget.cget("font"))
+            font: tuple[Any, ...] | None = None
+            if style == "Prominent.TLabel":
+                font = (family, prominent, weight)
+            elif style == "Title.TLabel":
+                font = (family, title, weight)
+            elif style == "PanelTitle.TLabel":
+                font = (family, title, "bold")
+            elif style == "SectionTitle.TLabel":
+                font = (family, body, "bold")
+            elif style == "SidebarTitle.TLabel":
+                font = (family, sidebar, "bold")
+            elif style == "SidebarVersion.TLabel":
+                font = (family, small)
+            if font is not None and underline:
+                font = font + ("underline",)
+            return font
+
+        def unchanged(widget: tk.Misc, font: tuple[Any, ...]) -> bool:
+            current = str(widget.cget("font")).replace("{", "").replace("}", "")
+            return current.split() == [str(part) for part in font]
+
+        def walk(widget: tk.Misc) -> None:
+            font = None
+            try:
+                font = desired(widget)
+            except tk.TclError:
+                font = None
+            if font is not None:
+                try:
+                    if not unchanged(widget, font):
+                        widget.configure(font=font)
+                except tk.TclError:
+                    pass
+            for child in widget.winfo_children():
+                walk(child)
+
+        walk(self)
+
     def _draw_rom_waveform(self) -> None:
+        self._cancel_rom_draw_job()
         self._update_rom_metrics()
         if not hasattr(self, "rom_canvas"):
             return
-
         canvas = self.rom_canvas
+        try:
+            width = int(canvas.winfo_width())
+            height = int(canvas.winfo_height())
+        except tk.TclError:
+            return
+        if width <= 1 or height <= 1:
+            self._queue_rom_waveform_draw()
+            return
+        self._rom_drawing = True
+        try:
+            self._paint_rom_waveform(canvas, width, height)
+            self._rom_painted_size = (width, height)
+            self._rom_draw_retries = 0
+        finally:
+            self._rom_drawing = False
+
+    def _paint_rom_waveform(self, canvas: tk.Canvas, w: int, h: int) -> None:
         canvas.delete("all")
-        w = max(1, canvas.winfo_width())
-        h = max(1, canvas.winfo_height())
         pad_l, pad_r, pad_t, pad_b = 48, 20, 24, 54
         plot_w = max(1, w - pad_l - pad_r)
         plot_h = max(1, h - pad_t - pad_b)
@@ -5164,6 +5322,7 @@ class AWP1018NormalModePage(BasePage):
         )
 
     def destroy(self) -> None:
+        self._cancel_rom_draw_job()
         if self.diff_mode:
             self._stop_diff_status_monitor()
         try:
@@ -5409,7 +5568,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         )
 
     def _bind_full_mode_traces(self) -> None:
-        self.rom_waveform_var.trace_add("write", lambda *_: self._draw_rom_waveform())
+        self.rom_waveform_var.trace_add("write", self._queue_rom_waveform_draw)
         self.rom_waveform_var.trace_add("write", lambda *_: self._refresh_rom_depth_options())
         for var in (
             self.rom_depth_var,
@@ -5427,14 +5586,14 @@ class AWP1018FullModePage(AWP1018NormalModePage):
             self.diff_single_waveform_var,
             *self.diff_serial4_segment_vars,
         ):
-            var.trace_add("write", lambda *_: self._draw_rom_waveform())
+            var.trace_add("write", self._queue_rom_waveform_draw)
         self.zero_time_var.trace_add("write", lambda *_: self._on_zero_time_changed())
         self.debounce_time_var.trace_add("write", lambda *_: self._on_debounce_time_changed())
         self.adc_sample_update_var.trace_add("write", lambda *_: self._on_adc_sample_update_changed())
         self.return_bit_time_var.trace_add("write", lambda *_: self._on_return_bit_config_changed())
         self.dac_sample_rate_var.trace_add("write", lambda *_: self._on_dac_sample_rate_changed())
         if hasattr(self, "rom_canvas"):
-            self.rom_canvas.bind("<Configure>", lambda _event: self._draw_rom_waveform())
+            self.rom_canvas.bind("<Configure>", self._on_rom_canvas_configure)
 
     def open_rom_selector_window(self) -> None:
         if self._rom_selector_window is not None and self._rom_selector_window.winfo_exists():
@@ -5481,7 +5640,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         }
 
         if hasattr(self, "rom_canvas"):
-            self.rom_canvas.bind("<Configure>", lambda _event: self._draw_rom_waveform())
+            self.rom_canvas.bind("<Configure>", self._on_rom_canvas_configure)
         self.refresh_language()
         self._refresh_rom_depth_options()
         self._draw_rom_waveform()
