@@ -744,7 +744,13 @@ class ButtonModePage(BasePage):
         adc_trigger_btn.grid(row=0, column=2, sticky="ew")
         self._buttons["adc_read_on_trigger"] = adc_trigger_btn
 
-        self.waveform_page = WaveformGeneratorPage(right, self.ctx, embedded=True, storage=self.storage)
+        self.waveform_page = WaveformGeneratorPage(
+            right,
+            self.ctx,
+            embedded=True,
+            storage=self.storage,
+            slice_readout_width=8,
+        )
         self.waveform_page.grid(row=0, column=0, sticky="nsew")
         self.waveform_page.metrics_revision_var.trace_add(
             "write",
