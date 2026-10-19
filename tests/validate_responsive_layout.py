@@ -188,7 +188,7 @@ def _scroll_area_snapshot(area: tk.Misc) -> dict[str, Any]:
     }
 
 
-def _capture_window_bmp(root: tk.Tk, path: Path) -> str | None:
+def _capture_window_bmp(root: tk.Tk, path: Path, *, include_layers: bool = True) -> str | None:
     """Capture the real top-level client window using Windows GDI.
 
     Pillow is deliberately not a dependency of this GUI.  A small ctypes
@@ -240,7 +240,8 @@ def _capture_window_bmp(root: tk.Tk, path: Path) -> str | None:
         return "CreateCompatibleBitmap failed"
     old_bitmap = gdi32.SelectObject(memory_dc, bitmap)
     try:
-        if not gdi32.BitBlt(memory_dc, 0, 0, width, height, window_dc, 0, 0, 0x00CC0020 | 0x40000000):
+        raster_op = 0x00CC0020 | (0x40000000 if include_layers else 0)
+        if not gdi32.BitBlt(memory_dc, 0, 0, width, height, window_dc, 0, 0, raster_op):
             return "BitBlt failed"
         info = BITMAPINFO()
         info.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)

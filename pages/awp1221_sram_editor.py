@@ -60,20 +60,31 @@ class AWP1221SramEditor(BasePage):
         self._sram_narrow = False
         self._sram_reflowing = False
         scroll.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        scroll.canvas.configure(width=285)
+        scroll.horizontal = False
+        scroll.canvas.configure(width=335)
         controls.columnconfigure(0, weight=1)
         plot = self._sram_plot = ttk.Frame(self, style="Panel.TFrame")
         plot.grid(row=0, column=1, sticky="nsew")
         plot.columnconfigure(0, weight=1)
         plot.rowconfigure(2, weight=1)
-        ttk.Label(plot, textvariable=self.rom_metric_var, style="Muted.TLabel", wraplength=320).grid(row=0, column=0, sticky="w")
-        ttk.Label(plot, textvariable=self.rom_frequency_var, style="Muted.TLabel", wraplength=320).grid(row=1, column=0, sticky="w")
+        self._sram_metric_label = ttk.Label(plot, textvariable=self.rom_metric_var, style="Muted.TLabel", wraplength=560)
+        self._sram_metric_label.grid(row=0, column=0, sticky="w")
+        self._sram_frequency_label = ttk.Label(plot, textvariable=self.rom_frequency_var, style="Muted.TLabel", wraplength=560)
+        self._sram_frequency_label.grid(row=1, column=0, sticky="w")
         self.rom_canvas = tk.Canvas(plot, width=320, height=280, highlightthickness=0, background=self.colors["panel"])
         self.rom_canvas.grid(row=2, column=0, sticky="nsew")
         self._init_sram_editor(controls)
         self._sram_frame.grid()
         self.rom_canvas.bind("<Configure>", lambda _event: self._draw_sram_waveform())
+        plot.bind("<Configure>", self._sync_sram_plot_wraplength, add="+")
         self.bind("<Configure>", self._sync_sram_editor_layout, add="+")
+
+    def _sync_sram_plot_wraplength(self, _event=None) -> None:
+        if not hasattr(self, "_sram_plot"):
+            return
+        plot_wrap = max(320, self._sram_plot.winfo_width() - 8)
+        self._sram_metric_label.configure(wraplength=plot_wrap)
+        self._sram_frequency_label.configure(wraplength=plot_wrap)
 
     def _device_addr(self):
         return self.owner.device_addr()
@@ -123,6 +134,7 @@ class AWP1221SramEditor(BasePage):
                 form_height = max(110, min(220, height // 2))
                 if int(float(self._sram_scroll.canvas.cget("height"))) != form_height:
                     self._sram_scroll.canvas.configure(height=form_height)
+            self._sync_sram_plot_wraplength()
         finally:
             self._sram_reflowing = False
 
@@ -209,6 +221,13 @@ class AWP1221SramEditor(BasePage):
         self._sram_progress.grid(row=15, column=0, columnspan=2, sticky="ew", pady=4)
         self._sram_progress.grid_remove()
         frame.grid_remove()
+        if getattr(self.owner, "mode_key", None) == "button_mode":
+            self._sram_auto_serial = ttk.Checkbutton(
+                controls,
+                variable=self.owner.auto_serial_var,
+                command=self.owner._on_auto_serial_changed,
+            )
+            self._sram_auto_serial.grid(row=0, column=0, sticky="w", pady=(0, 8))
         self.rom_canvas.bind("<ButtonPress-1>", self._sram_press, add="+")
         self.rom_canvas.bind("<B1-Motion>", self._sram_drag, add="+")
         self.rom_canvas.bind("<ButtonRelease-1>", self._sram_release, add="+")
@@ -232,6 +251,14 @@ class AWP1221SramEditor(BasePage):
             "为满足压缩要求，实际点数可能增加",
             "Actual point count may increase to satisfy compression"))
         self._sram_start_label.configure(text=self._sram_text("数据起始地址", "Data start address"))
+        auto_serial = getattr(self, "_sram_auto_serial", None)
+        translator = getattr(self.owner, "tr", None)
+        if auto_serial is not None and callable(translator):
+            auto_serial.configure(text=translator("awp1221_auto_serial"))
+        if hasattr(self, "_sram_plot"):
+            plot_wrap = max(560, self._sram_plot.winfo_width() - 8)
+            self._sram_metric_label.configure(wraplength=plot_wrap)
+            self._sram_frequency_label.configure(wraplength=plot_wrap)
         self._refresh_ratio_labels()
         if self.rom_waveform_var.get() == "SRAM":
             self._draw_sram_waveform()

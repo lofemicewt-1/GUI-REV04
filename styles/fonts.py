@@ -40,7 +40,10 @@ def register_bundled_fonts() -> None:
 
 def sidebar_brand_font_spec(root: Any) -> tuple[str, str]:
     register_bundled_fonts()
-    families = set(tkfont.families(root))
+    owner = root._root()
+    families = getattr(owner, "_motion_font_families", None)
+    if families is None:
+        families = owner._motion_font_families = frozenset(tkfont.families(root))
     if "JetBrains Mono ExtraBold" in families:
         return ("JetBrains Mono ExtraBold", "normal")
     if "JetBrains Mono" in families:
@@ -49,3 +52,8 @@ def sidebar_brand_font_spec(root: Any) -> tuple[str, str]:
         if name in families:
             return (name, "bold")
     return ("Courier", "bold")
+
+
+def page_title_weight(root: Any) -> str:
+    """Tk supports normal/bold only; lighten large titles for the dark theme."""
+    return "normal" if getattr(root.winfo_toplevel(), "_piezo_theme", "light") == "dark" else "bold"

@@ -13,7 +13,9 @@ PROTOCOL_REVISION = "REV04"
 REGISTER_DATA_WIDTHS = (8, 16)
 RREGW_MAX_VALUES = {8: 32, 16: 16}
 WREGW_MAX_VALUES = {8: 10, 16: 5}
-ALLOWED_I2C_SPEEDS = (100000, 400000)
+ALLOWED_I2C_SPEEDS = (
+    100000, 400000, 500000, 615385, 666667, 727273, 800000,
+)
 I2C_ADDRESS_NACK_RETRY_DELAY_S = 0.002
 GPIO_MODE_HIGH = "HIGH"
 GPIO_MODE_LOW = "LOW"
@@ -545,7 +547,7 @@ def parse_freq_response(text: str) -> FreqAck:
 def build_set_i2c_speed_command(speed_hz: int) -> str:
     speed = int(speed_hz)
     if speed not in ALLOWED_I2C_SPEEDS:
-        raise ValueError("I2C speed must be 100000 or 400000")
+        raise ValueError("I2C speed must be one of: " + ", ".join(map(str, ALLOWED_I2C_SPEEDS)))
     return f"I2CSPD {speed}"
 
 
@@ -876,9 +878,13 @@ def read_frequency(transport: CommandTransport) -> SerialResponse:
 
 
 def set_i2c_speed(transport: CommandTransport, speed_hz: int) -> SerialResponse:
-    return _firmware_error_response(
-        transport(build_set_i2c_speed_command(speed_hz), expect_response=True)
+    command = build_set_i2c_speed_command(speed_hz)
+    response = _firmware_error_response(
+        transport(command, expect_response=True)
     )
+    if response.ok and _normalized_frame(response.data) != command:
+        return _unexpected_response(response, "I2C speed acknowledgement does not match request")
+    return response
 
 
 def read_i2c_speed(transport: CommandTransport) -> SerialResponse:

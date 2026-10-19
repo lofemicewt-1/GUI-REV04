@@ -5,7 +5,11 @@ import tkinter as tk
 import webbrowser
 from tkinter import font as tkfont
 from tkinter import ttk
-from typing import Any
+from typing import Any, Callable
+
+from core import animation as anim
+from core.lazy_pages import LazyPages
+from app.sidebar_motion import SidebarMotion
 
 from config.app_info import APP_VERSION, USER_GUIDE_URL
 from config.languages import t
@@ -106,14 +110,18 @@ class Navigation:
         # the sidebar canvas remains unmapped until a later resize.  A single
         # Map-boundary sync makes the initial layout deterministic without a
         # polling timer or a synthetic resize.
-        self.root.bind("<Map>", self._on_root_map, add="+")
-        self.root.bind("<Unmap>", self._on_root_unmap, add="+")
+        self._owner_tag = f"NavigationOwner{id(self)}"
+        self.root.bindtags((self._owner_tag, *self.root.bindtags()))
+        self.root.bind_class(self._owner_tag, "<Map>", self._on_root_map)
+        self.root.bind_class(self._owner_tag, "<Unmap>", self._on_root_unmap)
 
-        self.pages: dict[str, ttk.Frame] = {}
+        self.pages = LazyPages(self._install_page)
         self.buttons: dict[str, ttk.Button] = {}
         self.label_keys: dict[str, str] = {}
         self.mode_host: Any | None = None
         self.mode_buttons: dict[str, ttk.Button] = {}
+        self._pending_page: str | None = None
+        self._pending_navigation: str | None = None
 
         # width=1：画布自身不撑宽侧栏，侧栏宽度由导航按钮自然宽度决定，
         # 避免默认 Canvas 请求宽度（约378px）把按钮列撑得过大。
@@ -128,8 +136,17 @@ class Navigation:
         self._title_canvas.bind("<Configure>", self._redraw_sidebar_brand)
         self._brand_state: tuple[Any, ...] | None = None
 
-        self.mode_frame = ttk.Frame(self.sidebar, style="Sidebar.TFrame")
+        self.mode_clip = ttk.Frame(self.sidebar, style="Sidebar.TFrame", height=1)
+        self.mode_clip.grid_propagate(False)
+        self.mode_frame = ttk.Frame(self.mode_clip, style="Sidebar.TFrame")
+        self.mode_frame.place(x=0, y=0, relwidth=1)
         self.mode_frame.columnconfigure(0, weight=1)
+        self.mode_frame.bind("<Configure>", self._on_mode_frame_configure, add="+")
+        self._mode_height = 0.0
+        self._mode_anchor = ""
+        self._mode_visible = False
+        self._retired_mode_buttons: list[ttk.Button] = []
+        self.motion = SidebarMotion(self)
 
         self._guide_button = ttk.Button(
             self.sidebar,
@@ -152,7 +169,7 @@ class Navigation:
         self._settings_button = ttk.Button(
             self._settings_bar,
             style="Sidebar.TButton",
-            command=lambda: self.show("settings"),
+            command=lambda: self.request_show("settings"),
         )
         self._settings_button.grid(row=0, column=0, sticky="ew")
         self._refresh_settings_button()
@@ -206,46 +223,133 @@ class Navigation:
         return (self._scaled(x), self._scaled(y))
 
     def add_page(self, name: str, label_key: str, page: ttk.Frame, *, sidebar_button: bool = True) -> None:
+        self.register_page(name, label_key, lambda: page, sidebar_button=sidebar_button)
+        self.pages[name]
+
+    def _install_page(self, name: str, page: ttk.Frame) -> None:
+        page.grid(row=0, column=0, sticky="nsew")
+        page.grid_remove()
+        refresh = getattr(self.ctx.app, "_refresh_widget_fonts", None)
+        if callable(refresh):
+            refresh(page)
+        self._sync_content_window()
+
+    def register_page(self, name: str, label_key: str, factory: Callable[[], ttk.Frame], *, sidebar_button: bool = True) -> None:
+        self.pages.register(name, factory)
         if sidebar_button:
             row = len(self.buttons) + 1
             btn = ttk.Button(
                 self.sidebar,
                 text=t(self.ctx.state.language, label_key),
                 style="Sidebar.TButton",
-                command=lambda n=name: self.show(n),
+                command=lambda n=name: self.request_show(n),
             )
             btn.grid(row=row, column=0, sticky="ew", pady=(0, 3) if row == 1 else 3)
             self.buttons[name] = btn
             self.label_keys[name] = label_key
+            self.motion.bind(btn)
 
         self.sidebar.columnconfigure(0, weight=1)
-        self.pages[name] = page
-        page.grid(row=0, column=0, sticky="nsew")
-        page.grid_remove()
-        self._sync_content_window()
 
     def show(self, name: str) -> None:
+        """Immediate navigation for application/configuration callers."""
+        if name not in self.pages:
+            return
+        self.cancel_pending_navigation()
+        self._transition_to(name)
+
+    def request_show(self, name: str) -> None:
+        """Acknowledge clicks before construction; keep only the newest request."""
+        if name not in self.pages or name == self._pending_page:
+            return
+        self.cancel_pending_navigation()
+        if name == self.ctx.state.current_page:
+            return
+        self._pending_page = name
+        self._refresh_button_styles()
+        self.motion.refresh(animate=True)
+        self._pending_navigation = self.root.after(anim.DUR_FAST, self._commit_navigation)
+
+    def _commit_navigation(self) -> None:
+        self._pending_navigation = None
+        name = self._pending_page
+        try:
+            if name is not None:
+                self._transition_to(name)
+        finally:
+            self._pending_page = None
+            self._refresh_button_styles()
+            self.motion.refresh()
+
+    def cancel_pending_navigation(self) -> None:
+        if self._pending_navigation is not None:
+            self.root.after_cancel(self._pending_navigation)
+            self._pending_navigation = None
+        if self._pending_page is not None:
+            self._pending_page = None
+            self._refresh_button_styles()
+            self.motion.refresh()
+
+    def close(self) -> None:
+        self.cancel_pending_navigation()
+        self.motion.close()
+        for sequence in ("<Map>", "<Unmap>"):
+            self.root.unbind_class(self._owner_tag, sequence)
+
+    def _transition_to(self, name: str) -> None:
         if name not in self.pages:
             return
 
+        # Build under the old-page cover; register/refresh never builds hidden pages.
+        changed = name != self.ctx.state.current_page
+        transition = getattr(self.ctx.app, "transitions", None)
+        if changed and transition is not None and self.root.winfo_viewable():
+            transition.change(self.content_canvas, anim.DUR_SNAP, lambda: self._show_page(name),
+                              ready=self._page_layout_ready)
+        else:
+            self._show_page(name)
+
+    def _show_page(self, name: str) -> None:
+        page = self.pages[name]
         current_name = self.ctx.state.current_page
+        if current_name == name and page.winfo_ismapped():
+            self._sync_content_window()
+            return
         if current_name != name:
-            current_page = self.pages.get(current_name)
+            current_page = dict.get(self.pages, current_name)
             if current_page is not None and hasattr(current_page, "on_hide"):
                 current_page.on_hide()
 
-        for page in self.pages.values():
-            page.grid_remove()
-
         page = self.pages[name]
+        for other in self.pages.built_values():
+            if other is not page:
+                other.grid_remove()
         page.grid()
+        page.lift()
         self.ctx.state.current_page = name
+        focus = self.root.focus_get()
+        if focus is not None and self._is_content_widget(focus):
+            self.buttons.get(name, self._settings_button).focus_set()
         self._refresh_button_styles()
 
         if hasattr(page, "on_show"):
             page.on_show()
         self._sync_mode_buttons(page)
         self._sync_content_window()
+        self.motion.refresh(animate=True)
+
+    def _page_layout_ready(self) -> bool:
+        page = dict.get(self.pages, self.ctx.state.current_page)
+        if page is None or not page.winfo_ismapped() or page.winfo_height() <= 1:
+            return False
+        if getattr(page, "pin_window_footer", False) and (
+            self.content.winfo_width() != self.content_canvas.winfo_width()
+            or self.content.winfo_height() != self.content_canvas.winfo_height()
+        ):
+            return False
+        # Headers, the active mode viewport and the footer must all be laid out.
+        return all(child.winfo_ismapped() and child.winfo_height() > 1
+                   for row in (0, 1, 2) for child in page.grid_slaves(row=row))
 
     def refresh_language(self) -> None:
         lang = self.ctx.state.language
@@ -259,15 +363,16 @@ class Navigation:
         for key, btn in self.mode_buttons.items():
             btn.configure(text=t(lang, key))
 
-        for page in self.pages.values():
+        for page in self.pages.built_values():
             if hasattr(page, "refresh_language"):
                 page.refresh_language()
 
     def refresh_theme(self) -> None:
+        self.motion.reset()
         self.refresh_layout()
         self._settings_images.clear()
         self._refresh_settings_button()
-        for page in self.pages.values():
+        for page in self.pages.built_values():
             if hasattr(page, "refresh_theme"):
                 page.refresh_theme()
 
@@ -283,7 +388,7 @@ class Navigation:
         self._relayout_sidebar()
         self._brand_state = None
         self._redraw_sidebar_brand()
-        for page in self.pages.values():
+        for page in self.pages.built_values():
             sync = getattr(page, "_sync_header_chrome", None)
             if callable(sync):
                 sync()
@@ -324,7 +429,7 @@ class Navigation:
         return image
 
     def _refresh_header_wordmarks(self) -> None:
-        for page in self.pages.values():
+        for page in self.pages.built_values():
             refresh = getattr(page, "_refresh_header_logos", None)
             if callable(refresh):
                 refresh()
@@ -358,7 +463,7 @@ class Navigation:
     def _align_home_panel(self) -> None:
         if getattr(self, "_aligning_home", False):
             return
-        home = self.pages.get("home")
+        home = dict.get(self.pages, "home")
         btn = self.buttons.get("home")
         if home is None or btn is None:
             return
@@ -412,7 +517,7 @@ class Navigation:
                 x += gap
 
     def _refresh_button_styles(self) -> None:
-        current_page = self.ctx.state.current_page
+        current_page = self._pending_page or self.ctx.state.current_page
         for name, btn in self.buttons.items():
             btn.configure(style="SidebarSelected.TButton" if name == current_page else "Sidebar.TButton")
         self._refresh_settings_button()
@@ -423,18 +528,63 @@ class Navigation:
             return []
         return list(mode_pages.keys())
 
-    def _clear_mode_buttons(self) -> None:
+    def _clear_mode_buttons(self, *, animate: bool = False) -> None:
+        animator = anim.animator_for(self.root)
+        if animator is not None:
+            animator.cancel("nav-modes", finish=True)
+        for btn in self._retired_mode_buttons:
+            btn.destroy()
+        self._retired_mode_buttons.clear()
         host = self.mode_host
         for key, btn in self.mode_buttons.items():
-            if host is not None:
-                current = getattr(host, "mode_buttons", None)
-                if isinstance(current, dict) and current.get(key) is btn:
-                    current.pop(key, None)
-            btn.destroy()
+            current = getattr(host, "mode_buttons", None)
+            if isinstance(current, dict) and current.get(key) is btn:
+                current.pop(key, None)
+            self._retired_mode_buttons.append(btn)
         self.mode_buttons = {}
         self.mode_host = None
-        self.mode_frame.grid_remove()
-        self._relayout_sidebar()
+
+        def cleared() -> None:
+            for btn in self._retired_mode_buttons:
+                btn.destroy()
+            self._retired_mode_buttons.clear()
+            self._mode_visible = False
+            self.mode_clip.grid_remove()
+            self._mode_height = 0.0
+            self._relayout_sidebar()
+            self.motion.refresh()
+
+        if animate and self._mode_visible:
+            self._animate_modes(0, cleared)
+        else:
+            cleared()
+
+    def _animate_modes(self, target: int, done: Callable[[], None] | None = None) -> None:
+        start = self._mode_height
+        animator = anim.animator_for(self.root)
+        def step(p: float) -> None:
+            self._mode_height = max(0.0, start+(target-start)*p)
+            self.mode_clip.configure(height=max(1, round(self._mode_height)))
+            self._sync_sidebar_scroll_region()
+        def finished() -> None:
+            if target > 0 and self.mode_host is not None:
+                self._mode_height = float(self.mode_frame.winfo_reqheight())
+                self.mode_clip.configure(height=max(1, round(self._mode_height)))
+            if done is not None:
+                done()
+            self.motion.refresh(animate=True)
+        if animator is None:
+            step(1)
+            finished()
+        else:
+            animator.animate("nav-modes", anim.DUR_BASE, step, ease=anim.SPRING_CARD, done=finished)
+
+    def _on_mode_frame_configure(self, _event: tk.Event | None = None) -> None:
+        animator = anim.animator_for(self.root)
+        if self.mode_host is not None and (animator is None or not animator.is_running("nav-modes")):
+            self._mode_height = float(self.mode_frame.winfo_reqheight())
+            self.mode_clip.configure(height=max(1, round(self._mode_height)))
+            self.motion.refresh()
 
     def _relayout_sidebar(self) -> None:
         current = self.ctx.state.current_page
@@ -443,11 +593,11 @@ class Navigation:
             pady = (0, 3) if index == 0 else 3
             btn.grid(row=row, column=0, sticky="ew", pady=pady)
             row += 1
-            if name == current and self.mode_buttons:
-                self.mode_frame.grid(row=row, column=0, sticky="ew", pady=(0, 3))
+            if name == self._mode_anchor and self._mode_visible:
+                self.mode_clip.grid(row=row, column=0, sticky="ew", padx=(self._scaled(16), 0), pady=(0, 3))
                 row += 1
-        if not self.mode_buttons:
-            self.mode_frame.grid_remove()
+        if not self._mode_visible:
+            self.mode_clip.grid_remove()
         self._sync_sidebar_scroll_region()
 
     def _sync_sidebar_content_width(self, event: tk.Event) -> None:
@@ -465,9 +615,9 @@ class Navigation:
             canvas_height = max(1, self.sidebar_canvas.winfo_height())
             content_height = max(1, self.sidebar.winfo_reqheight(), self.sidebar.winfo_height())
             content_width = max(1, self.sidebar_canvas.winfo_width())
-            self.sidebar_canvas.configure(
-                scrollregion=(0, 0, content_width, content_height)
-            )
+            region = (0, 0, content_width, content_height)
+            if tuple(map(float, self.sidebar_canvas.tk.splitlist(self.sidebar_canvas.cget("scrollregion")))) != region:
+                self.sidebar_canvas.configure(scrollregion=region)
             needs_scrollbar = content_height > canvas_height
             if needs_scrollbar and not self._sidebar_scrollbar_visible:
                 self.sidebar_scrollbar.grid(row=0, column=1, sticky="ns")
@@ -498,11 +648,14 @@ class Navigation:
     def _sync_mode_buttons(self, page: Any) -> None:
         keys = self._mode_keys_for(page)
         if not keys:
-            self._clear_mode_buttons()
+            if self.mode_host is not None:
+                self._clear_mode_buttons(animate=True)
             return
         if self.mode_host is not page or list(self.mode_buttons.keys()) != keys:
             self._clear_mode_buttons()
             self.mode_host = page
+            self._mode_anchor = self.ctx.state.current_page
+            self._mode_visible = True
             host_buttons = getattr(page, "mode_buttons", None)
             if not isinstance(host_buttons, dict):
                 host_buttons = {}
@@ -518,6 +671,9 @@ class Navigation:
                 btn.grid(row=index, column=0, sticky="ew", pady=(0, 3) if index == 0 else 3)
                 self.mode_buttons[key] = btn
                 host_buttons[key] = btn
+                self.motion.bind(btn)
+            # Requested height is known without a nested update()/input loop.
+            self.root.after(0, lambda: self._expand_current_modes(page))
         self._relayout_sidebar()
         sync = getattr(page, "_sync_mode_button_styles", None)
         if callable(sync):
@@ -525,11 +681,22 @@ class Navigation:
         else:
             self._refresh_mode_button_styles()
 
+    def _expand_current_modes(self, page: Any) -> None:
+        if self.mode_host is page:
+            self._animate_modes(self.mode_frame.winfo_reqheight())
+
     def _on_mode_clicked(self, key: str) -> None:
+        self.cancel_pending_navigation()
         page = self.mode_host
         if page is None or not hasattr(page, "show_mode"):
             return
-        page.show_mode(key)
+        transition = getattr(self.ctx.app, "transitions", None)
+        if transition is not None and key != getattr(page, "current_mode", None):
+            transition.change(self.content_canvas, anim.DUR_SNAP, lambda: page.show_mode(key),
+                              ready=self._page_layout_ready)
+        else:
+            page.show_mode(key)
+        self.motion.refresh(animate=True)
         sync = getattr(page, "_sync_mode_button_styles", None)
         if callable(sync):
             sync()
@@ -576,7 +743,7 @@ class Navigation:
         button = getattr(self, "_settings_button", None)
         if button is None:
             return
-        selected = self.ctx.state.current_page == "settings"
+        selected = (self._pending_page or self.ctx.state.current_page) == "settings"
         image = self._gear_image(selected)
         button.configure(
             style="SidebarSelected.TButton" if selected else "Sidebar.TButton",
@@ -592,7 +759,10 @@ class Navigation:
         if self._sync_after is not None:
             return
         try:
-            self._sync_after = self.root.after_idle(self._sync_content_window_now)
+            # Native Expose traffic can starve idle callbacks on Windows.
+            # Coalesce into the next timer turn so the viewport does not
+            # retain the previous window size while a page is painting.
+            self._sync_after = self.root.after(0, self._sync_content_window_now)
         except tk.TclError:
             self._sync_after = None
 
@@ -601,10 +771,11 @@ class Navigation:
         try:
             canvas_width = max(1, self.content_canvas.winfo_width())
             canvas_height = max(1, self.content_canvas.winfo_height())
-            required_width = max(1, self.content.winfo_reqwidth())
-            required_height = max(1, self.content.winfo_reqheight())
             current_name = getattr(self.ctx.state, "current_page", "")
-            page = self.pages.get(current_name)
+            page = dict.get(self.pages, current_name)
+            padx, pady = self._pad(16, 8)
+            required_width = max(1, page.winfo_reqwidth()+2*padx) if page is not None else 1
+            required_height = max(1, page.winfo_reqheight()+2*pady) if page is not None else 1
             pin = bool(getattr(page, "pin_window_footer", False)) if page is not None else False
             window_width = canvas_width if pin else max(canvas_width, required_width)
             window_height = canvas_height if pin else max(canvas_height, required_height)
@@ -613,12 +784,16 @@ class Navigation:
                 return
             self._last_canvas_state = state
 
-            self.content_canvas.itemconfigure(
-                self.content_window,
-                width=window_width,
-                height=window_height,
-            )
-            self.content_canvas.configure(scrollregion=self.content_canvas.bbox("all"))
+            # Reconfiguring a Canvas window invalidates its whole rectangle,
+            # even when the dimensions are unchanged. Page identity/request
+            # changes must not cause another full repaint of a pinned viewport.
+            current_size = tuple(float(self.content_canvas.itemcget(self.content_window, key))
+                                 for key in ("width", "height"))
+            if current_size != (window_width, window_height):
+                self.content_canvas.itemconfigure(self.content_window, width=window_width, height=window_height)
+            region = (0, 0, window_width, window_height)
+            if tuple(map(float, self.content_canvas.tk.splitlist(self.content_canvas.cget("scrollregion")))) != region:
+                self.content_canvas.configure(scrollregion=region)
             self._update_scrollbars((not pin) and required_width > canvas_width, (not pin) and required_height > canvas_height)
         except tk.TclError:
             pass

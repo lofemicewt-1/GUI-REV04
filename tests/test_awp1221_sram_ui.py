@@ -142,12 +142,15 @@ class Awp1221ButtonModeSramSwapTests(unittest.TestCase):
         self.assertEqual(self.page.sram_editor.grid_info(), {})
         self.assertTrue(self.page._waveform_selector_shell.grid_info())
 
-    def test_ram_source_shows_editor_and_keeps_source_combo(self) -> None:
-        self.page.rom_source_var.set("RAM")
+    def test_ram_tab_shows_editor_without_source_combo(self) -> None:
+        self.page._select_button_wave_tab("sram")
         self.page.update_idletasks()
         self.assertTrue(self.page.sram_editor.grid_info())
         source_widgets = self.page._selector_widgets["awp1221_rom_source"]
-        self.assertTrue(any(widget.grid_info() for widget in source_widgets))
+        self.assertFalse(any(widget.grid_info() for widget in source_widgets))
+        self.assertEqual(self.page.rom_source_var.get(), "RAM")
+        self.page._select_button_wave_tab("sinc")
+        self.assertEqual(self.page.rom_source_var.get(), "ROM")
 
     def test_ram_collapses_rom_preview_so_editor_is_taller(self) -> None:
         self.page.rom_source_var.set("RAM")

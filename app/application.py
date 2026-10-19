@@ -12,9 +12,15 @@ from tkinter import messagebox, ttk
 from typing import Any
 
 from app.navigation import Navigation
+from app.micro_anim import MicroAnimations
+from app.transitions import SnapshotTransition
+from core import animation as anim
+from core.ui_dispatch import UiDispatcher, post_to_ui, cancel_pending_ui_jobs
+from styles.fonts import page_title_weight
 from app.state import AppState
 from config.languages import t
 from core.base_tool import (
+    ALLOWED_I2C_SPEEDS,
     GPIO_ADC_PINS,
     GPIO_DETECT_PINS,
     GPIO_MODE_DETECT,
@@ -104,7 +110,7 @@ class _D2ScanRequest:
 class HomePage(BasePage):
     page_name = "home"
     BAUDRATES = (9600, 57600, 115200, 230400, 460800, 921600)
-    I2C_SPEEDS = (100000, 400000)
+    I2C_SPEEDS = ALLOWED_I2C_SPEEDS
     REGISTER_WIDTHS = (8, 16)
     FLAG_POLL_INTERVAL_MS = 250
     FLAG_RESULT_CHECK_INTERVAL_MS = 25
@@ -1818,7 +1824,7 @@ class HomePage(BasePage):
             self._handle_serial_connection_lost(port, error)
             return
         try:
-            self.after(0, self._handle_serial_connection_lost, port, error)
+            post_to_ui(self, self._handle_serial_connection_lost, port, error)
         except Exception:
             pass
 
@@ -3625,6 +3631,7 @@ class SettingsPage(BasePage):
         preference = str(self.ctx.state.extra.get("theme_preference", self.ctx.state.theme))
         self.theme_var = tk.StringVar(value=self._theme_labels.get(preference, "light（浅色）"))
         self.font_size_var = tk.IntVar(value=self.ctx.state.font_size)
+        self.animations_var = tk.BooleanVar(value=bool(self.ctx.state.extra.get("animations_enabled", True)))
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -3666,11 +3673,20 @@ class SettingsPage(BasePage):
         ).grid(row=2, column=1, sticky="w", pady=8)
 
         self.apply_btn = ttk.Button(panel, style="Primary.TButton", command=self.apply_settings)
-        self.apply_btn.grid(row=3, column=0, columnspan=2, sticky="w", pady=(14, 0))
+        self.animations_label = ttk.Label(panel, style="Panel.TLabel")
+        self.animations_label.grid(row=3, column=0, sticky="w", padx=(0, 10), pady=8)
+        self.animations_check = ttk.Checkbutton(panel, variable=self.animations_var,
+                                               command=self._apply_animations_toggle)
+        self.animations_check.grid(row=3, column=1, sticky="w", pady=8)
+        self.apply_btn.grid(row=4, column=0, columnspan=2, sticky="w", pady=(14, 0))
 
         self.refresh_language()
 
+    def _apply_animations_toggle(self) -> None:
+        self.ctx.app.set_animations(bool(self.animations_var.get()))
+
     def apply_settings(self) -> None:
+        self._apply_animations_toggle()
         language = self._language_choices.get(self.language_var.get(), "en")
         theme = self._theme_choices.get(self.theme_var.get(), "light")
         self.ctx.app.apply_settings(language, theme, self.font_size_var.get())
@@ -3688,6 +3704,8 @@ class SettingsPage(BasePage):
         self.theme_label.configure(text="Theme")
         self.font_size_label.configure(text="Font Size 字体大小")
         self.apply_btn.configure(text="Apply")
+        self.animations_label.configure(text=self.tr("animations_setting"))
+        self.animations_check.configure(text=self.tr("animations_enabled"))
 
 
 def _resolve_theme(theme: str) -> str:
@@ -3709,6 +3727,10 @@ def _resolve_theme(theme: str) -> str:
 class PiezoApplication:
     def __init__(self) -> None:
         self.root = tk.Tk()
+        self.ui_dispatcher = UiDispatcher(self.root).start()
+        self.animator = anim.Animator(self.root)
+        self.root._piezo_animator = self.animator
+        self.transitions = SnapshotTransition(self.root, self.animator)
         # Let scroll containers handle the wheel without changing a hovered combobox value.
         self.root.bind_class("TCombobox", "<MouseWheel>", lambda _event: None)
         self.root.title("Piezo Control GUI")
@@ -3746,11 +3768,17 @@ class PiezoApplication:
         )
 
         self.navigation = Navigation(self.root, self.ctx)
+        self.micro_anim = MicroAnimations(self.root, self.animator, lambda: self.colors,
+                                         lambda w: str(w.cget("style")).startswith("Sidebar"))
 
         self._register_pages()
         self._refresh_widget_fonts()
         self.navigation.show("home")
-        self.root.bind("<Configure>", self._on_root_configure, add="+")
+        # The normal root bind tag also receives every descendant Configure.
+        # Resize handling is only needed for the top-level window itself.
+        self._resize_tag = f"ApplicationResize{id(self)}"
+        self.root.bindtags((self._resize_tag, *self.root.bindtags()))
+        self.root.bind_class(self._resize_tag, "<Configure>", self._on_root_configure)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
     def _apply_window_icon(self) -> None:
@@ -3763,17 +3791,25 @@ class PiezoApplication:
             pass
 
     def _register_pages(self) -> None:
-        self.navigation.add_page("home", "home", HomePage(self.navigation.content, self.ctx))
-        self.navigation.add_page("awp1921_1923", "awp1921_1923", AWP1921AWP1923Page(self.navigation.content, self.ctx))
-        self.navigation.add_page("awp1922", "awp1922", AWP1922Page(self.navigation.content, self.ctx))
-        self.navigation.add_page("awp1018", "awp1018", AWP1018Page(self.navigation.content, self.ctx))
-        self.navigation.add_page("awp1221", "awp1221", AWP1221Page(self.navigation.content, self.ctx))
-        self.navigation.add_page(
-            "settings",
-            "settings",
-            SettingsPage(self.navigation.content, self.ctx),
-            sidebar_button=False,
-        )
+        content = self.navigation.content
+        for name, cls, sidebar in (
+            ("home", HomePage, True),
+            ("awp1921_1923", AWP1921AWP1923Page, True),
+            ("awp1922", AWP1922Page, True),
+            ("awp1018", AWP1018Page, True),
+            ("awp1221", AWP1221Page, True),
+            ("settings", SettingsPage, False),
+        ):
+            self.navigation.register_page(name, name, lambda cls=cls: cls(content, self.ctx),
+                                          sidebar_button=sidebar)
+
+    def set_animations(self, enabled: bool) -> None:
+        self.state.extra["animations_enabled"] = bool(enabled)
+        self.animator.set_enabled(enabled)
+        self.micro_anim.reset()
+        self.navigation.motion.reset()
+        if not enabled:
+            self.transitions.finish()
 
     def set_language(self, language: str) -> None:
         if language not in {"zh", "en"}:
@@ -3790,7 +3826,7 @@ class PiezoApplication:
         if theme == self.state.theme:
             return
         self.state.theme = theme
-        self._apply_visual_settings()
+        self.transitions.change(self.root, anim.DUR_SLOW, self._apply_visual_settings)
 
     def set_font_size(self, font_size: int) -> None:
         try:
@@ -3825,7 +3861,11 @@ class PiezoApplication:
                 self.state.extra["theme_preference"] = preference
             if font_changed:
                 self.state.font_size = next_font_size
-            self._apply_visual_settings()
+            self.micro_anim.reset()
+            if theme_changed:
+                self.transitions.change(self.root, anim.DUR_SLOW, self._apply_visual_settings)
+            else:
+                self._apply_visual_settings()
 
     def _window_scale(self) -> float:
         width = max(1, self.root.winfo_width())
@@ -3869,18 +3909,22 @@ class PiezoApplication:
             if getattr(self.state, "current_page", "") == "home":
                 nav._align_home_panel()
 
-    def _refresh_widget_fonts(self) -> None:
+    def _refresh_widget_fonts(self, start: tk.Misc | None = None) -> None:
         body_size = int(getattr(self.root, "_piezo_body_font_size", self.state.font_size))
         title_size = int(getattr(self.root, "_piezo_title_font_size", self.state.font_size + 8))
         small_size = max(7, body_size - 1)
         mono_size = int(getattr(self.root, "_piezo_mono_font_size", 9))
 
+        flags_cache: dict[str, tuple[bool, bool]] = {}
         def current_font_flags(widget: tk.Misc) -> tuple[bool, bool]:
             try:
-                font = tkfont.Font(root=self.root, font=widget.cget("font"))
-                actual = font.actual()
-                return actual.get("weight") == "bold", bool(actual.get("underline"))
-            except Exception:
+                spec = widget.cget("font")
+                key = str(spec)
+                if key not in flags_cache:
+                    actual = tkfont.Font(root=self.root, font=spec).actual()
+                    flags_cache[key] = (actual.get("weight") == "bold", bool(actual.get("underline")))
+                return flags_cache[key]
+            except (tk.TclError, AttributeError):
                 return False, False
 
         def apply(widget: tk.Misc) -> None:
@@ -3899,8 +3943,10 @@ class PiezoApplication:
                     font = None
                 elif style_name == "Prominent.TLabel":
                     prominent_size = int(getattr(self.root, "_piezo_prominent_title_font_size", title_size + 1))
-                    font = ("Microsoft YaHei UI", prominent_size, "bold", *(() if not underline else ("underline",)))
-                elif style_name in {"Title.TLabel", "PanelTitle.TLabel"}:
+                    font = ("Microsoft YaHei UI", prominent_size, page_title_weight(self.root), *(() if not underline else ("underline",)))
+                elif style_name == "Title.TLabel":
+                    font = ("Microsoft YaHei UI", title_size, page_title_weight(self.root), *(() if not underline else ("underline",)))
+                elif style_name == "PanelTitle.TLabel":
                     font = ("Microsoft YaHei UI", title_size, "bold", *(() if not underline else ("underline",)))
                 elif style_name == "SectionTitle.TLabel":
                     font = ("Microsoft YaHei UI", body_size, "bold", *(() if not underline else ("underline",)))
@@ -3935,12 +3981,18 @@ class PiezoApplication:
             for child in widget.winfo_children():
                 apply(child)
 
-        apply(self.root)
+        apply(self.root if start is None else start)
 
     def run(self) -> None:
         self.root.mainloop()
 
     def close(self) -> None:
+        self.ui_dispatcher.close()
+        self.root.unbind_class(self._resize_tag, "<Configure>")
+        self.transitions.close()
+        self.micro_anim.close()
+        self.navigation.close()
+        self.animator.stop()
         if self._resize_after is not None:
             try:
                 self.root.after_cancel(self._resize_after)
@@ -3964,6 +4016,7 @@ class PiezoApplication:
                 self.serial.disconnect()
         except Exception:
             pass
+        cancel_pending_ui_jobs(self.root)
         self.root.destroy()
 
     def _clear_waveform_cache_files(self) -> None:

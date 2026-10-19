@@ -74,13 +74,15 @@ class Awp1221AnnotationTests(unittest.TestCase):
                     stages[stage]["use_high_12_bits"].set(high)
                     mode._finish_adc_value_read(value=0xA5C3, error=None, show_error=False,
                                                generation=getattr(mode, "_adc_lifecycle_generation", 0), on_complete=None)
-                    expected = set(range(4, 16) if high else range(12))
-                    selected = {bit for bit, w in zip(range(15, -1, -1), mode._adc_bit_labels)
+                    button_mode = key == "button_mode"
+                    expected = ({12, 8, 4} if high else {8, 4, 0}) if button_mode else set(range(4, 16) if high else range(12))
+                    selected = {bit for bit, w in zip((12, 8, 4, 0) if button_mode else range(15, -1, -1), mode._adc_bit_labels)
                                 if w.cget("background") != mode.colors["panel"]}
                     self.assertEqual(selected, expected)
-                    self.assertEqual("".join(w.cget("text").split("\n")[1] for w in mode._adc_bit_labels), "1010010111000011")
+                    self.assertEqual("".join(w.cget("text").split("\n")[0 if button_mode else 1] for w in mode._adc_bit_labels),
+                                     "A5C3" if button_mode else "1010010111000011")
                 select(1 - stage)
-                self.assertEqual(len(mode._adc_bit_labels), 16)
+                self.assertEqual(len(mode._adc_bit_labels), 4 if key == "button_mode" else 16)
 
     def test_04_sinc_period_is_first_pair_fixed_256_and_updates(self):
         p = self.page
@@ -125,7 +127,7 @@ class Awp1221AnnotationTests(unittest.TestCase):
             tooltip._hide()
 
     def test_06_theme_and_visual_evidence(self):
-        evidence = Path("docs/specs/awp1221_annotations_evidence")
+        evidence = Path("outputs/button_mode_20261019/annotations_evidence")
         evidence.mkdir(parents=True, exist_ok=True)
         self.host.show_mode("button_mode")
         self.page._show_button_stage(0)
@@ -142,11 +144,10 @@ class Awp1221AnnotationTests(unittest.TestCase):
                 self.assertEqual(colors, {mode.colors["panel"], "#476C9B" if theme == "dark" else "#A9C7EA"})
             error = _capture_window_bmp(self.root, evidence / f"{theme}.bmp")
             self.assertIsNone(error)
-            adc_area = self.page._vertical_scroll_areas[0]
+            adc_area = self.host.mode_scroll
             target = self.page._adc_bit_labels[0]
             offset = target.winfo_rooty() - adc_area.content.winfo_rooty()
             adc_area.canvas.yview_moveto(max(0, offset - 180) / adc_area.content.winfo_height())
-            self.page._waveform_selector_scroll.canvas.yview_moveto(1)
             _flush(self.root)
             self.assertGreaterEqual(target.winfo_rooty(), adc_area.canvas.winfo_rooty())
             self.assertLessEqual(target.winfo_rooty() + target.winfo_height(),
@@ -163,7 +164,6 @@ class Awp1221AnnotationTests(unittest.TestCase):
             _flush(self.root)
             self.assertIsNone(_capture_window_bmp(self.root, evidence / f"{theme}-gpio.bmp"))
             adc_area.canvas.yview_moveto(0)
-            self.page._waveform_selector_scroll.canvas.yview_moveto(0)
 
 
 if __name__ == "__main__":

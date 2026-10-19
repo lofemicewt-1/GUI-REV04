@@ -22,7 +22,7 @@ EVIDENCE_DIR = ROOT / "docs" / "specs" / "awp1221_serial34_evidence"
 
 
 def _show_repeat_control(mode, root) -> dict[str, int]:
-    controls_canvas = mode._waveform_selector_scroll.canvas
+    controls_canvas = mode.host.mode_scroll.canvas
     repeat_entry = mode._selector_widgets["awp1221_sinc_sin_repeat"][1]
     for step in range(21):
         controls_canvas.yview_moveto(step / 20)
@@ -75,7 +75,7 @@ def main() -> int:
             assert len(plan.sram_words) == 16
             assert len(mode.rom_canvas.find_all()) >= 3
             assert mode.rom_frequency_var.get()
-            controls_canvas = mode._waveform_selector_scroll.canvas
+            controls_canvas = mode.host.mode_scroll.canvas
             controls_canvas.yview_moveto(0.0)
             _flush(app.root)
             capture = EVIDENCE_DIR / f"{serial}_preview.bmp"
