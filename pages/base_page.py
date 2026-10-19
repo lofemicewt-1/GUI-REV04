@@ -493,16 +493,71 @@ def _wordmark_width(root: tk.Misc, family: str, size: int, weight: str) -> int:
     return cache[key]
 
 
+def _font_probe(root: tk.Misc, family: str, weight: str) -> tkfont.Font:
+    owner = root._root()
+    probes = getattr(owner, "_motion_font_probes", None)
+    if probes is None:
+        probes = owner._motion_font_probes = {}
+    key = (family, weight)
+    probe = probes.get(key)
+    if probe is None:
+        probe = tkfont.Font(root=owner, family=family, size=12, weight=weight)
+        probes[key] = probe
+    return probe
+
+
+def _font_linespace(root: tk.Misc, family: str, weight: str, size: int) -> int:
+    owner = root._root()
+    cache = getattr(owner, "_motion_font_linespace_cache", None)
+    if cache is None:
+        cache = owner._motion_font_linespace_cache = {}
+    scaling = str(root.tk.call("tk", "scaling"))
+    key = (family, weight, int(size), scaling)
+    value = cache.get(key)
+    if value is None:
+        probe = _font_probe(root, family, weight)
+        probe.configure(size=int(size))
+        value = int(probe.metrics("linespace"))
+        cache[key] = value
+    return value
+
+
 def _font_size_for_pixel_height_uncached(root: tk.Misc, family: str, weight: str, target_px: int) -> int:
     target = max(12, int(target_px))
-    chosen = 12
-    for size in range(12, 73):
-        probe = tkfont.Font(root=root, family=family, size=size, weight=weight)
-        if probe.metrics("linespace") <= target:
-            chosen = size
-            continue
-        break
-    return chosen
+
+    def ls(size: int) -> int:
+        return _font_linespace(root, family, weight, size)
+
+    def linear() -> int:
+        chosen = 12
+        for size in range(12, 73):
+            if ls(size) <= target:
+                chosen = size
+                continue
+            break
+        return chosen
+
+    if ls(12) > target:
+        return 12
+    if ls(72) <= target:
+        return 72
+    low = ls(12)
+    estimate = int(round(target * 12 / low)) if low else 12
+    size = min(72, max(12, estimate))
+    walked = 0
+    while size < 72 and ls(size + 1) <= target:
+        size += 1
+        walked += 1
+        if walked > 8:
+            return linear()
+    while size > 12 and ls(size) > target:
+        size -= 1
+        walked += 1
+        if walked > 8:
+            return linear()
+    if (size < 72 and ls(size + 1) <= target) or (size > 12 and ls(size) > target):
+        return linear()
+    return size
 
 
 def _prominent_title(title_key: str) -> bool:
