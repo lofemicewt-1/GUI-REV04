@@ -1271,7 +1271,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="ew")
         body.columnconfigure(0, weight=1)
-        body.bind("<Configure>", lambda _event: self.after_idle(self._sync_communication_log_layout))
+        body.bind("<Configure>", self._queue_communication_log_layout)
 
         waveform = self._button_section(body, "awp1221_button_wave_settings", row=0)
         waveform.columnconfigure(0, weight=1)
@@ -1358,15 +1358,30 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             panel.grid_remove()
         else:
             panel.grid(row=1, column=0, sticky="ew")
-        self.after_idle(self._sync_communication_log_layout)
+        self._queue_communication_log_layout()
+
+    def _queue_communication_log_layout(self, _event: tk.Event | None = None) -> None:
+        if getattr(self, "_comm_log_layout_job", None) is not None:
+            return
+        def run() -> None:
+            self._comm_log_layout_job = None
+            self._sync_communication_log_layout()
+        try:
+            self._comm_log_layout_job = self.after_idle(run)
+        except tk.TclError:
+            self._comm_log_layout_job = None
 
     def _sync_communication_log_layout(self) -> None:
-        if self.host is None:
+        if self.host is None or getattr(self, "_comm_log_syncing", False):
             return
         area = self.host.mode_scroll
-        area._sync_scroll_region()
-        if self._communication_log_panel.winfo_manager():
-            self.after_idle(lambda: area.canvas.yview_moveto(1))
+        self._comm_log_syncing = True
+        try:
+            area._sync_scroll_region()
+            if self._communication_log_panel.winfo_manager():
+                self.after_idle(lambda: area.canvas.yview_moveto(1))
+        finally:
+            self._comm_log_syncing = False
 
     def _button_section(self, parent: tk.Misc, key: str, *, row: int) -> ttk.LabelFrame:
         section = ttk.LabelFrame(parent, padding=10)
@@ -4820,36 +4835,92 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self._button_adc_fields = [(label, value) for label, value in fields
                                        if label is not None and value is not None]
             self._button_adc_columns = 0
+            self._button_adc_reflow_job = None
+            self._button_adc_reflowing = False
             self._reflow_button_adc_settings(section, columns=3)
-            reflow = lambda _event=None, frame=section: self.after_idle(
-                lambda: self._reflow_button_adc_settings(frame))
+            reflow = lambda _event=None, frame=section: self._queue_button_adc_reflow(frame)
             section.bind("<Configure>", reflow, add="+")
             for label, _value in self._button_adc_fields:
                 label.bind("<Configure>", reflow, add="+")
 
+    def _queue_button_adc_reflow(self, section: ttk.Frame, *, confirm: bool = False) -> None:
+        if not confirm:
+            self._button_adc_width_retries = 0
+        if getattr(self, "_button_adc_reflow_job", None) is not None or getattr(self, "_button_adc_reflowing", False):
+            return
+        def run() -> None:
+            self._button_adc_reflow_job = None
+            self._reflow_button_adc_settings(section)
+        try:
+            self._button_adc_reflow_job = self.after_idle(run)
+        except tk.TclError:
+            self._button_adc_reflow_job = None
+
+    def _button_adc_layout_settled(self) -> bool:
+        host = getattr(self, "host", None)
+        area = getattr(host, "mode_scroll", None) if host is not None else None
+        if area is None:
+            return True
+        try:
+            if not area.winfo_ismapped():
+                return False
+            canvas_width = area.canvas.winfo_width()
+            window_width = area._window_item_span("width")
+            natural_width, _height = area._natural_content_size()
+        except tk.TclError:
+            return False
+        if canvas_width <= 1 or window_width <= 1 or natural_width <= 1:
+            return False
+        return window_width == max(natural_width, canvas_width)
+
     def _reflow_button_adc_settings(self, section: ttk.Frame, *, columns: int | None = None) -> None:
         fields = getattr(self, "_button_adc_fields", ())
-        if not fields or not section.winfo_exists():
+        if not fields or not section.winfo_exists() or getattr(self, "_button_adc_reflowing", False):
             return
+        current = getattr(self, "_button_adc_columns", 0)
         if columns is None:
+            width = section.winfo_width()
+            if width <= 1 or not self._button_adc_layout_settled():
+                return
+            seen = getattr(self, "_button_adc_seen_width", None)
+            if seen != width:
+                self._button_adc_seen_width = width
+                retries = getattr(self, "_button_adc_width_retries", 0) + 1
+                self._button_adc_width_retries = retries
+                if retries <= 4:
+                    self._queue_button_adc_reflow(section, confirm=True)
+                return
+            self._button_adc_width_retries = 0
             needed = sum(max(label.winfo_reqwidth(), value.winfo_reqwidth()) + 14
                          for label, value in fields)
-            columns = len(fields) if section.winfo_width() >= needed else 3
-        if columns == getattr(self, "_button_adc_columns", 0):
+            wide = len(fields)
+            slack = 24
+            if current == wide:
+                columns = wide if width + slack >= needed else 3
+            elif current == 3:
+                columns = wide if width >= needed + slack else 3
+            else:
+                columns = wide if width >= needed else 3
+        if columns == current:
             return
+        self._button_adc_seen_width = None
+        self._button_adc_reflowing = True
         self._button_adc_columns = columns
-        for index, (label, value) in enumerate(fields):
-            field_row, column = divmod(index, columns)
-            label.grid_configure(row=1 + field_row * 2, column=column, columnspan=1,
-                                 sticky="w", padx=(0, 14), pady=(4 if field_row else 0, 3))
-            value.grid_configure(row=2 + field_row * 2, column=column, columnspan=1,
-                                 sticky="w", padx=(0, 14), pady=(0, 3))
-        rows = (len(fields) + columns - 1) // columns
-        zps = getattr(self, "_button_adc_zps_frame", None)
-        if zps is not None:
-            zps.grid_configure(row=1 + rows * 2, column=0, columnspan=6, pady=(6, 0))
-        for column in range(6):
-            section.columnconfigure(column, weight=0)
+        try:
+            for index, (label, value) in enumerate(fields):
+                field_row, column = divmod(index, columns)
+                label.grid_configure(row=1 + field_row * 2, column=column, columnspan=1,
+                                     sticky="w", padx=(0, 14), pady=(4 if field_row else 0, 3))
+                value.grid_configure(row=2 + field_row * 2, column=column, columnspan=1,
+                                     sticky="w", padx=(0, 14), pady=(0, 3))
+            rows = (len(fields) + columns - 1) // columns
+            zps = getattr(self, "_button_adc_zps_frame", None)
+            if zps is not None:
+                zps.grid_configure(row=1 + rows * 2, column=0, columnspan=6, pady=(6, 0))
+            for column in range(6):
+                section.columnconfigure(column, weight=0)
+        finally:
+            self._button_adc_reflowing = False
 
     def _build_adc_readout(self, section: ttk.Frame, *, row: int) -> None:
         adc_value_label = ttk.Label(section, style="Panel.TLabel")
