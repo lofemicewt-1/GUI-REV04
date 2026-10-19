@@ -14,7 +14,7 @@ from app.sidebar_motion import SidebarMotion
 from config.app_info import APP_VERSION, USER_GUIDE_URL
 from config.languages import t
 from styles.fonts import sidebar_brand_font_spec
-from styles.theme import BRAND_ENLARGE, logo_asset, scale_photoimage
+from styles.theme import BRAND_ENLARGE, logo_asset, photoimage_scale_token, scale_photoimage
 
 
 class Navigation:
@@ -135,6 +135,7 @@ class Navigation:
         self._title_canvas.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         self._title_canvas.bind("<Configure>", self._redraw_sidebar_brand)
         self._brand_state: tuple[Any, ...] | None = None
+        self._suspend_brand_configure = False
 
         self.mode_clip = ttk.Frame(self.sidebar, style="Sidebar.TFrame", height=1)
         self.mode_clip.grid_propagate(False)
@@ -387,7 +388,8 @@ class Navigation:
         self.content_canvas.configure(bg=self.ctx.colors["bg"])
         self._relayout_sidebar()
         self._brand_state = None
-        self._redraw_sidebar_brand()
+        if not self._suspend_brand_configure:
+            self._redraw_sidebar_brand()
         for page in self.pages.built_values():
             sync = getattr(page, "_sync_header_chrome", None)
             if callable(sync):
@@ -418,14 +420,30 @@ class Navigation:
         path = logo_asset(theme)
         if path is None:
             return None
-        cache = getattr(self, "_sidebar_logo_cache", {})
-        key = (str(path), max_width, BRAND_ENLARGE)
+        path_key = str(path)
+        sources = getattr(self, "_sidebar_logo_sources", None)
+        if sources is None:
+            sources = {}
+            self._sidebar_logo_sources = sources
+        source = sources.get(path_key)
+        if source is None:
+            source = tk.PhotoImage(file=path_key, master=self.root)
+            sources[path_key] = source
+        token = photoimage_scale_token(
+            int(source.width()),
+            int(source.height()),
+            max_width=max_width,
+            enlarge=BRAND_ENLARGE,
+        )
+        cache = getattr(self, "_sidebar_logo_cache", None)
+        if cache is None:
+            cache = {}
+            self._sidebar_logo_cache = cache
+        key = (path_key, token)
         image = cache.get(key)
         if image is None:
-            image = tk.PhotoImage(file=str(path), master=self.root)
-            image = scale_photoimage(image, max_width=max_width, enlarge=BRAND_ENLARGE)
+            image = scale_photoimage(source, max_width=max_width, enlarge=BRAND_ENLARGE)
             cache[key] = image
-            self._sidebar_logo_cache = cache
         return image
 
     def _refresh_header_wordmarks(self) -> None:
@@ -435,6 +453,8 @@ class Navigation:
                 refresh()
 
     def _redraw_sidebar_brand(self, _event: tk.Event | None = None) -> None:
+        if _event is not None and self._suspend_brand_configure:
+            return
         canvas = getattr(self, "_title_canvas", None)
         if canvas is None:
             return
