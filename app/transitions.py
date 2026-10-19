@@ -18,6 +18,7 @@ from core import animation as anim
 from core.ui_dispatch import cancel_pending_ui_jobs
 
 _PARK = -30000
+COVER_PAINT_WAIT_S = 0.3
 # Private DLL wrappers keep our pointer-sized signatures isolated from other
 # modules that use ctypes.windll (including existing screenshot utilities).
 if sys.platform == "win32":
@@ -416,7 +417,7 @@ class SnapshotTransition:
                 # Mapping, Expose and idle drawing run in the ordinary loop.
                 # A nested update_idletasks() repeatedly redraws the whole
                 # hierarchy and blocks input, especially on cross-chip visits.
-                if not self.root.winfo_viewable() or now-started > 10.0:
+                if not self.root.winfo_viewable() or now-started > COVER_PAINT_WAIT_S:
                     self.finish()
                     return
                 self._job = self.root.after(anim.FRAME_MS, painted)
