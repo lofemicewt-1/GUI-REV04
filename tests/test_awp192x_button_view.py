@@ -28,6 +28,9 @@ class ButtonDisplayTests(unittest.TestCase):
         page._adc_realtime_job = None
         page._buttons = {}
         page._button_graph_active = lambda: graph
+        page._button_graph_window = SimpleNamespace(status=Value())
+        page._button_display_poll_ms = lambda: 10 if graph else 300
+        page._note_button_graph_level = lambda level: None
         page.winfo_exists = lambda: True
         page.events = []
         page._set_button_adc_display = lambda v: page.events.append(("number",v))
@@ -141,6 +144,7 @@ class TimingCanvasTests(unittest.TestCase):
             _button_adc_diagram_phase="press",
             _button_adc_phase_buttons={phase:ttk.Button(root) for phase in ("press","release")})
         page._draw_button_adc_diagram=lambda:ButtonModeView._draw_button_adc_diagram(page)
+        page._push_button_graph_thresholds=lambda:None
         for width in (280,540):
             root.geometry(f"{width}x240")
             root.update()
@@ -161,10 +165,16 @@ class TimingCanvasTests(unittest.TestCase):
                     x0,y0,x1,y1=curve[start*2:start*2+2]+curve[end*2:end*2+2]
                     expected=y0+(x-x0)/(x1-x0)*(y1-y0)
                     self.assertAlmostEqual(y,expected)
-                for item in canvas.find_withtag("adc_threshold_label"):
+                annotations=canvas.find_withtag("adc_threshold_label")+canvas.find_withtag("adc_phase_transition")
+                for item in annotations:
                     box=canvas.bbox(item)
                     self.assertGreaterEqual(box[0],0)
                     self.assertLessEqual(box[2],width)
+                for i,first in enumerate(annotations):
+                    a=canvas.bbox(first)
+                    for second in annotations[i+1:]:
+                        b=canvas.bbox(second)
+                        self.assertFalse(a[0]<b[2] and b[0]<a[2] and a[1]<b[3] and b[1]<a[3])
         page.press_threshold_var.set("0")
         page.release_threshold_var.set("0")
         page._draw_button_adc_diagram()

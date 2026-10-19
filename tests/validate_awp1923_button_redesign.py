@@ -1,5 +1,6 @@
 """Real Tk validation with serial I/O fenced by the offline app harness."""
 from pathlib import Path
+import time
 import faulthandler
 import json
 import sys
@@ -13,7 +14,7 @@ from pages.awp192x_button_view import ButtonWaveformPage
 
 def main():
     faulthandler.dump_traceback_later(55,exit=True)
-    out=ROOT/"outputs/awp1923_button_20261019"
+    out=ROOT/"outputs/awp1923_button_20261019/revision3_graph"
     out.mkdir(parents=True,exist_ok=True)
     records,errors=[],[]
     with mocked_application() as app:
@@ -61,11 +62,16 @@ def main():
             assert "".join(w.cget("text").split("\n")[0] for w in page._adc_nibbles)=="3C0"
             assert all(w.cget("background")==page.colors["primary"] for w in page._adc_nibbles)
             assert [w.cget("text").split("\n")[1] for w in page._adc_nibbles]==["11-8","7-4","3-0"]
+            page.press_threshold_var.set("3")
+            page.release_threshold_var.set("-0.2")
             for phase in ("press","release"):
                 page._button_adc_phase_buttons[phase].invoke()
                 assert page._button_adc_diagram_phase==phase
                 assert page._button_adc_phase_buttons[phase].cget("style")=="Selected.TButton"
                 assert len(page.adc_diagram.find_withtag("adc_phase_band"))==3
+                host.mode_scroll.canvas.yview_moveto(1)
+                _flush(root)
+                assert _capture_window_bmp(root,out/f"{theme}-{language}-adc-{phase}.bmp") is None
             page._button_adc_phase_buttons["press"].invoke()
             realtime=page._buttons["adc_read_realtime"]
             graph=page._buttons["awp1221_adc_graph"]
@@ -80,6 +86,18 @@ def main():
                 page._record_button_adc_sample(0xA800)
                 page._record_button_adc_sample(0xAFFF)
                 assert len(page._button_graph_canvas.find_withtag("adc_curve"))==1
+                assert len(page._button_graph_canvas.find_withtag("adc_threshold"))==2
+                assert page._button_graph_window.poll_interval_ms()==10
+                assert page._button_graph_window.adc_code.get()=="0xFFF"
+                window=page._button_graph_window
+                window.points.clear()
+                now=time.monotonic()
+                for index,raw in enumerate((0xA800,0xA400,0xA000,0xA400,0xA800,0xAC00,0xAFFF,0xAC00,0xA800,0xAFFF)):
+                    with patch("pages.awp192x_realtime.time.monotonic",return_value=now-9+index):
+                        page._record_button_adc_sample(raw)
+                window.redraw()
+                _flush(root)
+                assert _capture_window_bmp(page._button_graph_window,out/f"{theme}-{language}-voltage.bmp") is None
                 realtime.invoke()
                 assert not page._adc_realtime_active and page._button_graph_active()
                 page._close_button_adc_graph()

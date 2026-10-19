@@ -2594,6 +2594,9 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._refresh_adc_read_buttons()
 
     def _refresh_adc_read_buttons(self) -> None:
+        graph_btn = self._buttons.get("awp1221_adc_graph")
+        if graph_btn is not None:
+            graph_btn.configure(style="Selected.TButton" if self._button_graph_active() else "Secondary.TButton")
         realtime_btn = self._buttons.get("adc_read_realtime")
         if realtime_btn is not None:
             realtime_btn.configure(

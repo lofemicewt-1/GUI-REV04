@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import math
-import time
 import threading
 from core.ui_dispatch import post_to_ui
+from core.base_tool import parse_gpio_read_response
 import tkinter as tk
 from tkinter import ttk
 
 from pages.base_page import fit_toplevel_to_screen
+from pages.awp192x_realtime import AWP192xADCVoltageWindow
 from pages.waveform_generator import WaveformGeneratorPage, WAVEFORM_WRITE_POINT_OPTIONS
 
 
@@ -448,7 +449,7 @@ class ButtonModeView:
         self._button_log.grid(row=1, column=0, sticky="ew", pady=(6,0))
         self._button_log.grid_remove()
         self._button_graph_window = None
-        self._button_graph_samples = []
+        self._button_graph_gpio_level = None
         self._refresh_button_view()
 
     def _button_field(self, parent, row, col, key, variable, options=None, value=None):
@@ -512,9 +513,11 @@ class ButtonModeView:
             canvas.create_rectangle(x0,band_top,x1,bottom,outline="",
                 fill=tint(color,.20 if phase == selected else .06),
                 tags=("adc_phase_band",f"adc_band_{phase}"))
-        for x, phase, color in ((left+span_x*.25,"press",primary), (left+span_x*.75,"release",accent)):
-            canvas.create_text(x,band_top+5,anchor="n",text=self.tr(f"awp1221_diagram_detect_{phase}"),
-                fill=color if selected == phase else muted, tags=("adc_phase_caption",f"adc_caption_{phase}"))
+            if x1-x0 >= 80:
+                canvas.create_text((x0+x1)/2,band_top+5,anchor="n",
+                    text=self.tr(f"awp1221_diagram_detect_{phase}"),width=x1-x0-8,
+                    font=("Microsoft YaHei UI",9),fill=color if selected == phase else muted,
+                    tags=("adc_phase_caption",f"adc_caption_{phase}"))
         canvas.create_line(left,y_of(base),rise0,y_of(base),rise1,y_of(peak),fall0,y_of(peak),
             fall1,y_of(base),right,y_of(base),fill=primary,width=2,tags="adc_diagram_curve")
         canvas.create_line(left,bottom,right,bottom,fill=colors["border"])
@@ -537,7 +540,8 @@ class ButtonModeView:
                 anchor="sw" if phase == "press" else "se",fill=color,
                 text=f"{self.tr('awp1221_diagram_'+phase)} {value:g} V",tags="adc_threshold_label")
             labels.append(label)
-            canvas.create_text(x,bottom-4,anchor="sw" if phase == "press" else "se",fill=color,
+            canvas.create_text(left+3 if phase == "press" else right-3,top-5,
+                anchor="sw" if phase == "press" else "se",fill=color,font=("Microsoft YaHei UI",9),
                 text="→ "+self.tr(f"awp1221_diagram_detect_{target}"),tags="adc_phase_transition")
         if len(labels) == 2:
             first, second = (canvas.bbox(item) for item in labels)
@@ -549,6 +553,7 @@ class ButtonModeView:
                 canvas.move(item,max(3-box[0],min(0,width-3-box[2])),max(3-box[1],min(0,height-3-box[3])))
         canvas.create_text(left,6,text=self.tr("awp1221_adc_diagram_hint"),anchor="nw",fill=muted)
         canvas.create_text(left,bottom+5,text=self.tr("awp1221_time_axis"),anchor="nw",fill=muted)
+        self._push_button_graph_thresholds()
 
     def _set_button_adc_display(self, value):
         code = value & 0xFFF
@@ -574,69 +579,74 @@ class ButtonModeView:
 
     def _open_button_adc_graph(self):
         if self._button_graph_active():
+            self._button_graph_window.deiconify()
             self._button_graph_window.lift()
             return
+        if not self._ensure_connected():
+            return
         self._button_adc_generation += 1
-        window = tk.Toplevel(self)
-        window.title(self.tr("awp1221_adc_graph"))
-        window.rowconfigure(0, weight=1)
-        window.columnconfigure(0, weight=1)
-        canvas = tk.Canvas(window, highlightthickness=0)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        fit_toplevel_to_screen(window, preferred_width=760, preferred_height=420)
+        window = AWP192xADCVoltageWindow(self, self._close_button_adc_graph)
+        window.transient(self.winfo_toplevel())
+        fit_toplevel_to_screen(window, preferred_width=900, preferred_height=560,
+                               minimum_width=620, minimum_height=380)
         self._button_graph_window = window
-        self._button_graph_canvas = canvas
-        self._button_graph_samples = []
-        canvas.bind("<Configure>", lambda _: self._draw_button_adc_graph())
-        window.protocol("WM_DELETE_WINDOW", self._close_button_adc_graph)
+        self._button_graph_canvas = window.canvas
+        self._button_graph_gpio_level = None
         self._draw_button_adc_graph()
-        if self.ctx.serial.is_connected and self._adc_realtime_job is None:
+        self._refresh_adc_read_buttons()
+        if self.ctx.serial.is_connected:
+            if self._adc_realtime_job is not None:
+                self.after_cancel(self._adc_realtime_job)
+                self._adc_realtime_job = None
             self._poll_button_adc_realtime()
 
     def _close_button_adc_graph(self):
         self._button_adc_generation += 1
         window = getattr(self, "_button_graph_window", None)
         self._button_graph_window = None
+        self._button_graph_gpio_level = None
         if window is not None:
             window.destroy()
         if not self._adc_realtime_active:
             self._stop_button_adc_realtime()
+        self._refresh_adc_read_buttons()
 
     def _draw_button_adc_graph(self):
         if not self._button_graph_active():
             return
-        canvas = self._button_graph_canvas
-        canvas.configure(bg=self.colors["canvas_bg"])
-        canvas.delete("all")
-        width, height = max(300,canvas.winfo_width()), max(180,canvas.winfo_height())
-        left, right, top, bottom = 60, width-18, 25, height-35
-        canvas.create_rectangle(left, top, right, bottom, outline=self.colors["border"])
-        data = self._button_graph_samples
-        scale = max([1, *(abs(v) for _,v in data)]) * 1.15
-        for value in (-scale, 0, scale):
-            y = (top+bottom)/2 - value/scale*(bottom-top)/2
-            canvas.create_line(left,y,right,y, fill=self.colors["border"], dash=(3,3))
-            canvas.create_text(left-5,y,text=f"{value:.2f} V", anchor="e", fill=self.colors["muted"])
-        if len(data)>1:
-            start, end = data[0][0], data[-1][0]
-            coords=[]
-            for stamp,value in data:
-                coords.extend((left+(stamp-start)/max(.001,end-start)*(right-left),
-                               (top+bottom)/2-value/scale*(bottom-top)/2))
-            canvas.create_line(*coords,fill=self.colors["primary"],width=2, tags="adc_curve")
-            canvas.create_text(left,bottom+8,text=f"{start:.2f} s",anchor="nw",fill=self.colors["muted"])
-            canvas.create_text(right,bottom+8,text=f"{end:.2f} s",anchor="ne",fill=self.colors["muted"])
+        self._button_graph_window.refresh_theme(self.colors)
+        self._push_button_graph_thresholds()
+
+    def _push_button_graph_thresholds(self):
+        if not self._button_graph_active():
+            return
+        values = []
+        for variable in (self.press_threshold_var, self.release_threshold_var):
+            try:
+                value = float(variable.get())
+                values.append(value if math.isfinite(value) else None)
+            except ValueError:
+                values.append(None)
+        self._button_graph_window.set_threshold_voltages(*values)
 
     def _record_button_adc_sample(self, value):
-        code = value & 0xFFF
-        voltage = self._code_to_voltage(code, "0-19V" if value & (1<<13) else "0-100V",
-                                       "OUT-" if value & (1<<15) else "OUT+")
         if self._button_graph_active():
-            if not self._button_graph_samples:
-                self._button_graph_started = time.monotonic()
-            self._button_graph_samples.append((time.monotonic()-self._button_graph_started, voltage))
-            self._button_graph_samples = self._button_graph_samples[-600:]
-            self._draw_button_adc_graph()
+            self._button_graph_window.add_sample(value)
+
+    def _note_button_graph_level(self, level):
+        if level is None or not self._button_graph_active():
+            return
+        previous = self._button_graph_gpio_level
+        self._button_graph_gpio_level = level
+        if previous != 0 and level == 0:
+            try:
+                duration = self._detect_playback_wait_ms()/1000.0
+            except (ValueError, AttributeError):
+                duration = .001
+            self._button_graph_window.add_vibration_band(max(.001, duration))
+
+    def _button_display_poll_ms(self):
+        return self._button_graph_window.poll_interval_ms() if self._button_graph_active() else 300
 
     def _stop_all_button_actions(self):
         self.stop_detection()
@@ -671,38 +681,57 @@ class ButtonModeView:
         if not (self._adc_realtime_active or self._button_graph_active()):
             return
         if not self.ctx.serial.is_connected:
+            if self._button_graph_active():
+                self._close_button_adc_graph()
             self._stop_button_adc_realtime()
             return
         if self._button_adc_pending:
-            self._adc_realtime_job = self.after(300, self._poll_button_adc_realtime)
+            self._adc_realtime_job = self.after(self._button_display_poll_ms(), self._poll_button_adc_realtime)
             return
         self._button_adc_pending = True
         generation = self._button_adc_generation
         address = self.ctx.state.awp192x_device_addr
         numeric = self._adc_realtime_active
+        graph = self._button_graph_active()
         serial = self.ctx.serial
 
         def worker():
-            value = None
+            value, level, error = None, None, None
             try:
                 with serial.suppress_logging():
+                    if graph:
+                        try:
+                            response = serial.read_gpio("D2")
+                            if response.ok:
+                                level = parse_gpio_read_response(response.data).level
+                        except Exception:
+                            pass
                     response = serial.read_register_value(address, 0x07, bits=16)
                     if response.ok:
                         value = serial.extract_rdataw_value(response.data, device_addr=address, reg_addr=0x07, bits=16)
-            except Exception:
-                pass
-            post_to_ui(self, self._finish_button_display, generation, address, numeric, value)
+                    else:
+                        error = response.error
+            except Exception as exc:
+                error = str(exc)
+            post_to_ui(self, self._finish_button_display, generation, address, numeric, value, level, error)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _finish_button_display(self, generation, address, numeric, value):
+    def _finish_button_display(self, generation, address, numeric, value, level=None, error=None):
         self._button_adc_pending = False
         if not self.winfo_exists():
             return
         if (generation == self._button_adc_generation and address == self.ctx.state.awp192x_device_addr
-                and self.ctx.serial.is_connected and value is not None):
-            if numeric and self._adc_realtime_active:
-                self._set_button_adc_display(value)
-            self._record_button_adc_sample(value)
+                and self.ctx.serial.is_connected):
+            if value is not None:
+                if numeric and self._adc_realtime_active:
+                    self._set_button_adc_display(value)
+                self._record_button_adc_sample(value)
+                self._note_button_graph_level(level)
+                if self._button_graph_active():
+                    marker = "D2=?" if level is None else "D2=0 / nINT" if level == 0 else "D2=1"
+                    self._button_graph_window.status.set(f"{marker} · ADC 0x07: 0x{value & 0xFFF:03X}")
+            elif error and self._button_graph_active():
+                self._button_graph_window.status.set(f"读取失败: {error}")
         if (self._adc_realtime_active or self._button_graph_active()) and self._adc_realtime_job is None:
-            self._adc_realtime_job = self.after(300, self._poll_button_adc_realtime)
+            self._adc_realtime_job = self.after(self._button_display_poll_ms(), self._poll_button_adc_realtime)

@@ -7,6 +7,7 @@ this module so callers have one stable integration point for both features.
 from __future__ import annotations
 
 import time
+import math
 from collections import deque
 import tkinter as tk
 from tkinter import ttk
@@ -174,6 +175,10 @@ def _run_ui_background_task(
 class ADCVoltageWindow(tk.Toplevel):
     """Live voltage plot; selectors describe conversion and do not write the chip."""
 
+    WINDOW_TITLE = "AWP1221 实时电压"
+    THRESHOLD_LABELS = ("上阈值", "下阈值")
+    INVALID_PARAMETERS_MESSAGE = "请输入有效的 C 和时间范围"
+
     def __init__(
         self,
         parent: tk.Widget,
@@ -181,7 +186,7 @@ class ADCVoltageWindow(tk.Toplevel):
         on_settings_change: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent)
-        self.title("AWP1221 实时电压")
+        self.title(self.WINDOW_TITLE)
         self.geometry("900x560")
         self.minsize(620, 380)
         self.protocol("WM_DELETE_WINDOW", on_close)
@@ -200,18 +205,9 @@ class ADCVoltageWindow(tk.Toplevel):
 
         controls = ttk.Frame(self, padding=12)
         controls.pack(fill="x")
+        self._build_conversion_controls(controls)
         for column in range(5):
             controls.columnconfigure(column, weight=1)
-        for column, (label, variable, options) in enumerate((
-            ("ADC_SAMPLE_TIME", self.sample_time, AWP1221_ADC_SAMPLE_TIME_OPTIONS),
-            ("ADC_LOAD", self.load, ("40 uA", "160 uA")),
-        )):
-            ttk.Label(controls, text=label).grid(row=0, column=column, sticky="w")
-            combo = ttk.Combobox(controls, textvariable=variable, values=options, state="readonly", width=15)
-            combo.grid(row=1, column=column, sticky="ew", padx=(0, 12))
-            combo.bind("<<ComboboxSelected>>", lambda _event: self._on_conversion_or_settings())
-        ttk.Label(controls, text="陶瓷电容等效容值 (uF)").grid(row=0, column=2, sticky="w")
-        ttk.Entry(controls, textvariable=self.capacitance, width=10).grid(row=1, column=2, sticky="ew", padx=(0, 12))
         ttk.Label(controls, text="Time scale (s)").grid(row=0, column=3, sticky="w")
         ttk.Combobox(controls, textvariable=self.time_scale, values=("5", "10", "30", "60"), width=10).grid(
             row=1, column=3, sticky="ew", padx=(0, 12)
@@ -232,6 +228,24 @@ class ADCVoltageWindow(tk.Toplevel):
         self.canvas.pack(fill="both", expand=True, padx=12, pady=12)
         self.canvas.bind("<Configure>", lambda _event: self.redraw())
         self._theme_colors: dict[str, str] = {}
+
+    def _build_conversion_controls(self, controls) -> None:
+        for column, (label, variable, options) in enumerate((
+            ("ADC_SAMPLE_TIME", self.sample_time, AWP1221_ADC_SAMPLE_TIME_OPTIONS),
+            ("ADC_LOAD", self.load, ("40 uA", "160 uA")),
+        )):
+            ttk.Label(controls, text=label).grid(row=0, column=column, sticky="w")
+            combo = ttk.Combobox(controls, textvariable=variable, values=options, state="readonly", width=15)
+            combo.grid(row=1, column=column, sticky="ew", padx=(0, 12))
+            combo.bind("<<ComboboxSelected>>", lambda _event: self._on_conversion_or_settings())
+        ttk.Label(controls, text="陶瓷电容等效容值 (uF)").grid(row=0, column=2, sticky="w")
+        ttk.Entry(controls, textvariable=self.capacitance, width=10).grid(row=1, column=2, sticky="ew", padx=(0, 12))
+
+    def _sample_to_mv(self, sample, params) -> float:
+        return awp1221_adc_counts_to_mv(sample, *params)
+
+    def _threshold_to_mv(self, threshold, params) -> float:
+        return self._sample_to_mv(threshold, params)
 
     def _on_conversion_or_settings(self) -> None:
         self.redraw()
@@ -298,26 +312,25 @@ class ADCVoltageWindow(tk.Toplevel):
         params = self._conversion_params()
         try:
             span = float(self.time_scale.get())
-            if span <= 0 or params is None:
+            if not math.isfinite(span) or span <= 0 or params is None:
                 raise ValueError
-            duration, current, capacitance = params
         except ValueError:
-            self.voltage.set("请输入有效的 C 和时间范围")
+            self.voltage.set(self.INVALID_PARAMETERS_MESSAGE)
             return
         values = [
-            (stamp, awp1221_adc_counts_to_mv(signed, duration, current, capacitance))
+            (stamp, self._sample_to_mv(signed, params))
             for stamp, signed in self.points
         ]
         self.voltage.set(f"{values[-1][1]:.3f} mV" if values else "— mV")
         now = time.monotonic()
         visible = [(stamp, value) for stamp, value in values if stamp >= now - span]
         upper_mv = (
-            awp1221_adc_counts_to_mv(self.upper_counts, duration, current, capacitance)
+            self._threshold_to_mv(self.upper_counts, params)
             if self.upper_counts is not None
             else None
         )
         lower_mv = (
-            awp1221_adc_counts_to_mv(self.lower_counts, duration, current, capacitance)
+            self._threshold_to_mv(self.lower_counts, params)
             if self.lower_counts is not None
             else None
         )
@@ -364,19 +377,25 @@ class ADCVoltageWindow(tk.Toplevel):
         canvas.create_text(left - 8, 10, text="mV", anchor="e", fill=label)
         canvas.create_text(right, bottom + 32, text="Time (s)", anchor="e", fill=label)
         for mv, color, label in (
-            (upper_mv, THRESHOLD_UPPER_COLOR, "上阈值"),
-            (lower_mv, THRESHOLD_LOWER_COLOR, "下阈值"),
+            (upper_mv, THRESHOLD_UPPER_COLOR, self.THRESHOLD_LABELS[0]),
+            (lower_mv, THRESHOLD_LOWER_COLOR, self.THRESHOLD_LABELS[1]),
         ):
             if mv is None:
                 continue
             y = y_at(mv)
-            canvas.create_line(left, y, right, y, fill=color, dash=(6, 4), width=2)
-            canvas.create_text(right - 4, y - 8, text=f"{label} {mv:.3f} mV", anchor="e", fill=color)
+            canvas.create_line(left, y, right, y, fill=color, dash=(6, 4), width=2, tags="adc_threshold")
+            canvas.create_text(right - 4, y - 8, text=f"{label} {mv:.3f} mV", anchor="e", fill=color,
+                               tags="adc_threshold_label")
+        labels = canvas.find_withtag("adc_threshold_label")
+        if len(labels) == 2:
+            a, b = (canvas.bbox(item) for item in labels)
+            if a and b and a[0]<b[2] and b[0]<a[2] and a[1]<b[3] and b[1]<a[3]:
+                canvas.move(labels[1], 0, a[3]-b[1]+4)
         coords: list[float] = []
         for stamp, value in visible:
             coords.extend((x_at(stamp), y_at(value)))
         if len(coords) >= 4:
-            canvas.create_line(*coords, fill=curve, width=2)
+            canvas.create_line(*coords, fill=curve, width=2, tags="adc_curve")
 
 
 class AWP1221RealtimeMixin:
