@@ -493,16 +493,66 @@ def _wordmark_width(root: tk.Misc, family: str, size: int, weight: str) -> int:
     return cache[key]
 
 
+def _font_linespace(root: tk.Misc, family: str, weight: str, size: int) -> int:
+    owner = root._root()
+    cache = getattr(owner, "_motion_linespace_cache", None)
+    if cache is None:
+        cache = owner._motion_linespace_cache = {}
+    scaling = str(root.tk.call("tk", "scaling"))
+    key = (family, weight, int(size), scaling)
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    fonts = getattr(owner, "_motion_linespace_fonts", None)
+    if fonts is None:
+        fonts = owner._motion_linespace_fonts = {}
+    font_key = (family, weight, scaling)
+    font = fonts.get(font_key)
+    if font is None:
+        font = tkfont.Font(root=root, family=family, size=int(size), weight=weight)
+        fonts[font_key] = font
+    else:
+        font.configure(size=int(size))
+    space = int(font.metrics("linespace"))
+    cache[key] = space
+    return space
+
+
 def _font_size_for_pixel_height_uncached(root: tk.Misc, family: str, weight: str, target_px: int) -> int:
     target = max(12, int(target_px))
+    if _font_linespace(root, family, weight, 12) > target:
+        return 12
+    lo = 12
+    hi = 72
     chosen = 12
-    for size in range(12, 73):
-        probe = tkfont.Font(root=root, family=family, size=size, weight=weight)
-        if probe.metrics("linespace") <= target:
-            chosen = size
-            continue
-        break
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if _font_linespace(root, family, weight, mid) <= target:
+            chosen = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
     return chosen
+
+
+def _fit_wordmark_size(root: tk.Misc, family: str, weight: str, preferred: int, available: int) -> tuple[int, bool]:
+    preferred = int(preferred)
+    if available <= 0:
+        return preferred, False
+    if preferred <= 16 or _wordmark_width(root, family, preferred, weight) <= available:
+        size = preferred
+    else:
+        lo = 17
+        hi = preferred - 1
+        size = 16
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if _wordmark_width(root, family, mid, weight) <= available:
+                size = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+    return size, _wordmark_width(root, family, size, weight) > available
 
 
 def _prominent_title(title_key: str) -> bool:
@@ -852,14 +902,7 @@ class BasePage(ttk.Frame):
         family, weight = sidebar_brand_font_spec(self.winfo_toplevel())
         preferred = _font_size_for_pixel_height(self.winfo_toplevel(), family, weight, height)
         available = self._wordmark_slot(header, label) if isinstance(header, tk.Misc) else 0
-        size = preferred
-        own_row = False
-        if available > 0:
-            while size > 16:
-                if _wordmark_width(self.winfo_toplevel(), family, size, weight) <= available:
-                    break
-                size -= 1
-            own_row = _wordmark_width(self.winfo_toplevel(), family, size, weight) > available
+        size, own_row = _fit_wordmark_size(self.winfo_toplevel(), family, weight, preferred, available)
         text_color = self.ctx.colors.get("text", "#111827")
         key = ("wordmark", height, theme, text_color, size, own_row)
         if getattr(label, "_logo_key", None) == key:

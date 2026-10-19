@@ -3292,10 +3292,22 @@ class FullModePage(ButtonModePage):
         left_canvas.configure(background=self.colors["panel"])
 
         def _sync_left_scroll_region(_event: tk.Event) -> None:
-            left_canvas.configure(scrollregion=left_canvas.bbox("all"))
+            bbox = left_canvas.bbox("all")
+            if not bbox or getattr(left_canvas, "_scroll_bbox", None) == bbox:
+                return
+            left_canvas._scroll_bbox = bbox
+            left_canvas.configure(scrollregion=bbox)
 
         def _sync_left_width(event: tk.Event) -> None:
-            left_canvas.itemconfigure(left_window, width=event.width)
+            width = int(event.width)
+            if width <= 1:
+                return
+            try:
+                current = int(float(left_canvas.itemcget(left_window, "width")))
+            except (tk.TclError, TypeError, ValueError):
+                current = -1
+            if current != width:
+                left_canvas.itemconfigure(left_window, width=width)
 
         def _on_left_mousewheel(event: tk.Event) -> None:
             left_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -3335,10 +3347,22 @@ class FullModePage(ButtonModePage):
         right_canvas.configure(background=self.colors["panel"])
 
         def _sync_right_scroll_region(_event: tk.Event) -> None:
-            right_canvas.configure(scrollregion=right_canvas.bbox("all"))
+            bbox = right_canvas.bbox("all")
+            if not bbox or getattr(right_canvas, "_scroll_bbox", None) == bbox:
+                return
+            right_canvas._scroll_bbox = bbox
+            right_canvas.configure(scrollregion=bbox)
 
         def _sync_right_width(event: tk.Event) -> None:
-            right_canvas.itemconfigure(right_window, width=event.width)
+            width = int(event.width)
+            if width <= 1:
+                return
+            try:
+                current = int(float(right_canvas.itemcget(right_window, "width")))
+            except (tk.TclError, TypeError, ValueError):
+                current = -1
+            if current != width:
+                right_canvas.itemconfigure(right_window, width=width)
 
         def _on_right_mousewheel(event: tk.Event) -> None:
             right_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
