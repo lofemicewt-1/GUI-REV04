@@ -762,27 +762,135 @@ def _unexpected_response(response: SerialResponse, reason: str | None = None) ->
     )
 
 
+# Arduino Wire endTransmission()/requestFrom codes plus firmware-local ones.
+I2C_ERROR_CODE_TEXT = {
+    1: "data too long for Wire buffer",
+    2: "address NACK (chip not responding)",
+    3: "data NACK",
+    4: "other I2C bus error",
+    5: "I2C timeout",
+    6: "short read (fewer bytes than requested)",
+    7: "invalid read size",
+}
+
+_ERR_FRAME_PATTERN = re.compile(r"ERR\s+(\S+)(?:\s+(\S+))?(?:\s+(.*))?", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class FirmwareError:
+    command: str
+    reason: str
+    code: int | None
+    detail: str
+
+    def describe(self) -> str:
+        """Readable location of the failure, e.g. ``WREGW failed: I2C code=3 (data NACK)``."""
+        if self.command == "UNKNOWN":
+            return "firmware does not support this command (ERR UNKNOWN CMD)"
+        text = f"{self.command} failed: {self.reason or '?'}"
+        if self.code is not None:
+            text += f" code={self.code}"
+            meaning = I2C_ERROR_CODE_TEXT.get(self.code) if self.reason.upper() == "I2C" else None
+            if meaning:
+                text += f" ({meaning})"
+        elif self.detail:
+            text += f" {self.detail}"
+        elif self.reason.upper() == "I2C":
+            text += " (firmware sent no error code)"
+        return text
+
+
+def parse_firmware_error(text: str) -> FirmwareError | None:
+    """Parse ``^ERR <CMD> <REASON> [code|detail]~``; None when not an ERR frame."""
+    match = _ERR_FRAME_PATTERN.fullmatch(_normalized_frame(str(text or "")))
+    if match is None:
+        return None
+    command, reason, rest = match.group(1), match.group(2) or "", (match.group(3) or "").strip()
+    code: int | None = None
+    if rest.isdecimal():
+        code = int(rest)
+        rest = ""
+    return FirmwareError(command.upper(), reason.upper(), code, rest)
+
+
+def describe_firmware_error(text: str) -> str | None:
+    parsed = parse_firmware_error(text)
+    return None if parsed is None else parsed.describe()
+
+
+def format_firmware_error(text: str) -> str:
+    """Raw ERR frame followed by a decoded description (raw text kept first)."""
+    description = describe_firmware_error(text)
+    raw = str(text or "")
+    return raw if description is None else f"{raw} [{description}]"
+
+
 def _firmware_error_response(response: SerialResponse) -> SerialResponse:
     """Treat a framed firmware error as a failed public-protocol operation."""
     if response.ok and _normalized_frame(response.data).upper().startswith("ERR "):
-        return SerialResponse(False, data=response.data, error=response.data)
+        return SerialResponse(False, data=response.data, error=format_firmware_error(response.data))
     return response
 
 
 def is_i2c_address_nack(response: SerialResponse) -> bool:
     """True for Wire address NACK (error 2), including WREGW frames that omit the code."""
     text = f"{response.error} {response.data}"
+    parsed = parse_firmware_error(response.data) or parse_firmware_error(response.error)
+    if parsed is not None and parsed.command in {"RREGW", "WREGW"}:
+        # Forward compatible: a present code decides (only 2 = address NACK);
+        # bare "ERR WREGW I2C" (current firmware, no code) keeps the old retry.
+        if parsed.reason != "I2C":
+            return False
+        return parsed.code == 2 or (parsed.code is None and parsed.command == "WREGW")
     if _I2C_OTHER_CODE_PATTERN.search(text):
         return False
     return _I2C_ADDRESS_NACK_PATTERN.search(text) is not None
 
 
-def _retry_8bit_address_nack(bits: int, operation: Callable[[], SerialResponse]) -> SerialResponse:
+def _retry_8bit_address_nack(
+    bits: int,
+    operation: Callable[[], SerialResponse],
+    *,
+    context: str | None = None,
+    log: Callable[[str], None] | None = None,
+) -> SerialResponse:
     response = operation()
-    if int(bits) != 8 or response.ok or not is_i2c_address_nack(response):
+    attempts = 1
+    if int(bits) == 8 and not response.ok and is_i2c_address_nack(response):
+        time.sleep(I2C_ADDRESS_NACK_RETRY_DELAY_S)
+        response = operation()
+        attempts = 2
+    return _with_request_context(response, context, attempts, log)
+
+
+def _with_request_context(
+    response: SerialResponse,
+    context: str | None,
+    attempts: int,
+    log: Callable[[str], None] | None,
+) -> SerialResponse:
+    """Prefix firmware-reported failures with the request that produced them.
+
+    Only failures that carry a firmware reply are decorated; transport-level
+    errors (not connected / busy) keep their exact text because callers
+    compare them.
+    """
+    if response.ok or context is None or not str(response.data or "").strip():
         return response
-    time.sleep(I2C_ADDRESS_NACK_RETRY_DELAY_S)
-    return operation()
+    detail = f"{context} attempts={attempts} reply=^{_normalized_frame(response.data)}~: {response.error}"
+    if log is not None:
+        log(f"ERROR {detail}")
+    return SerialResponse(False, data=response.data, error=detail)
+
+
+def _register_request_context(op: str, device_addr: int, reg_addr: int, bits: int, count: int) -> str | None:
+    try:
+        return (
+            f"{op} dev=0x{_device_address(device_addr):02X} reg=0x{u8(reg_addr, name='reg_addr'):02X} "
+            f"width={_register_data_width(bits)} count={int(count)}"
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def read_board_flag(transport: CommandTransport) -> SerialResponse:
@@ -927,7 +1035,14 @@ def write_register_values(
             count=len(data),
         )
 
-    return RegisterTransaction(_retry_8bit_address_nack(bits, once))
+    return RegisterTransaction(
+        _retry_8bit_address_nack(
+            bits,
+            once,
+            context=_register_request_context("WREGW", device_addr, reg_addr, bits, len(data)),
+            log=log,
+        )
+    )
 
 
 def read_register_values(
@@ -962,7 +1077,14 @@ def read_register_values(
             response = _unexpected_response(response)
         return response
 
-    return RegisterTransaction(_retry_8bit_address_nack(bits, once))
+    return RegisterTransaction(
+        _retry_8bit_address_nack(
+            bits,
+            once,
+            context=_register_request_context("RREGW", device_addr, reg_addr, bits, count),
+            log=log,
+        )
+    )
 
 
 def write_register_value(
