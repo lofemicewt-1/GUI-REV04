@@ -268,7 +268,7 @@ class Navigation:
         self._pending_page = name
         self._refresh_button_styles()
         self.motion.refresh(animate=True)
-        self._pending_navigation = self.root.after(anim.DUR_FAST, self._commit_navigation)
+        self._pending_navigation = self.root.after(0, self._commit_navigation)
 
     def _commit_navigation(self) -> None:
         self._pending_navigation = None

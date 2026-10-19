@@ -28,7 +28,7 @@ class NavigationRequestTests(unittest.TestCase):
             root.after(0, lambda: events.append("paint-opportunity"))
             root.after(450, root.quit)
             root.mainloop()
-            self.assertEqual(events, ["paint-opportunity", "build:target"])
+            self.assertEqual(events, ["build:target", "paint-opportunity"])
             self.assertEqual(app.state.current_page, "target")
             self.assertFalse(errors, errors)
 
