@@ -1,0 +1,128 @@
+[
+  {
+    "name": "default",
+    "geometry": "980x720+40+40",
+    "scaling": null,
+    "scrollregion": [
+      0.0,
+      0.0,
+      310.0,
+      788.0
+    ],
+    "boxes": [
+      {
+        "name": ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!button",
+        "x": 223,
+        "y": 308,
+        "width": 87,
+        "height": 27
+      },
+      {
+        "name": ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!button2",
+        "x": 0,
+        "y": 632,
+        "width": 310,
+        "height": 27
+      },
+      {
+        "name": ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame.!entry",
+        "x": 0,
+        "y": 364,
+        "width": 62,
+        "height": 23
+      },
+      {
+        "name": ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!entry2",
+        "x": 175,
+        "y": 522,
+        "width": 135,
+        "height": 23
+      }
+    ],
+    "screenshot": "docs\\specs\\awp1221_segment_ratio_evidence\\segment_ratio_default.bmp"
+  },
+  {
+    "name": "minimum",
+    "geometry": "420x280+40+40",
+    "scaling": null,
+    "scrollregion": [
+      0.0,
+      0.0,
+      310.0,
+      788.0
+    ],
+    "boxes": [
+      {
+        "name": ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!button",
+        "x": 223,
+        "y": 308,
+        "width": 87,
+        "height": 27
+      },
+      {
+        "name": ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!button2",
+        "x": 0,
+        "y": 632,
+        "width": 310,
+        "height": 27
+      },
+      {
+        "name": ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame.!entry",
+        "x": 0,
+        "y": 364,
+        "width": 62,
+        "height": 23
+      },
+      {
+        "name": ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!entry2",
+        "x": 175,
+        "y": 522,
+        "width": 135,
+        "height": 23
+      }
+    ],
+    "screenshot": "docs\\specs\\awp1221_segment_ratio_evidence\\segment_ratio_minimum.bmp"
+  },
+  {
+    "name": "zoom",
+    "geometry": "980x720+40+40",
+    "scaling": 1.75,
+    "scrollregion": [
+      0.0,
+      0.0,
+      395.0,
+      900.0
+    ],
+    "boxes": [
+      {
+        "name": ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!button",
+        "x": 286,
+        "y": 348,
+        "width": 109,
+        "height": 31
+      },
+      {
+        "name": ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!button2",
+        "x": 0,
+        "y": 720,
+        "width": 395,
+        "height": 31
+      },
+      {
+        "name": ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame.!entry",
+        "x": 0,
+        "y": 412,
+        "width": 78,
+        "height": 27
+      },
+      {
+        "name": ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!entry2",
+        "x": 228,
+        "y": 594,
+        "width": 167,
+        "height": 27
+      }
+    ],
+    "screenshot": "docs\\specs\\awp1221_segment_ratio_evidence\\segment_ratio_zoom.bmp"
+  }
+]

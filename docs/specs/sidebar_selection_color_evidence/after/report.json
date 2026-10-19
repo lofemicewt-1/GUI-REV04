@@ -1,0 +1,2440 @@
+{
+  "hardware_boundary": "LocalI2cBridge.start and serial enumeration were simulated; no serial/I2C/firmware action",
+  "themes_seen": [
+    "light",
+    "dark",
+    "light-return"
+  ],
+  "images": {
+    "light": {
+      "chip_selected_center": [
+        29,
+        78,
+        216
+      ],
+      "mode_selected_center": [
+        29,
+        78,
+        216
+      ],
+      "mode_idle_center": [
+        40,
+        113,
+        243
+      ],
+      "mode_selected_disabled_center": [
+        40,
+        113,
+        243
+      ],
+      "selected_images_identical": true
+    },
+    "dark": {
+      "chip_selected_center": [
+        59,
+        130,
+        246
+      ],
+      "mode_selected_center": [
+        59,
+        130,
+        246
+      ],
+      "mode_idle_center": [
+        40,
+        113,
+        250
+      ],
+      "mode_selected_disabled_center": [
+        40,
+        113,
+        250
+      ],
+      "selected_images_identical": true
+    }
+  },
+  "pages": [
+    {
+      "theme": "light",
+      "page": "awp1221",
+      "mode": "button_mode",
+      "current_page": "awp1221",
+      "current_mode": "button_mode",
+      "chip": {
+        "text": "AWP1221",
+        "style": "SidebarSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Button Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          74,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        29,
+        78,
+        216
+      ],
+      "screenshot_mode": [
+        74,
+        78,
+        216
+      ]
+    },
+    {
+      "theme": "light",
+      "page": "awp1221",
+      "mode": "full_mode",
+      "current_page": "awp1221",
+      "current_mode": "full_mode",
+      "chip": {
+        "text": "AWP1221",
+        "style": "SidebarSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Full Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        29,
+        78,
+        216
+      ],
+      "screenshot_mode": [
+        29,
+        78,
+        216
+      ]
+    },
+    {
+      "theme": "light",
+      "page": "awp1018",
+      "mode": "awp1018_normal_mode",
+      "current_page": "awp1018",
+      "current_mode": "awp1018_normal_mode",
+      "chip": {
+        "text": "AWP1018",
+        "style": "SidebarSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Normal Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          115,
+          200,
+          255
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        29,
+        78,
+        216
+      ],
+      "screenshot_mode": [
+        115,
+        200,
+        255
+      ]
+    },
+    {
+      "theme": "light",
+      "page": "awp1018",
+      "mode": "awp1018_diff_mode",
+      "current_page": "awp1018",
+      "current_mode": "awp1018_diff_mode",
+      "chip": {
+        "text": "AWP1018",
+        "style": "SidebarSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Diff Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          152,
+          111,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        29,
+        78,
+        216
+      ],
+      "screenshot_mode": [
+        152,
+        111,
+        216
+      ]
+    },
+    {
+      "theme": "light",
+      "page": "awp1018",
+      "mode": "full_mode",
+      "current_page": "awp1018",
+      "current_mode": "full_mode",
+      "chip": {
+        "text": "AWP1018",
+        "style": "SidebarSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Full Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        29,
+        78,
+        216
+      ],
+      "screenshot_mode": [
+        29,
+        78,
+        216
+      ]
+    },
+    {
+      "theme": "light",
+      "page": "awp1921_1923",
+      "mode": "button_mode",
+      "current_page": "awp1921_1923",
+      "current_mode": "button_mode",
+      "chip": {
+        "text": "AWP1921/AWP1923",
+        "style": "SidebarSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          255,
+          228,
+          236
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Button Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          74,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        255,
+        228,
+        236
+      ],
+      "screenshot_mode": [
+        74,
+        78,
+        216
+      ]
+    },
+    {
+      "theme": "light",
+      "page": "awp1921_1923",
+      "mode": "pump_mode",
+      "current_page": "awp1921_1923",
+      "current_mode": "pump_mode",
+      "chip": {
+        "text": "AWP1921/AWP1923",
+        "style": "SidebarSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          255,
+          228,
+          236
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Pump Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        255,
+        228,
+        236
+      ],
+      "screenshot_mode": [
+        29,
+        78,
+        216
+      ]
+    },
+    {
+      "theme": "light",
+      "page": "awp1921_1923",
+      "mode": "full_mode",
+      "current_page": "awp1921_1923",
+      "current_mode": "full_mode",
+      "chip": {
+        "text": "AWP1921/AWP1923",
+        "style": "SidebarSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          255,
+          228,
+          236
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Full Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 204,
+        "height": 43,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        255,
+        228,
+        236
+      ],
+      "screenshot_mode": [
+        29,
+        78,
+        216
+      ]
+    },
+    {
+      "theme": "dark",
+      "page": "awp1221",
+      "mode": "button_mode",
+      "current_page": "awp1221",
+      "current_mode": "button_mode",
+      "chip": {
+        "text": "AWP1221",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          59,
+          130,
+          246
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Button Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          96,
+          130,
+          246
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        59,
+        130,
+        246
+      ],
+      "screenshot_mode": [
+        96,
+        130,
+        246
+      ]
+    },
+    {
+      "theme": "dark",
+      "page": "awp1221",
+      "mode": "full_mode",
+      "current_page": "awp1221",
+      "current_mode": "full_mode",
+      "chip": {
+        "text": "AWP1221",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          59,
+          130,
+          246
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Full Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          59,
+          130,
+          246
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        59,
+        130,
+        246
+      ],
+      "screenshot_mode": [
+        59,
+        130,
+        246
+      ]
+    },
+    {
+      "theme": "dark",
+      "page": "awp1018",
+      "mode": "awp1018_normal_mode",
+      "current_page": "awp1018",
+      "current_mode": "awp1018_normal_mode",
+      "chip": {
+        "text": "AWP1018",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          59,
+          130,
+          246
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Normal Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          59,
+          130,
+          249
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        59,
+        130,
+        246
+      ],
+      "screenshot_mode": [
+        59,
+        130,
+        249
+      ]
+    },
+    {
+      "theme": "dark",
+      "page": "awp1018",
+      "mode": "awp1018_diff_mode",
+      "current_page": "awp1018",
+      "current_mode": "awp1018_diff_mode",
+      "chip": {
+        "text": "AWP1018",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          59,
+          130,
+          246
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Diff Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          130,
+          130,
+          246
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        59,
+        130,
+        246
+      ],
+      "screenshot_mode": [
+        130,
+        130,
+        246
+      ]
+    },
+    {
+      "theme": "dark",
+      "page": "awp1018",
+      "mode": "full_mode",
+      "current_page": "awp1018",
+      "current_mode": "full_mode",
+      "chip": {
+        "text": "AWP1018",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          59,
+          130,
+          246
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Full Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          59,
+          130,
+          246
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        59,
+        130,
+        246
+      ],
+      "screenshot_mode": [
+        59,
+        130,
+        246
+      ]
+    },
+    {
+      "theme": "dark",
+      "page": "awp1921_1923",
+      "mode": "button_mode",
+      "current_page": "awp1921_1923",
+      "current_mode": "button_mode",
+      "chip": {
+        "text": "AWP1921/AWP1923",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          195,
+          255,
+          253
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Button Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          96,
+          130,
+          246
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        195,
+        255,
+        253
+      ],
+      "screenshot_mode": [
+        96,
+        130,
+        246
+      ]
+    },
+    {
+      "theme": "dark",
+      "page": "awp1921_1923",
+      "mode": "pump_mode",
+      "current_page": "awp1921_1923",
+      "current_mode": "pump_mode",
+      "chip": {
+        "text": "AWP1921/AWP1923",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          195,
+          255,
+          253
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Pump Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          59,
+          130,
+          246
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        195,
+        255,
+        253
+      ],
+      "screenshot_mode": [
+        59,
+        130,
+        246
+      ]
+    },
+    {
+      "theme": "dark",
+      "page": "awp1921_1923",
+      "mode": "full_mode",
+      "current_page": "awp1921_1923",
+      "current_mode": "full_mode",
+      "chip": {
+        "text": "AWP1921/AWP1923",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          195,
+          255,
+          253
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Full Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          59,
+          130,
+          246
+        ],
+        "fill_samples": [
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ],
+          [
+            59,
+            130,
+            246
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        195,
+        255,
+        253
+      ],
+      "screenshot_mode": [
+        59,
+        130,
+        246
+      ]
+    },
+    {
+      "theme": "light-return",
+      "page": "awp1221",
+      "mode": "button_mode",
+      "current_page": "awp1221",
+      "current_mode": "button_mode",
+      "chip": {
+        "text": "AWP1221",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Button Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          74,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        29,
+        78,
+        216
+      ],
+      "screenshot_mode": [
+        74,
+        78,
+        216
+      ]
+    },
+    {
+      "theme": "light-return",
+      "page": "awp1221",
+      "mode": "full_mode",
+      "current_page": "awp1221",
+      "current_mode": "full_mode",
+      "chip": {
+        "text": "AWP1221",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Full Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        29,
+        78,
+        216
+      ],
+      "screenshot_mode": [
+        29,
+        78,
+        216
+      ]
+    },
+    {
+      "theme": "light-return",
+      "page": "awp1018",
+      "mode": "awp1018_normal_mode",
+      "current_page": "awp1018",
+      "current_mode": "awp1018_normal_mode",
+      "chip": {
+        "text": "AWP1018",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Normal Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          229
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        29,
+        78,
+        216
+      ],
+      "screenshot_mode": [
+        29,
+        78,
+        229
+      ]
+    },
+    {
+      "theme": "light-return",
+      "page": "awp1018",
+      "mode": "awp1018_diff_mode",
+      "current_page": "awp1018",
+      "current_mode": "awp1018_diff_mode",
+      "chip": {
+        "text": "AWP1018",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Diff Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          115,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        29,
+        78,
+        216
+      ],
+      "screenshot_mode": [
+        115,
+        78,
+        216
+      ]
+    },
+    {
+      "theme": "light-return",
+      "page": "awp1018",
+      "mode": "full_mode",
+      "current_page": "awp1018",
+      "current_mode": "full_mode",
+      "chip": {
+        "text": "AWP1018",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Full Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        29,
+        78,
+        216
+      ],
+      "screenshot_mode": [
+        29,
+        78,
+        216
+      ]
+    },
+    {
+      "theme": "light-return",
+      "page": "awp1921_1923",
+      "mode": "button_mode",
+      "current_page": "awp1921_1923",
+      "current_mode": "button_mode",
+      "chip": {
+        "text": "AWP1921/AWP1923",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          187,
+          255,
+          248
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Button Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          74,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        187,
+        255,
+        248
+      ],
+      "screenshot_mode": [
+        74,
+        78,
+        216
+      ]
+    },
+    {
+      "theme": "light-return",
+      "page": "awp1921_1923",
+      "mode": "pump_mode",
+      "current_page": "awp1921_1923",
+      "current_mode": "pump_mode",
+      "chip": {
+        "text": "AWP1921/AWP1923",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          187,
+          255,
+          248
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Pump Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        187,
+        255,
+        248
+      ],
+      "screenshot_mode": [
+        29,
+        78,
+        216
+      ]
+    },
+    {
+      "theme": "light-return",
+      "page": "awp1921_1923",
+      "mode": "full_mode",
+      "current_page": "awp1921_1923",
+      "current_mode": "full_mode",
+      "chip": {
+        "text": "AWP1921/AWP1923",
+        "style": "SidebarSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          187,
+          255,
+          248
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "mode_button": {
+        "text": "Full Mode",
+        "style": "SidebarModeSelected.TButton",
+        "width": 174,
+        "height": 41,
+        "state": [],
+        "screenshot_center": [
+          29,
+          78,
+          216
+        ],
+        "fill_samples": [
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ],
+          [
+            29,
+            78,
+            216
+          ]
+        ]
+      },
+      "screenshot_chip": [
+        187,
+        255,
+        248
+      ],
+      "screenshot_mode": [
+        29,
+        78,
+        216
+      ]
+    }
+  ],
+  "state_checks": [
+    {
+      "text": "AWP1221",
+      "style": "SidebarSelected.TButton",
+      "width": 174,
+      "height": 41,
+      "state": [],
+      "screenshot_center": [
+        29,
+        78,
+        216
+      ],
+      "fill_samples": [
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ]
+      ],
+      "probe": "selected",
+      "label": "chip",
+      "shot": "docs\\specs\\sidebar_selection_color_evidence\\after\\state-chip-selected.bmp"
+    },
+    {
+      "text": "AWP1221",
+      "style": "SidebarSelected.TButton",
+      "width": 174,
+      "height": 41,
+      "state": [
+        "active"
+      ],
+      "screenshot_center": [
+        29,
+        78,
+        216
+      ],
+      "fill_samples": [
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ]
+      ],
+      "probe": "active",
+      "label": "chip",
+      "shot": "docs\\specs\\sidebar_selection_color_evidence\\after\\state-chip-active.bmp"
+    },
+    {
+      "text": "AWP1221",
+      "style": "SidebarSelected.TButton",
+      "width": 174,
+      "height": 41,
+      "state": [
+        "pressed"
+      ],
+      "screenshot_center": [
+        29,
+        78,
+        216
+      ],
+      "fill_samples": [
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ]
+      ],
+      "probe": "pressed",
+      "label": "chip",
+      "shot": "docs\\specs\\sidebar_selection_color_evidence\\after\\state-chip-pressed.bmp"
+    },
+    {
+      "text": "AWP1221",
+      "style": "SidebarSelected.TButton",
+      "width": 174,
+      "height": 41,
+      "state": [
+        "disabled"
+      ],
+      "screenshot_center": [
+        249,
+        250,
+        251
+      ],
+      "fill_samples": [
+        [
+          249,
+          250,
+          251
+        ],
+        [
+          249,
+          250,
+          251
+        ],
+        [
+          249,
+          250,
+          251
+        ],
+        [
+          249,
+          250,
+          251
+        ]
+      ],
+      "probe": "disabled",
+      "label": "chip",
+      "shot": "docs\\specs\\sidebar_selection_color_evidence\\after\\state-chip-disabled.bmp"
+    },
+    {
+      "text": "Button Mode",
+      "style": "SidebarModeSelected.TButton",
+      "width": 174,
+      "height": 41,
+      "state": [],
+      "screenshot_center": [
+        74,
+        78,
+        216
+      ],
+      "fill_samples": [
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ]
+      ],
+      "probe": "selected",
+      "label": "mode",
+      "shot": "docs\\specs\\sidebar_selection_color_evidence\\after\\state-mode-selected.bmp"
+    },
+    {
+      "text": "Button Mode",
+      "style": "SidebarModeSelected.TButton",
+      "width": 174,
+      "height": 41,
+      "state": [
+        "active"
+      ],
+      "screenshot_center": [
+        74,
+        78,
+        216
+      ],
+      "fill_samples": [
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ]
+      ],
+      "probe": "active",
+      "label": "mode",
+      "shot": "docs\\specs\\sidebar_selection_color_evidence\\after\\state-mode-active.bmp"
+    },
+    {
+      "text": "Button Mode",
+      "style": "SidebarModeSelected.TButton",
+      "width": 174,
+      "height": 41,
+      "state": [
+        "pressed"
+      ],
+      "screenshot_center": [
+        74,
+        78,
+        216
+      ],
+      "fill_samples": [
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ],
+        [
+          29,
+          78,
+          216
+        ]
+      ],
+      "probe": "pressed",
+      "label": "mode",
+      "shot": "docs\\specs\\sidebar_selection_color_evidence\\after\\state-mode-pressed.bmp"
+    },
+    {
+      "text": "Button Mode",
+      "style": "SidebarModeSelected.TButton",
+      "width": 174,
+      "height": 41,
+      "state": [
+        "disabled"
+      ],
+      "screenshot_center": [
+        73,
+        113,
+        243
+      ],
+      "fill_samples": [
+        [
+          40,
+          113,
+          243
+        ],
+        [
+          40,
+          113,
+          243
+        ],
+        [
+          40,
+          113,
+          243
+        ],
+        [
+          40,
+          113,
+          243
+        ]
+      ],
+      "probe": "disabled",
+      "label": "mode",
+      "shot": "docs\\specs\\sidebar_selection_color_evidence\\after\\state-mode-disabled.bmp"
+    }
+  ],
+  "screenshots": [
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-awp1221-button_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-awp1221-full_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-awp1018-awp1018_normal_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-awp1018-awp1018_diff_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-awp1018-full_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-awp1921_1923-button_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-awp1921_1923-pump_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-awp1921_1923-full_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\dark-awp1221-button_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\dark-awp1221-full_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\dark-awp1018-awp1018_normal_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\dark-awp1018-awp1018_diff_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\dark-awp1018-full_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\dark-awp1921_1923-button_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\dark-awp1921_1923-pump_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\dark-awp1921_1923-full_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-return-awp1221-button_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-return-awp1221-full_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-return-awp1018-awp1018_normal_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-return-awp1018-awp1018_diff_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-return-awp1018-full_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-return-awp1921_1923-button_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-return-awp1921_1923-pump_mode.bmp",
+    "docs\\specs\\sidebar_selection_color_evidence\\after\\light-return-awp1921_1923-full_mode.bmp"
+  ],
+  "failures": [],
+  "simulated_calls": {
+    "start": 1,
+    "list_ports": 24,
+    "io": 0
+  }
+}

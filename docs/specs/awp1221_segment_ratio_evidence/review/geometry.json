@@ -1,0 +1,83 @@
+[
+  {
+    "name": "default",
+    "geometry": "980x720+40+40",
+    "scaling": null,
+    "segments": 6,
+    "reached": [
+      "Segment ratios (%)",
+      "Equal split",
+      "Start points (auto or number)",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!entry2",
+      "Write SRAM",
+      "Segment 1 P0\u2192P1",
+      "Segment 2 P1\u2192P2",
+      "Segment 3 P2\u2192P3",
+      "Segment 4 P3\u2192P4",
+      "Segment 5 P4\u2192P5",
+      "Segment 6 P5\u2192P6 (auto)",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame4.!entry",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame5.!entry",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame6.!entry",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame7.!entry",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame8.!entry",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame9.!entry"
+    ],
+    "top_screenshot": "docs\\specs\\awp1221_segment_ratio_evidence\\review\\segment_ratio_default_top.bmp",
+    "row_screenshot": "docs\\specs\\awp1221_segment_ratio_evidence\\review\\segment_ratio_default_row.bmp"
+  },
+  {
+    "name": "minimum",
+    "geometry": "420x280+40+40",
+    "scaling": null,
+    "segments": 6,
+    "reached": [
+      "Segment ratios (%)",
+      "Equal split",
+      "Start points (auto or number)",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!entry2",
+      "Write SRAM",
+      "Segment 1 P0\u2192P1",
+      "Segment 2 P1\u2192P2",
+      "Segment 3 P2\u2192P3",
+      "Segment 4 P3\u2192P4",
+      "Segment 5 P4\u2192P5",
+      "Segment 6 P5\u2192P6 (auto)",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame4.!entry",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame5.!entry",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame6.!entry",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame7.!entry",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame8.!entry",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame9.!entry"
+    ],
+    "top_screenshot": "docs\\specs\\awp1221_segment_ratio_evidence\\review\\segment_ratio_minimum_top.bmp",
+    "row_screenshot": "docs\\specs\\awp1221_segment_ratio_evidence\\review\\segment_ratio_minimum_row.bmp"
+  },
+  {
+    "name": "zoom",
+    "geometry": "980x720+40+40",
+    "scaling": 1.75,
+    "segments": 6,
+    "reached": [
+      "Segment ratios (%)",
+      "Equal split",
+      "Start points (auto or number)",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!entry2",
+      "Write SRAM",
+      "Segment 1 P0\u2192P1",
+      "Segment 2 P1\u2192P2",
+      "Segment 3 P2\u2192P3",
+      "Segment 4 P3\u2192P4",
+      "Segment 5 P4\u2192P5",
+      "Segment 6 P5\u2192P6 (auto)",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame4.!entry",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame5.!entry",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame6.!entry",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame7.!entry",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame8.!entry",
+      ".!awp1221srameditor.!verticalscrollarea.!canvas.!frame.!frame.!frame.!frame.!frame9.!entry"
+    ],
+    "top_screenshot": "docs\\specs\\awp1221_segment_ratio_evidence\\review\\segment_ratio_zoom_top.bmp",
+    "row_screenshot": "docs\\specs\\awp1221_segment_ratio_evidence\\review\\segment_ratio_zoom_row.bmp"
+  }
+]

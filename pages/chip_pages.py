@@ -190,15 +190,23 @@ class AWP1921AWP1923Page(BasePage):
 
     def _build_ui(self) -> None:
         self.enable_pinned_footer_layout()
+        # The navigation owns this pinned viewport; child requests must not resize it.
+        self.grid_propagate(False)
 
         header = self.make_title(self, "awp1921_1923")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
 
-        self.mode_scroll, self.mode_container = self.make_vertical_scroll_area(self)
+        self.mode_scroll, self.mode_container = self.make_vertical_scroll_area(self, propagate_width=True)
         self.mode_scroll.grid(row=1, column=0, sticky="nsew")
 
-        footer, actions, self.reg_panel, identity = self.make_merged_footer()
-        footer.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        self.footer_scroll, footer_content = self.make_vertical_scroll_area(self, horizontal=False)
+        self.footer_scroll.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        footer_content.columnconfigure(0, weight=1)
+        footer, actions, self.reg_panel, identity = self.make_merged_footer(footer_content)
+        footer.grid(row=0, column=0, sticky="ew")
+        self._footer_fit_job = None
+        footer.bind("<Configure>", self._queue_footer_fit)
+        self.bind("<Configure>", self._queue_footer_fit, add="+")
         self._footer = footer
         self._build_state_actions(actions)
         self._build_register_bar(self.reg_panel)
@@ -216,6 +224,20 @@ class AWP1921AWP1923Page(BasePage):
         self.refresh_language()
         self._on_addr_changed()
         self.show_mode("button_mode")
+
+    def _queue_footer_fit(self, _event=None):
+        if self._footer_fit_job is None:
+            self._footer_fit_job = self.after_idle(self._fit_footer_height)
+
+    def _fit_footer_height(self):
+        self._footer_fit_job = None
+        try:
+            if self.winfo_height() > 1:
+                desired = min(self._footer.winfo_reqheight() + 16, max(96, int(self.winfo_height() * .35)))
+                if self.footer_scroll.canvas.winfo_reqheight() != desired:
+                    self.footer_scroll.canvas.configure(height=desired)
+        except tk.TclError:
+            pass
 
     def _install_mode_page(self, _name: str, page: ttk.Frame) -> None:
         page.grid(row=0, column=0, sticky="nsew")

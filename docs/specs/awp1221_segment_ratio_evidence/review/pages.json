@@ -1,0 +1,26 @@
+[
+  {
+    "name": "button",
+    "mode": "button_mode",
+    "segments": 7,
+    "mapped": true
+  },
+  {
+    "name": "button_min",
+    "mode": "button_mode",
+    "segments": 7,
+    "mapped": true
+  },
+  {
+    "name": "full",
+    "mode": "full_mode",
+    "segments": 7,
+    "mapped": true
+  },
+  {
+    "name": "full_min",
+    "mode": "full_mode",
+    "segments": 7,
+    "mapped": true
+  }
+]

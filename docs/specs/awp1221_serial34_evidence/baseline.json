@@ -1,0 +1,17 @@
+{
+  "captured_before_task_edits": true,
+  "workspace": "C:/Users/wasd1/Desktop/GUI REV04",
+  "relevant_file_status_at_start": {
+    "core/awp1221_sinc.py": "clean",
+    "pages/awp1221_page.py": "modified before task; existing unrelated AWP1221 changes preserved",
+    "config/languages.py": "modified before task; existing unrelated labels and settings preserved",
+    "tests/test_awp1221_serial34_sinc.py": "did not exist",
+    "tests/validate_awp1221_serial34_preview.py": "did not exist",
+    "docs/specs/AWP1221_SERIAL34_SIN_SINC_PLAN.md": "untracked plan already present"
+  },
+  "sha256_at_start": {
+    "core/awp1221_sinc.py": "00C31245D6C38BD64AE8B0FF35A7B9D154012D6D255F532EB62D3004F527D07E",
+    "pages/awp1221_page.py": "F3FAA312C11FC0C068AEC981CF5C678C07060D3FD255302D12E86316ADED122F"
+  },
+  "note": "The starting Git status contained many unrelated dirty and untracked files. This task did not stage, reset, clean, or rewrite those files. Initial hashes above identify the core and page baseline before this task's changes."
+}
