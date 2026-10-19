@@ -14,6 +14,7 @@ from app.sidebar_motion import SidebarMotion
 from config.app_info import APP_VERSION, USER_GUIDE_URL
 from config.languages import t
 from styles.fonts import sidebar_brand_font_spec
+from pages.base_page import relay_vertical_scroll, scaled_scroll_px
 from styles.theme import BRAND_ENLARGE, logo_asset, photoimage_scale_token, scale_photoimage
 
 
@@ -49,6 +50,8 @@ class Navigation:
         self.sidebar_shell.grid(row=0, column=0, sticky="nsew")
         self.sidebar_shell.rowconfigure(0, weight=1)
         self.sidebar_shell.columnconfigure(0, weight=1)
+        self._sidebar_yview_key: tuple[str, str] | None = None
+        self._content_yview_key: tuple[str, str] | None = None
         self.sidebar_canvas = tk.Canvas(
             self.sidebar_shell,
             width=1,
@@ -56,6 +59,7 @@ class Navigation:
             highlightthickness=0,
             borderwidth=0,
             relief="flat",
+            yscrollincrement=scaled_scroll_px(self._scale()),
         )
         self.sidebar_canvas.grid(row=0, column=0, sticky="nsew")
         self.sidebar_shell.bind("<Map>", self._on_sidebar_shell_map, add="+")
@@ -64,7 +68,7 @@ class Navigation:
             orient="vertical",
             command=self.sidebar_canvas.yview,
         )
-        self.sidebar_canvas.configure(yscrollcommand=self.sidebar_scrollbar.set)
+        self.sidebar_canvas.configure(yscrollcommand=self._on_sidebar_yview)
         self.sidebar = ttk.Frame(
             self.sidebar_canvas,
             style="Sidebar.TFrame",
@@ -85,12 +89,17 @@ class Navigation:
         self.content_shell.rowconfigure(0, weight=1)
         self.content_shell.columnconfigure(0, weight=1)
 
-        self.content_canvas = tk.Canvas(self.content_shell, highlightthickness=0, borderwidth=0)
+        self.content_canvas = tk.Canvas(
+            self.content_shell,
+            highlightthickness=0,
+            borderwidth=0,
+            yscrollincrement=scaled_scroll_px(self._scale()),
+        )
         self.content_canvas.grid(row=0, column=0, sticky="nsew")
 
         self.v_scrollbar = ttk.Scrollbar(self.content_shell, orient="vertical", command=self.content_canvas.yview)
         self.h_scrollbar = ttk.Scrollbar(self.content_shell, orient="horizontal", command=self.content_canvas.xview)
-        self.content_canvas.configure(yscrollcommand=self.v_scrollbar.set, xscrollcommand=self.h_scrollbar.set)
+        self.content_canvas.configure(yscrollcommand=self._on_content_yview, xscrollcommand=self.h_scrollbar.set)
 
         self.content = ttk.Frame(self.content_canvas, style="App.TFrame", padding=self._pad(16, 8))
         self.content_window = self.content_canvas.create_window((0, 0), window=self.content, anchor="nw")
@@ -382,10 +391,11 @@ class Navigation:
         self.sidebar.configure(padding=self._pad(10, 8))
         if getattr(self, "_settings_bar", None) is not None:
             self._settings_bar.configure(padding=self._pad(10, 8))
-        self.sidebar_canvas.configure(bg=self.ctx.colors["panel_alt"])
+        scroll_px = scaled_scroll_px(self._scale())
+        self.sidebar_canvas.configure(bg=self.ctx.colors["panel_alt"], yscrollincrement=scroll_px)
         self.content.configure(padding=self._pad(16, 8))
         self._title_canvas.grid_configure(pady=(0, self._scaled(8)))
-        self.content_canvas.configure(bg=self.ctx.colors["bg"])
+        self.content_canvas.configure(bg=self.ctx.colors["bg"], yscrollincrement=scroll_px)
         self._relayout_sidebar()
         self._brand_state = None
         if not self._suspend_brand_configure:
@@ -647,6 +657,16 @@ class Navigation:
                 self._sidebar_scrollbar_visible = False
         except tk.TclError:
             pass
+
+    def _on_sidebar_yview(self, first: str, last: str) -> None:
+        self._sidebar_yview_key = relay_vertical_scroll(
+            self.sidebar_scrollbar, self._sidebar_yview_key, first, last
+        )
+
+    def _on_content_yview(self, first: str, last: str) -> None:
+        self._content_yview_key = relay_vertical_scroll(
+            self.v_scrollbar, self._content_yview_key, first, last
+        )
 
     def _on_sidebar_mousewheel(self, event: tk.Event) -> None:
         try:

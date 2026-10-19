@@ -95,13 +95,60 @@ def build_serial_log_export_content(history: list[str], visible_text: str) -> st
         seen.add(line)
     return "\n".join(lines)
 
+CANVAS_SCROLL_PX = 32
+_SCROLL_HIDE_SEQUENCES = (
+    "<MouseWheel>",
+    "<Shift-MouseWheel>",
+    "<Button-4>",
+    "<Button-5>",
+    "<Shift-Button-4>",
+    "<Shift-Button-5>",
+)
+_hiding_scroll_chrome = False
+
+
+def scaled_scroll_px(scale: float) -> int:
+    try:
+        value = float(scale)
+    except (TypeError, ValueError):
+        value = 1.0
+    if value <= 0:
+        value = 1.0
+    return max(1, int(round(CANVAS_SCROLL_PX * value)))
+
+
 class SimpleTooltip:
+    _open: list[SimpleTooltip] = []
+
     def __init__(self, widget: tk.Widget, text_getter: Any) -> None:
         self.widget = widget
         self.text_getter = text_getter
         self.tip: tk.Toplevel | None = None
         widget.bind("<Enter>", self._show)
         widget.bind("<Leave>", self._hide)
+        widget.bind("<Destroy>", self._on_widget_destroy, add="+")
+        self._ensure_scroll_hook()
+
+    def _ensure_scroll_hook(self) -> None:
+        try:
+            root = self.widget._root()
+        except tk.TclError:
+            return
+        if getattr(root, "_piezo_tooltip_scroll_hook", False):
+            return
+        root._piezo_tooltip_scroll_hook = True
+        for sequence in _SCROLL_HIDE_SEQUENCES:
+            root.bind_all(sequence, SimpleTooltip.hide_all, add="+")
+
+    @classmethod
+    def hide_all(cls, _event: tk.Event | None = None) -> None:
+        for tip in list(cls._open):
+            tip._hide()
+
+    def _on_widget_destroy(self, event: tk.Event) -> None:
+        if getattr(event, "widget", None) is not self.widget:
+            return
+        self._hide()
 
     def _show(self, _event: tk.Event) -> None:
         self._hide()
@@ -111,6 +158,8 @@ class SimpleTooltip:
         x = self.widget.winfo_rootx() + self.widget.winfo_width() + 8
         y = self.widget.winfo_rooty() + 4
         self.tip = tk.Toplevel(self.widget)
+        if self not in SimpleTooltip._open:
+            SimpleTooltip._open.append(self)
         self.tip.wm_overrideredirect(True)
         label = tk.Label(
             self.tip,
@@ -145,12 +194,55 @@ class SimpleTooltip:
                              lambda p: tip.attributes("-alpha", p), ease=anim.EASE_GRAPHEME)
 
     def _hide(self, _event: tk.Event | None = None) -> None:
-        animator = anim.animator_for(self.widget)
+        try:
+            SimpleTooltip._open.remove(self)
+        except ValueError:
+            pass
+        try:
+            animator = anim.animator_for(self.widget)
+        except tk.TclError:
+            animator = None
         if animator is not None:
             animator.cancel(("tooltip", id(self)))
-        if self.tip is not None:
-            self.tip.destroy()
-            self.tip = None
+        tip = self.tip
+        self.tip = None
+        if tip is not None:
+            try:
+                tip.destroy()
+            except tk.TclError:
+                pass
+
+
+def hide_scroll_chrome() -> None:
+    global _hiding_scroll_chrome
+    if _hiding_scroll_chrome:
+        return
+    _hiding_scroll_chrome = True
+    try:
+        SimpleTooltip.hide_all()
+        try:
+            from app.micro_anim import MicroAnimations
+        except ImportError:
+            return
+        try:
+            MicroAnimations.hide_open_bars()
+        except tk.TclError:
+            pass
+    finally:
+        _hiding_scroll_chrome = False
+
+
+def relay_vertical_scroll(
+    scrollbar: ttk.Scrollbar,
+    previous: tuple[str, str] | None,
+    first: str,
+    last: str,
+) -> tuple[str, str]:
+    scrollbar.set(first, last)
+    key = (str(first), str(last))
+    if key != previous:
+        hide_scroll_chrome()
+    return key
 
 
 class VerticalScrollArea(ttk.Frame):
@@ -175,17 +267,23 @@ class VerticalScrollArea(ttk.Frame):
         self._scrollbar_visible = False
         self._horizontal_scrollbar_visible = False
         self._layout_job: str | None = None
+        self._yview_key: tuple[str, str] | None = None
 
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
 
-        self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0)
+        self.canvas = tk.Canvas(
+            self,
+            highlightthickness=0,
+            borderwidth=0,
+            yscrollincrement=self._y_increment(),
+        )
         self.canvas.grid(row=0, column=0, sticky="nsew")
 
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.horizontal_scrollbar = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
         self.canvas.configure(
-            yscrollcommand=self.scrollbar.set,
+            yscrollcommand=self._on_yview,
             xscrollcommand=self.horizontal_scrollbar.set,
         )
 
@@ -301,6 +399,13 @@ class VerticalScrollArea(ttk.Frame):
         except tk.TclError:
             pass
 
+    def _y_increment(self) -> int:
+        state = getattr(self.ctx, "state", None)
+        return scaled_scroll_px(getattr(state, "ui_scale", 1.0) if state is not None else 1.0)
+
+    def _on_yview(self, first: str, last: str) -> None:
+        self._yview_key = relay_vertical_scroll(self.scrollbar, self._yview_key, first, last)
+
     def _on_mousewheel(self, event: tk.Event) -> None:
         try:
             if not self.winfo_ismapped() or self._nearest_scroll_area(self._pointer_widget(event)) is not self:
@@ -332,7 +437,7 @@ class VerticalScrollArea(ttk.Frame):
         return None
 
     def refresh_theme(self) -> None:
-        self.canvas.configure(bg=self.ctx.colors["bg"])
+        self.canvas.configure(bg=self.ctx.colors["bg"], yscrollincrement=self._y_increment())
 
 
 class WrappingGroupBar(ttk.Frame):
