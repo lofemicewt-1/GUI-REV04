@@ -188,6 +188,7 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         self.read_slices_scrollbar = ttk.Scrollbar(plot, command=self.read_slices_text.yview)
         self.read_slices_scrollbar.grid(row=2, column=1, sticky="ns")
         self.read_slices_text.configure(yscrollcommand=self.read_slices_scrollbar.set, state="disabled")
+        self.read_slices_xscrollbar = None
         for _, variable, _ in specs:
             variable.trace_add("write", lambda *_: self._on_param_changed())
         self.fill_zero_tail_var.trace_add("write", lambda *_: self._on_param_changed())
@@ -252,6 +253,17 @@ class ButtonWaveformPage(WaveformGeneratorPage):
 
     def effective_points(self):
         return 1024 if self.source == "rom" else super().effective_points()
+
+    def _redraw_active_plot(self):
+        if not hasattr(self, "canvas"):
+            return
+        if self.waveform_type_var.get() == "serial":
+            self._preview_serial_waveform()
+            return
+        if self._plot_mode == "chip" and self._chip_voltages:
+            self._draw_plot(self._chip_voltages)
+        else:
+            self._preview_waveform()
 
     def _preview_waveform(self):
         if not hasattr(self, "canvas"):
