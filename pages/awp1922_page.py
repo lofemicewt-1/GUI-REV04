@@ -48,6 +48,7 @@ class AWP1922Page(BasePage):
     page_name = "awp1922"
 
     FREQ_OPTIONS = [25, 50, 75, 100, 125, 150, 175, 200, 220, 240, 270, 290, 310, 330, 350, 375]
+    _HINT_MEASURE_WRAP = 420
 
     def __init__(self, parent: tk.Misc, ctx: Any) -> None:
         super().__init__(parent, ctx)
@@ -169,7 +170,7 @@ class AWP1922Page(BasePage):
         shutdown_btn.grid(row=0, column=1, sticky="ew", padx=(6, 0))
         self._buttons["shutdown"] = shutdown_btn
 
-        self.hint_label = ttk.Label(left, style="Muted.TLabel", wraplength=420)
+        self.hint_label = ttk.Label(left, style="Muted.TLabel", wraplength=self._HINT_MEASURE_WRAP)
         self.hint_label.grid(row=row + 1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
 
         log_frame = self.make_serial_log(right, height=12, subscribe=True)
@@ -198,6 +199,28 @@ class AWP1922Page(BasePage):
             entry.configure(state="readonly")
         entry.grid(row=0, column=1, sticky="w")
 
+    def _stable_column_widths(self) -> tuple[int, int]:
+        cached = getattr(self, "_column_width_cache", None)
+        if cached is not None:
+            return cached
+        hint = self.hint_label
+        measure = self._HINT_MEASURE_WRAP
+        try:
+            current = int(hint.cget("wraplength"))
+        except (tk.TclError, ValueError):
+            current = measure
+        if current != measure:
+            hint.configure(wraplength=measure)
+        try:
+            left_w = max(1, int(self._left.winfo_reqwidth()))
+            right_w = max(1, int(self._right.winfo_reqwidth()))
+        except tk.TclError:
+            return (1, 1)
+        if left_w <= 1 or right_w <= 1:
+            return (left_w, right_w)
+        self._column_width_cache = (left_w, right_w)
+        return left_w, right_w
+
     def _reflow_columns(self, event: tk.Event | None = None) -> None:
         if getattr(self, "_reflowing_columns", False):
             return
@@ -208,14 +231,19 @@ class AWP1922Page(BasePage):
             return
         if width <= 1:
             return
-        left_w = max(1, int(self._left.winfo_reqwidth()))
-        right_w = max(1, int(self._right.winfo_reqwidth()))
-        stack = width < left_w + right_w + 24
-        if stack == getattr(self, "_columns_stacked", None):
-            self.hint_label.configure(wraplength=max(140, int(self._left.winfo_width()) - 36))
-            return
         self._reflowing_columns = True
         try:
+            left_w, right_w = self._stable_column_widths()
+            stack = width < left_w + right_w + 24
+            target_wrap = max(140, (width if stack else width // 2) - 48)
+            try:
+                current_wrap = int(self.hint_label.cget("wraplength"))
+            except (tk.TclError, ValueError):
+                current_wrap = None
+            if current_wrap != target_wrap:
+                self.hint_label.configure(wraplength=target_wrap)
+            if stack == getattr(self, "_columns_stacked", None):
+                return
             self._columns_stacked = stack
             if stack:
                 self._body.columnconfigure(0, weight=1, uniform="")
@@ -229,7 +257,6 @@ class AWP1922Page(BasePage):
                 self._body.rowconfigure(1, weight=0)
                 self._left.grid(row=0, column=0, columnspan=1, sticky="nsew", padx=(0, 6), pady=0)
                 self._right.grid(row=0, column=1, columnspan=1, sticky="nsew", padx=(6, 0), pady=0)
-            self.hint_label.configure(wraplength=max(140, (width if stack else width // 2) - 48))
         finally:
             self._reflowing_columns = False
 
@@ -255,12 +282,19 @@ class AWP1922Page(BasePage):
         entry.grid(row=row, column=1, sticky="ew", pady=8)
 
     def refresh_language(self) -> None:
+        self._column_width_cache = None
         super().refresh_language()
         for key, label in self._labels.items():
             label.configure(text=self.tr(key))
         for key, btn in self._buttons.items():
             btn.configure(text=self.tr(key))
         self.hint_label.configure(text=self.tr("write_twice_hint"))
+        self._reflow_columns()
+
+    def refresh_theme(self) -> None:
+        self._column_width_cache = None
+        super().refresh_theme()
+        self._reflow_columns()
 
     def _parse_int(self, text: str) -> int:
         return int(text.strip(), 0)
@@ -410,13 +444,51 @@ class AWP1922Page(BasePage):
         code = awp1922_frequency_code(self.freq_var.get(), self.FREQ_OPTIONS)
         if code is None:
             return True
-        return self._write8(0x05, code, show_error=show_error)
+        if not show_error:
+            self._silent_write(0x05, code)
+            return True
+        return self._write8(0x05, code, show_error=True)
 
     def _write_selected_amplitude(self, show_error: bool = False) -> bool:
         code = awp1922_amplitude_code(self.amp_var.get())
         if code is None:
             return True
-        return self._write8(0x06, code, show_error=show_error)
+        if not show_error:
+            self._silent_write(0x06, code)
+            return True
+        return self._write8(0x06, code, show_error=True)
+
+    def _silent_write(self, reg: int, value: int) -> None:
+        serial = getattr(self.ctx, "serial", None)
+        if serial is None or not getattr(serial, "is_connected", False):
+            return
+        state = self.__dict__.get("_silent_write_state")
+        if state is None:
+            state = {"lock": threading.Lock(), "pending": {}, "running": False}
+            self._silent_write_state = state
+        with state["lock"]:
+            state["pending"][int(reg) & 0xFF] = int(value) & 0xFF
+            if state["running"]:
+                return
+            state["running"] = True
+        dev = self._addr()
+
+        def worker() -> None:
+            try:
+                while True:
+                    with state["lock"]:
+                        if not state["pending"]:
+                            state["running"] = False
+                            return
+                        batch = list(state["pending"].items())
+                        state["pending"].clear()
+                    for reg_addr, reg_value in batch:
+                        self._write_recovered(dev, reg_addr, reg_value)
+            except Exception:
+                with state["lock"]:
+                    state["running"] = False
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _on_amp_changed(self) -> None:
         self._write_selected_amplitude(show_error=False)
