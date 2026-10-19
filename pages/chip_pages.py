@@ -13,7 +13,7 @@ from core.lazy_pages import LazyPages
 from pages import awp192x_registers
 from pages.awp1221_page import AWP1221Page
 from pages.awp192x_modes import ButtonModePage, FullModePage, PumpModePage
-from pages.base_page import BasePage, SimpleTooltip
+from pages.base_page import BasePage, CanvasTitle, SimpleTooltip
 
 
 AWP1744_AWP1766_VOLTAGE_TABLE = [
@@ -1443,7 +1443,7 @@ class ReservedModePage(BasePage):
         self.columnconfigure(0, weight=1)
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
         panel.grid(row=0, column=0, sticky="nsew")
-        self.title_label = ttk.Label(panel, style="Prominent.TLabel")
+        self.title_label = CanvasTitle(panel, style="Prominent.TLabel")
         self.title_label.grid(row=0, column=0, sticky="w")
         self.hint_label = ttk.Label(panel, style="Muted.TLabel", wraplength=620)
         self.hint_label.grid(row=1, column=0, sticky="w", pady=(10, 0))

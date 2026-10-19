@@ -13,6 +13,7 @@ from config.languages import t
 from core.ui_dispatch import post_to_ui
 from core import animation as anim
 from styles.fonts import sidebar_brand_font_spec, page_title_weight
+from styles.theme import get_colors
 
 
 def fit_toplevel_to_screen(
@@ -671,6 +672,185 @@ def _prominent_title(title_key: str) -> bool:
     return title_key.endswith("_mode")
 
 
+_TITLE_TEXT_PAD = 2
+
+
+def _colors_of(widget: tk.Misc | None) -> dict[str, str]:
+    current = widget
+    while current is not None:
+        colors = getattr(getattr(current, "ctx", None), "colors", None)
+        if isinstance(colors, dict) and colors.get("bg") and colors.get("text"):
+            return colors
+        current = getattr(current, "master", None)
+    try:
+        root = widget.winfo_toplevel() if widget is not None else None
+        theme = str(getattr(root, "_piezo_theme", "light"))
+    except (tk.TclError, AttributeError):
+        theme = "light"
+    return get_colors(theme)
+
+
+class CanvasTitle(tk.Canvas):
+    """Page or mode title drawn with create_text so it paints on map."""
+
+    def __init__(self, parent: tk.Misc, *, style: str = "Title.TLabel", text: str = "", **kwargs: Any) -> None:
+        self._style_name = style
+        self._text = ""
+        self._underline = False
+        self._font: tuple[Any, ...] = ("Microsoft YaHei UI", 18, "bold")
+        self._item: int | None = None
+        kwargs.pop("highlightthickness", None)
+        kwargs.pop("bd", None)
+        kwargs.pop("borderwidth", None)
+        background = kwargs.pop("background", None) or kwargs.pop("bg", None) or _colors_of(parent).get("bg", "#F5F7FA")
+        super().__init__(
+            parent,
+            highlightthickness=0,
+            bd=0,
+            background=background,
+            width=_TITLE_TEXT_PAD * 2,
+            height=_TITLE_TEXT_PAD * 2,
+            takefocus=0,
+            **kwargs,
+        )
+        self._item = self.create_text(
+            _TITLE_TEXT_PAD,
+            _TITLE_TEXT_PAD,
+            text="",
+            anchor="nw",
+            fill=self._foreground(),
+            tags=("title",),
+        )
+        self._register_title()
+        self._apply_font(self._role_font())
+        if text:
+            self.configure(text=text)
+
+    def _register_title(self) -> None:
+        widget: tk.Misc | None = self.master
+        while widget is not None:
+            titles = getattr(widget, "_canvas_titles", None)
+            if isinstance(titles, list):
+                titles.append(self)
+                return
+            widget = getattr(widget, "master", None)
+
+    def _foreground(self) -> str:
+        return _colors_of(self).get("text", "#111827")
+
+    def _background(self) -> str:
+        return _colors_of(self).get("bg", "#F5F7FA")
+
+    def _role_font(self) -> tuple[Any, ...]:
+        root = self.winfo_toplevel()
+        weight = page_title_weight(root)
+        title_size = int(getattr(root, "_piezo_title_font_size", 18) or 18)
+        prominent = int(getattr(root, "_piezo_prominent_title_font_size", title_size + 1) or (title_size + 1))
+        if self._style_name == "ChipTitle.TLabel":
+            size = int(getattr(root, "_piezo_chip_title_font_size", 0) or 0) or max(prominent, 28)
+        elif self._style_name == "Prominent.TLabel":
+            size = prominent
+        else:
+            size = title_size
+        font: tuple[Any, ...] = ("Microsoft YaHei UI", int(size), weight)
+        if self._underline:
+            return (*font, "underline")
+        return font
+
+    def _apply_font(self, font: tuple[Any, ...]) -> None:
+        self._font = tuple(font)
+        self._underline = any(str(part).lower() == "underline" for part in self._font)
+        if self._item is None:
+            return
+        self.itemconfigure(self._item, font=self._font)
+        self._fit()
+
+    def _fit(self) -> None:
+        if self._item is None:
+            return
+        probe = tkfont.Font(root=self, font=self._font)
+        width = max(_TITLE_TEXT_PAD * 2, int(probe.measure(self._text)) + _TITLE_TEXT_PAD * 2)
+        height = max(_TITLE_TEXT_PAD * 2, int(probe.metrics("linespace")) + _TITLE_TEXT_PAD * 2)
+        background = self._background()
+        try:
+            current_w = int(float(self.cget("width")))
+            current_h = int(float(self.cget("height")))
+            current_bg = str(self.cget("background"))
+        except (tk.TclError, TypeError, ValueError):
+            current_w = current_h = -1
+            current_bg = ""
+        if current_w != width or current_h != height or current_bg.lower() != background.lower():
+            super().configure(width=width, height=height, background=background)
+        self.itemconfigure(self._item, text=self._text, fill=self._foreground(), font=self._font)
+        self.coords(self._item, _TITLE_TEXT_PAD, _TITLE_TEXT_PAD)
+
+    def refresh(self) -> None:
+        try:
+            self._apply_font(self._role_font())
+        except tk.TclError:
+            return
+
+    def configure(self, cnf: Any = None, **kwargs: Any) -> Any:
+        if cnf is None and not kwargs:
+            return super().configure()
+        if isinstance(cnf, str) and not kwargs:
+            if cnf in {"text", "font", "style"}:
+                return self.cget(cnf)
+            return super().configure(cnf)
+        if isinstance(cnf, dict):
+            kwargs = {**cnf, **kwargs}
+        text = kwargs.pop("text", None)
+        font = kwargs.pop("font", None)
+        foreground = kwargs.pop("foreground", kwargs.pop("fg", None))
+        if font is not None:
+            self._apply_font(self._font_tuple(font))
+        if text is not None:
+            self._text = str(text)
+            self._fit()
+        if foreground is not None and self._item is not None:
+            self.itemconfigure(self._item, fill=foreground)
+        if kwargs:
+            super().configure(**kwargs)
+        return None
+
+    config = configure
+
+    def cget(self, key: str) -> Any:
+        if key == "style":
+            return self._style_name
+        if key == "text":
+            return self._text
+        if key == "font":
+            return self._font
+        if key in {"foreground", "fg"}:
+            return self._foreground()
+        return super().cget(key)
+
+    def __getitem__(self, key: str) -> Any:
+        return self.cget(key)
+
+    def destroy(self) -> None:
+        widget: tk.Misc | None = getattr(self, "master", None)
+        while widget is not None:
+            titles = getattr(widget, "_canvas_titles", None)
+            if isinstance(titles, list):
+                try:
+                    titles.remove(self)
+                except ValueError:
+                    pass
+                break
+            widget = getattr(widget, "master", None)
+        super().destroy()
+
+    def _font_tuple(self, font: Any) -> tuple[Any, ...]:
+        if isinstance(font, (tuple, list)):
+            return tuple(font)
+        try:
+            return tuple(self.tk.splitlist(str(font)))
+        except tk.TclError:
+            return tuple(str(font).split())
+
+
 class BasePage(ttk.Frame):
     """
     \u6240\u6709\u9875\u9762\u7684\u57fa\u7c7b\u3002
@@ -690,7 +870,8 @@ class BasePage(ttk.Frame):
         self.ctx = ctx
         self._text_widgets: list[tuple[Any, str]] = []
         self._logo_widgets: list[ttk.Label] = []
-        self._chip_title_labels: list[ttk.Label] = []
+        self._chip_title_labels: list[CanvasTitle] = []
+        self._canvas_titles: list[CanvasTitle] = []
         self._logo_images: list[tk.PhotoImage] = []
         self._chrome_headers: list[ttk.Frame] = []
         self._serial_log_text: tk.Text | None = None
@@ -743,13 +924,26 @@ class BasePage(ttk.Frame):
 
     def refresh_theme(self) -> None:
         """
-        \u5b50\u7c7b\u91cc\u6709 Canvas / Text \u8fd9\u79cd\u975e ttk \u63a7\u4ef6\u65f6\uff0c\u8986\u76d6\u8fd9\u4e2a\u65b9\u6cd5\u66f4\u65b0\u989c\u8272\u3002
+        子类里有 Canvas / Text 这种非 ttk 控件时，覆盖这个方法更新颜色。
         """
         self._refresh_header_logos()
+        self._refresh_canvas_titles()
         self._sync_header_chrome()
         self._refresh_serial_log_theme()
         for area in self._vertical_scroll_areas:
             area.refresh_theme()
+
+    def _refresh_canvas_titles(self) -> None:
+        live: list[CanvasTitle] = []
+        for title in self._canvas_titles:
+            try:
+                if not int(title.winfo_exists()):
+                    continue
+                title.refresh()
+            except tk.TclError:
+                continue
+            live.append(title)
+        self._canvas_titles = live
 
     def on_show(self) -> None:
         self._refresh_serial_selectors()
@@ -877,13 +1071,13 @@ class BasePage(ttk.Frame):
             title_group = ttk.Frame(header, style="App.TFrame")
             title_group.grid(row=0, column=0, sticky="w")
             self._make_linked_title_part(title_group, "AWP1921", "awp1921", 0, title_style)
-            slash = ttk.Label(title_group, text="/", style=title_style)
+            slash = CanvasTitle(title_group, text="/", style=title_style)
             slash.grid(row=0, column=1, sticky="w")
             slash.configure(font=("Microsoft YaHei UI", self._chip_title_size(), page_title_weight(self)))
             self._chip_title_labels.append(slash)
             self._make_linked_title_part(title_group, "AWP1923", "awp1923", 2, title_style)
         else:
-            title = ttk.Label(header, style=title_style)
+            title = CanvasTitle(header, style=title_style)
             title.grid(row=0, column=0, sticky="w")
             self.bind_text(title, title_key)
             self._configure_title_link(title, title_key)
@@ -930,7 +1124,7 @@ class BasePage(ttk.Frame):
             return
         sizer.configure(height=target, bg=bg)
 
-    def _configure_title_link(self, title: ttk.Label, title_key: str) -> None:
+    def _configure_title_link(self, title: CanvasTitle, title_key: str) -> None:
         url = CHIP_WEBSITE_URLS.get(title_key, "").strip()
         if not url:
             return
@@ -958,7 +1152,7 @@ class BasePage(ttk.Frame):
         column: int,
         style: str = "Title.TLabel",
     ) -> None:
-        title = ttk.Label(parent, text=text, style=style)
+        title = CanvasTitle(parent, text=text, style=style)
         title.grid(row=0, column=column, sticky="w")
         self._configure_title_link(title, title_key)
         if style == "ChipTitle.TLabel":

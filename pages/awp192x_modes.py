@@ -28,7 +28,7 @@ from core.base_tool import (
 )
 from core.chip_discovery import AWP192X_PROBE
 from core.waveform_storage import WaveformStorage
-from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
+from pages.base_page import BasePage, CanvasTitle, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
 from pages.waveform_generator import WAVEFORM_DEFAULT_POINTS_PER_WRITE, WaveformGeneratorPage
 
 
@@ -4825,12 +4825,12 @@ class PumpModePage(BasePage):
         title_group = ttk.Frame(header, style="App.TFrame")
         title_group.grid(row=0, column=0, sticky="w")
 
-        title = ttk.Label(title_group, style="Prominent.TLabel")
+        title = CanvasTitle(title_group, style="Prominent.TLabel")
         title.grid(row=0, column=0, sticky="w")
         self.bind_text(title, "pump_mode")
 
         for index, text in enumerate(self.PUMP_ROM_TITLE_PARTS, start=1):
-            label = ttk.Label(title_group, text=text, style="Prominent.TLabel")
+            label = CanvasTitle(title_group, text=text, style="Prominent.TLabel")
             label.grid(row=0, column=index, sticky="w")
             if text == "ROM":
                 label.configure(cursor="question_arrow")
