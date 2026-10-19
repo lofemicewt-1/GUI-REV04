@@ -28,6 +28,7 @@ from core.base_tool import (
 )
 from core.chip_discovery import AWP192X_PROBE
 from core.waveform_storage import WaveformStorage
+from pages.awp192x_button_view import ButtonModeView
 from pages.base_page import BasePage, CanvasTitle, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
 from pages.waveform_generator import WAVEFORM_DEFAULT_POINTS_PER_WRITE, WaveformGeneratorPage
 
@@ -299,7 +300,7 @@ def _format_preset_number(value: Any) -> str:
 
 
 
-class ButtonModePage(BasePage):
+class ButtonModePage(ButtonModeView, BasePage):
     page_name = "button_mode"
     CURRENT_SETTING_REGISTERS = (
         0x14,
@@ -453,6 +454,8 @@ class ButtonModePage(BasePage):
         self._sense_ready_poll_job: str | None = None
         self._adc_realtime_active = False
         self._adc_realtime_job: str | None = None
+        self._button_adc_generation = 0
+        self._button_adc_pending = False
         self._adc_trigger_read_active = False
         self._reading_current_settings = False
         self._button_runtime_dirty = True
@@ -568,195 +571,7 @@ class ButtonModePage(BasePage):
         self._buttons["read_slot"] = read_board_button
         self._bind_action_tooltip(read_board_button, "read_slot")
 
-        body = ttk.Frame(self, style="App.TFrame")
-        body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=2)
-        body.columnconfigure(1, weight=3)
-        body.rowconfigure(0, weight=1)
-
-        left = ttk.Frame(body, style="Panel.TFrame", padding=14)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        left.columnconfigure(1, weight=1)
-        left.columnconfigure(3, weight=1)
-
-        right = ttk.Frame(body, style="Panel.TFrame", padding=0)
-        right.grid(row=0, column=1, sticky="nsew")
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(0, weight=1)
-        right.rowconfigure(1, weight=0)
-
-        row = 0
-        self._add_combo(left, row, "max_output_voltage", self.max_voltage_var, [x[0] for x in self.amp_options])
-        row += 1
-        self._add_entry(left, row, "single_point_duration", self.duration_var, unit="us")
-        row += 1
-
-        hint = ttk.Label(left, textvariable=self.period_hint_var, style="Muted.TLabel", wraplength=360)
-        hint.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(0, 8))
-        row += 1
-
-        self._add_paired_entries(
-            left,
-            row,
-            "press_threshold",
-            self.press_threshold_var,
-            "release_threshold",
-            self.release_threshold_var,
-            unit1="V",
-            unit2="V",
-            value_var1=self.press_threshold_hex_var,
-            value_var2=self.release_threshold_hex_var,
-        )
-        row += 1
-        self._add_combo(left, row, "adc_average_time", self.adc_average_time_var, [x[0] for x in self.ADC_AVERAGE_OPTIONS])
-        row += 1
-        self._add_combo(left, row, "adc_ovv_time", self.adc_ovv_time_var, [x[0] for x in self.ADC_OVV_OPTIONS])
-        row += 1
-        adc_gain_pol_frame = ttk.Frame(left, style="Panel.TFrame")
-        adc_gain_pol_frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=7)
-        adc_gain_pol_frame.columnconfigure(0, weight=1, uniform="button_adc_gain_pol")
-        adc_gain_pol_frame.columnconfigure(1, weight=1, uniform="button_adc_gain_pol")
-
-        adc_pol_frame = ttk.Frame(adc_gain_pol_frame, style="Panel.TFrame")
-        adc_pol_frame.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        adc_pol_frame.columnconfigure(1, weight=1)
-        adc_pol_label = ttk.Label(adc_pol_frame, style="Panel.TLabel")
-        adc_pol_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self._labels["adc_pol"] = adc_pol_label
-        ttk.Combobox(
-            adc_pol_frame,
-            textvariable=self.button_adc_pol_var,
-            values=["OUT+", "OUT-"],
-            state="readonly",
-            width=10,
-        ).grid(row=0, column=1, sticky="ew")
-
-        adc_gain_frame = ttk.Frame(adc_gain_pol_frame, style="Panel.TFrame")
-        adc_gain_frame.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        adc_gain_frame.columnconfigure(1, weight=1)
-        adc_gain_label = ttk.Label(adc_gain_frame, style="Panel.TLabel")
-        adc_gain_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self._labels["adc_gain"] = adc_gain_label
-        ttk.Combobox(
-            adc_gain_frame,
-            textvariable=self.button_adc_gain_var,
-            values=["0-19V", "0-100V"],
-            state="readonly",
-            width=10,
-        ).grid(row=0, column=1, sticky="ew")
-        row += 1
-        self._add_repeat_row(left, row, "press_repeat_count", self.press_repeat_count_var, self.press_waveform_var)
-        row += 1
-        self._add_repeat_row(left, row, "release_repeat_count", self.release_repeat_count_var, self.release_waveform_var)
-        row += 1
-        self._add_repeat_row(
-            left,
-            row,
-            "play_repeat_count",
-            self.play_repeat_count_var,
-            self.play_waveform_var,
-            include_endless=True,
-        )
-        row += 1
-
-        self.endless_hint_label = ttk.Label(left, style="Muted.TLabel", wraplength=360)
-        self.endless_hint_label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(0, 8))
-        row += 1
-
-        detect_frame = ttk.Frame(left, style="Panel.TFrame")
-        detect_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(12, 0))
-        detect_frame.columnconfigure(0, weight=1)
-        detect_frame.columnconfigure(1, weight=1)
-
-        start_det = ttk.Button(detect_frame, style="Primary.TButton", command=self.start_detection)
-        start_det.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        self._buttons["start_detection"] = start_det
-
-        stop_det = ttk.Button(detect_frame, style="Secondary.TButton", command=self.stop_detection)
-        stop_det.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        self._buttons["stop_detection"] = stop_det
-
-        row += 1
-
-        play_frame = ttk.Frame(left, style="Panel.TFrame")
-        play_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(8, 0))
-        play_frame.columnconfigure(0, weight=1)
-        play_frame.columnconfigure(1, weight=1)
-
-        start_play = ttk.Button(play_frame, style="Primary.TButton", command=self.start_play)
-        start_play.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        self._buttons["start_play"] = start_play
-
-        stop_play = ttk.Button(play_frame, style="Secondary.TButton", command=self.stop_play)
-        stop_play.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        self._buttons["stop_play"] = stop_play
-        row += 1
-
-        status_frame = ttk.Frame(left, style="Panel.TFrame")
-        status_frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(8, 0))
-        status_frame.columnconfigure(0, weight=1, uniform="sense_status")
-        status_frame.columnconfigure(1, weight=1, uniform="sense_status")
-
-        status_text = ttk.Frame(status_frame, style="Panel.TFrame")
-        status_text.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-
-        status_title = ttk.Label(status_text, style="Panel.TLabel")
-        status_title.grid(row=0, column=0, sticky="w")
-        self.bind_text(status_title, "sense_status_title")
-
-        status_hint = ttk.Label(status_text, style="Muted.TLabel", wraplength=260)
-        status_hint.grid(row=1, column=0, sticky="w", pady=(2, 0))
-        self.bind_text(status_hint, "sense_status_hint")
-
-        self._sense_status_block = tk.Frame(status_frame, height=28, bg=self.STATUS_IDLE_COLOR, highlightthickness=1)
-        self._sense_status_block.grid(row=0, column=1, sticky="ew", padx=(8, 0))
-        self._sense_status_block.grid_propagate(False)
-        row += 1
-
-        adc_frame = ttk.Frame(left, style="Panel.TFrame")
-        adc_frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(8, 0))
-        adc_frame.columnconfigure(1, weight=1)
-
-        adc_label = ttk.Label(adc_frame, style="Panel.TLabel")
-        adc_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self._labels["button_adc_value"] = adc_label
-
-        adc_entry = ttk.Entry(adc_frame, textvariable=self.adc_value_var, state="readonly")
-        adc_entry.grid(row=0, column=1, columnspan=3, sticky="ew")
-
-        adc_button_frame = ttk.Frame(adc_frame, style="Panel.TFrame")
-        adc_button_frame.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 0))
-        adc_button_frame.columnconfigure(0, weight=1)
-        adc_button_frame.columnconfigure(1, weight=1)
-        adc_button_frame.columnconfigure(2, weight=1)
-
-        adc_read_btn = ttk.Button(adc_button_frame, style="Secondary.TButton", command=self.read_button_adc_value)
-        adc_read_btn.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        self._buttons["adc_read_current_value"] = adc_read_btn
-
-        adc_realtime_btn = ttk.Button(adc_button_frame, style="Secondary.TButton", command=self.toggle_button_adc_realtime)
-        adc_realtime_btn.grid(row=0, column=1, sticky="ew", padx=(0, 6))
-        self._buttons["adc_read_realtime"] = adc_realtime_btn
-
-        adc_trigger_btn = ttk.Button(adc_button_frame, style="Secondary.TButton", command=self.toggle_button_adc_trigger_read)
-        adc_trigger_btn.grid(row=0, column=2, sticky="ew")
-        self._buttons["adc_read_on_trigger"] = adc_trigger_btn
-
-        self.waveform_page = WaveformGeneratorPage(
-            right,
-            self.ctx,
-            embedded=True,
-            storage=self.storage,
-            slice_readout_width=8,
-        )
-        self.waveform_page.grid(row=0, column=0, sticky="nsew")
-        self.waveform_page.metrics_revision_var.trace_add(
-            "write",
-            lambda *_: self._on_button_runtime_waveform_changed(),
-        )
-
-        log_frame = self.make_serial_log(right, height=7, subscribe=True)
-        log_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(10, 10))
+        self._build_button_body()
 
         self.duration_var.trace_add("write", lambda *_: self._on_button_runtime_duration_changed())
         for variable in (
@@ -866,7 +681,7 @@ class ButtonModePage(BasePage):
             )
 
     def _slice_options(self) -> list[str]:
-        return [f"slice{i}" for i in range(30)] + ["serial"]
+        return [f"slice{i}" for i in range(30)] + ["serial", "0x1F"]
 
     def _add_repeat_row(
         self,
@@ -909,6 +724,8 @@ class ButtonModePage(BasePage):
     def _selected_slice_points(self, waveform_var: tk.StringVar) -> int | None:
         try:
             selected = waveform_var.get().strip().lower()
+            if selected in ("0x1f", "31"):
+                return 1024
             if selected == "serial":
                 return self.waveform_page.effective_points()
             if selected.startswith("slice"):
@@ -979,6 +796,7 @@ class ButtonModePage(BasePage):
             self.waveform_page.refresh_language()
         self._update_period_hint()
         self._refresh_adc_read_buttons()
+        self._refresh_button_view()
 
     def refresh_theme(self) -> None:
         super().refresh_theme()
@@ -990,8 +808,13 @@ class ButtonModePage(BasePage):
             self._set_sense_status_color(self.STATUS_READY_COLOR)
         else:
             self._set_sense_status_color(self.STATUS_IDLE_COLOR)
+        self._refresh_preset_tooltip_theme()
+        self._refresh_button_view()
 
     def destroy(self) -> None:
+        self._button_adc_generation += 1
+        if self.page_name == "button_mode":
+            self._close_button_adc_graph()
         self._hide_tooltips()
         if self._adc_realtime_job is not None:
             try:
@@ -1016,6 +839,12 @@ class ButtonModePage(BasePage):
                 tooltip._hide()
             except tk.TclError:
                 pass
+
+    def _hide_preset_tooltip(self) -> None:
+        self._hide_tooltips()
+
+    def _refresh_preset_tooltip_theme(self) -> None:
+        self._hide_tooltips()
 
     def export_user_preset_script(self) -> None:
         try:
@@ -1179,7 +1008,7 @@ class ButtonModePage(BasePage):
         use_imported = getattr(page, "_preview_imported_waveform", False)
         dev = self.ctx.state.awp192x_device_addr
         runtime = None
-        if page.waveform_type_var.get() == "sinc" and not use_imported:
+        if page.waveform_type_var.get() == "sinc" and not use_imported and getattr(page, "source", None) != "rom":
             runtime = self.build_button_runtime_payload(self)
             max_output_reg_value = runtime.max_output_reg
             duration = runtime.duration_reg + 1
@@ -1254,6 +1083,9 @@ class ButtonModePage(BasePage):
             release_value=release_value,
             play_mode_value=play_mode_value,
         )
+
+        if getattr(page, "source", None) == "rom":
+            return operations
 
         if page.waveform_type_var.get() == "serial":
             operations.extend(
@@ -1334,8 +1166,8 @@ class ButtonModePage(BasePage):
             index = int(value.replace("slice", "", 1), 10)
         else:
             index = int(value, 0)
-        if not (0 <= index <= 29 or index == self.SERIAL_WAVE_NUMBER):
-            raise ValueError(f"{field_name} must be slice0-slice29 or serial")
+        if not (0 <= index <= 31):
+            raise ValueError(f"{field_name} must be slice0-slice29, serial or 0x1F")
         return index
 
     def _update_period_hint(self, *, write_register: bool = True) -> None:
@@ -2421,7 +2253,7 @@ class ButtonModePage(BasePage):
             messagebox.showerror(self.tr("error"), self.tr("invalid_input"))
             return None
 
-        if not (0 <= index <= 29 or index == self.SERIAL_WAVE_NUMBER):
+        if not (0 <= index <= 31):
             messagebox.showerror(self.tr("error"), self.tr("waveform_slice_range"))
             return None
         return index
@@ -2626,8 +2458,10 @@ class ButtonModePage(BasePage):
             return
 
         self._adc_realtime_active = True
+        self._button_adc_generation += 1
         self._refresh_adc_read_buttons()
-        self._poll_button_adc_realtime()
+        if self._adc_realtime_job is None:
+            self._poll_button_adc_realtime()
 
     def toggle_button_adc_trigger_read(self) -> None:
         self._adc_trigger_read_active = not self._adc_trigger_read_active
@@ -2649,14 +2483,13 @@ class ButtonModePage(BasePage):
         value = self.read_reg(0x07, show_error=show_error)
         if value is None:
             return False
-        code = value & 0x0FFF
-        gain_label = "0-19V" if (value & (1 << 13)) else "0-100V"
-        pol_label = "OUT-" if (value & (1 << 15)) else "OUT+"
-        voltage = self._code_to_voltage(code, gain_label, pol_label)
-        self.adc_value_var.set(f"0x{code:03X} / {code} / {voltage:.3f} V")
+        self._set_button_adc_display(value)
         return True
 
     def _poll_button_adc_realtime(self) -> None:
+        if self.page_name == "button_mode":
+            self._poll_button_display()
+            return
         self._adc_realtime_job = None
         if not self._adc_realtime_active:
             return
@@ -2669,6 +2502,10 @@ class ButtonModePage(BasePage):
 
     def _stop_button_adc_realtime(self) -> None:
         self._adc_realtime_active = False
+        self._button_adc_generation += 1
+        if self.page_name == "button_mode" and self._button_graph_active():
+            self._refresh_adc_read_buttons()
+            return
         if self._adc_realtime_job is not None:
             try:
                 self.after_cancel(self._adc_realtime_job)
@@ -2678,6 +2515,9 @@ class ButtonModePage(BasePage):
         self._refresh_adc_read_buttons()
 
     def _refresh_adc_read_buttons(self) -> None:
+        graph_btn = self._buttons.get("awp1221_adc_graph")
+        if graph_btn is not None:
+            graph_btn.configure(style="Selected.TButton" if self._button_graph_active() else "Secondary.TButton")
         realtime_btn = self._buttons.get("adc_read_realtime")
         if realtime_btn is not None:
             realtime_btn.configure(

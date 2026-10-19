@@ -1,0 +1,159 @@
+test_01_gpio_default_and_dropdown_encoding (test_awp1221_annotations.Awp1221AnnotationTests.test_01_gpio_default_and_dropdown_encoding) ... ok
+test_02_gpio_readback_syncs_both_pages_without_rewriting_bits (test_awp1221_annotations.Awp1221AnnotationTests.test_02_gpio_readback_syncs_both_pages_without_rewriting_bits) ... ok
+test_03_bits_follow_stage_precision_and_sample (test_awp1221_annotations.Awp1221AnnotationTests.test_03_bits_follow_stage_precision_and_sample) ... ok
+test_04_sinc_period_is_first_pair_fixed_256_and_updates (test_awp1221_annotations.Awp1221AnnotationTests.test_04_sinc_period_is_first_pair_fixed_256_and_updates) ... ok
+test_05_help_uses_existing_question_tooltip (test_awp1221_annotations.Awp1221AnnotationTests.test_05_help_uses_existing_question_tooltip) ... ok
+test_06_theme_and_visual_evidence (test_awp1221_annotations.Awp1221AnnotationTests.test_06_theme_and_visual_evidence) ... FAIL
+test_bit3_clear_returns_value_with_bit3_set (test_awp1221_cmd_gate.Awp1221CmdGateTests.test_bit3_clear_returns_value_with_bit3_set) ... ok
+test_bit3_set_returns_none (test_awp1221_cmd_gate.Awp1221CmdGateTests.test_bit3_set_returns_none) ... ok
+test_ensure_does_not_write_when_bit3_set (test_awp1221_cmd_gate.Awp1221CmdGateTests.test_ensure_does_not_write_when_bit3_set) ... ok
+test_ensure_propagates_read_error (test_awp1221_cmd_gate.Awp1221CmdGateTests.test_ensure_propagates_read_error) ... ok
+test_ensure_writes_only_when_bit3_clear (test_awp1221_cmd_gate.Awp1221CmdGateTests.test_ensure_writes_only_when_bit3_clear) ... ok
+test_other_bits_are_preserved (test_awp1221_cmd_gate.Awp1221CmdGateTests.test_other_bits_are_preserved) ... ok
+test_adc_realtime_start_gates_then_reads_settings (test_awp1221_cmd_gate.Awp1221CmdGateWiringTests.test_adc_realtime_start_gates_then_reads_settings) ... ok
+test_send_control_command_gates_before_0x02 (test_awp1221_cmd_gate.Awp1221CmdGateWiringTests.test_send_control_command_gates_before_0x02) ... ok
+test_sinc_write_gates_before_batch (test_awp1221_cmd_gate.Awp1221CmdGateWiringTests.test_sinc_write_gates_before_batch) ... ok
+test_start_detection_gates_before_payload (test_awp1221_cmd_gate.Awp1221CmdGateWiringTests.test_start_detection_gates_before_payload) ... ok
+test_waveform_write_gates_before_batch (test_awp1221_cmd_gate.Awp1221CmdGateWiringTests.test_waveform_write_gates_before_batch) ... ok
+test_write_chip_state_gates_before_0x01 (test_awp1221_cmd_gate.Awp1221CmdGateWiringTests.test_write_chip_state_gates_before_0x01) ... ok
+test_band_width_uses_repeat_and_debounce (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_band_width_uses_repeat_and_debounce) ... ok
+test_ceiling_floor_is_one (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_ceiling_floor_is_one) ... ok
+test_ceiling_includes_thresholds_when_signal_is_small (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_ceiling_includes_thresholds_when_signal_is_small) ... ok
+test_debounce_skipped_when_disabled (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_debounce_skipped_when_disabled) ... ok
+test_invalid_code_is_masked_to_12_bits (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_invalid_code_is_masked_to_12_bits) ... ok
+test_mv_conversion_matches_live_curve_formula (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_mv_conversion_matches_live_curve_formula) ... ok
+test_negative_code_precision_shifts_signed (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_negative_code_precision_shifts_signed) ... ok
+test_negative_code_sign_extends (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_negative_code_sign_extends) ... ok
+test_negative_period_and_debounce_clamp_to_zero (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_negative_period_and_debounce_clamp_to_zero) ... ok
+test_precision_off_keeps_12_bit_code (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_precision_off_keeps_12_bit_code) ... ok
+test_precision_on_shifts_four_bits (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_precision_on_shifts_four_bits) ... ok
+test_repeat_zero_plays_once (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_repeat_zero_plays_once) ... ok
+test_vibration_falling_edge_only_high_to_low (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_vibration_falling_edge_only_high_to_low) ... ok
+test_visible_band_clips_to_window (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_visible_band_clips_to_window) ... ok
+test_visible_band_just_started_paints_into_the_past (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_visible_band_just_started_paints_into_the_past) ... ok
+test_visible_band_none_when_outside_span (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_visible_band_none_when_outside_span) ... ok
+test_zero_time_label_to_seconds (test_awp1221_realtime_overlay.Awp1221RealtimeHelperTests.test_zero_time_label_to_seconds) ... ok
+test_button_mode_uses_first_press_and_release_stages (test_awp1221_realtime_overlay.Awp1221RealtimePageLogicTests.test_button_mode_uses_first_press_and_release_stages) ... ok
+test_d2_falling_edge_starts_one_band (test_awp1221_realtime_overlay.Awp1221RealtimePageLogicTests.test_d2_falling_edge_starts_one_band) ... ok
+test_full_mode_uses_visible_stage_press_release (test_awp1221_realtime_overlay.Awp1221RealtimePageLogicTests.test_full_mode_uses_visible_stage_press_release) ... ok
+test_invalid_threshold_omits_that_line (test_awp1221_realtime_overlay.Awp1221RealtimePageLogicTests.test_invalid_threshold_omits_that_line) ... ok
+test_out_of_range_threshold_omits_that_line (test_awp1221_realtime_overlay.Awp1221RealtimePageLogicTests.test_out_of_range_threshold_omits_that_line) ... ok
+test_process_p_does_not_start_band_without_d2_low (test_awp1221_realtime_overlay.Awp1221RealtimePageLogicTests.test_process_p_does_not_start_band_without_d2_low) ... ok
+test_vibration_duration_combines_period_repeat_debounce (test_awp1221_realtime_overlay.Awp1221RealtimePageLogicTests.test_vibration_duration_combines_period_repeat_debounce) ... ok
+test_vibration_duration_skips_debounce_when_unchecked (test_awp1221_realtime_overlay.Awp1221RealtimePageLogicTests.test_vibration_duration_skips_debounce_when_unchecked) ... ok
+test_add_vibration_band_ignores_non_positive_duration (test_awp1221_realtime_overlay.Awp1221RealtimeWindowTests.test_add_vibration_band_ignores_non_positive_duration) ... ok
+test_add_vibration_band_records_start_and_duration (test_awp1221_realtime_overlay.Awp1221RealtimeWindowTests.test_add_vibration_band_records_start_and_duration) ... ok
+test_redraw_creates_threshold_items_but_hides_band_items (test_awp1221_realtime_overlay.Awp1221RealtimeWindowTests.test_redraw_creates_threshold_items_but_hides_band_items) ... can't invoke "event" command: application has been destroyed
+    while executing
+"event generate $w <<ThemeChanged>>"
+    (procedure "ttk::ThemeChanged" line 6)
+    invoked from within
+"ttk::ThemeChanged"
+can't invoke "event" command: application has been destroyed
+    while executing
+"event generate $w <<ThemeChanged>>"
+    (procedure "ttk::ThemeChanged" line 6)
+    invoked from within
+"ttk::ThemeChanged"
+ok
+test_set_threshold_counts_stores_values (test_awp1221_realtime_overlay.Awp1221RealtimeWindowTests.test_set_threshold_counts_stores_values) ... ok
+test_label_uses_bit2 (test_awp1221_realtime_settings.Awp1221AdcLoadBitTests.test_label_uses_bit2) ... ok
+test_merge_sample_time_only_bits_11_10 (test_awp1221_realtime_settings.Awp1221AdcLoadBitTests.test_merge_sample_time_only_bits_11_10) ... ok
+test_merge_sets_only_bit2_and_preserves_bit3 (test_awp1221_realtime_settings.Awp1221AdcLoadBitTests.test_merge_sets_only_bit2_and_preserves_bit3) ... ok
+test_live_poll_reads_adc_inside_suppressed_background_task (test_awp1221_realtime_settings.Awp1221QuietRealtimeReadTests.test_live_poll_reads_adc_inside_suppressed_background_task) ... ok
+test_quiet_read_wraps_suppress_logging (test_awp1221_realtime_settings.Awp1221QuietRealtimeReadTests.test_quiet_read_wraps_suppress_logging) ... ok
+test_gpio0_uses_playback_function_without_register_04_or_03_access (test_awp1221_realtime_settings.Awp1221RealtimeGpioPreparationTests.test_gpio0_uses_playback_function_without_register_04_or_03_access) ... ok
+test_encode_decode_round_trip (test_awp1221_realtime_settings.Awp1221SampleTimeOptionTests.test_encode_decode_round_trip) ... ok
+test_options_are_4_8_16_32 (test_awp1221_realtime_settings.Awp1221SampleTimeOptionTests.test_options_are_4_8_16_32) ... ok
+test_load_settings_uses_bit2 (test_awp1221_realtime_settings.Awp1221WindowSettingsWriteTests.test_load_settings_uses_bit2) ... ok
+test_write_settings_rmw_sample_time_and_load_bit2 (test_awp1221_realtime_settings.Awp1221WindowSettingsWriteTests.test_write_settings_rmw_sample_time_and_load_bit2) ... ok
+test_en_high_path_updates_chip_and_both_mode_pages (test_awp1221_signed_threshold.Awp1221EnHighAdcLoadTests.test_en_high_path_updates_chip_and_both_mode_pages) ... ok
+test_helper_sets_bit2_and_preserves_bit3 (test_awp1221_signed_threshold.Awp1221EnHighAdcLoadTests.test_helper_sets_bit2_and_preserves_bit3) ... ok
+test_0x7ff_formats_as_2047 (test_awp1221_signed_threshold.Awp1221FormatThresholdSignedTests.test_0x7ff_formats_as_2047) ... ok
+test_0x800_formats_as_minus_2048 (test_awp1221_signed_threshold.Awp1221FormatThresholdSignedTests.test_0x800_formats_as_minus_2048) ... ok
+test_0xfff_formats_as_minus_one (test_awp1221_signed_threshold.Awp1221FormatThresholdSignedTests.test_0xfff_formats_as_minus_one) ... ok
+test_decimal_minus_2048_is_rejected (test_awp1221_signed_threshold.Awp1221ParseThresholdTextTests.test_decimal_minus_2048_is_rejected) ... ok
+test_decimal_with_leading_zero_is_still_decimal (test_awp1221_signed_threshold.Awp1221ParseThresholdTextTests.test_decimal_with_leading_zero_is_still_decimal) ... ok
+test_hex_0x800_is_raw_code (test_awp1221_signed_threshold.Awp1221ParseThresholdTextTests.test_hex_0x800_is_raw_code) ... ok
+test_minus_2047_is_0x801 (test_awp1221_signed_threshold.Awp1221ParseThresholdTextTests.test_minus_2047_is_0x801) ... ok
+test_minus_one_is_0xfff (test_awp1221_signed_threshold.Awp1221ParseThresholdTextTests.test_minus_one_is_0xfff) ... ok
+test_non_hex_integer_prefix_is_rejected (test_awp1221_signed_threshold.Awp1221ParseThresholdTextTests.test_non_hex_integer_prefix_is_rejected) ... ok
+test_positive_max_is_0x7ff (test_awp1221_signed_threshold.Awp1221ParseThresholdTextTests.test_positive_max_is_0x7ff) ... ok
+test_unsigned_4095_is_rejected (test_awp1221_signed_threshold.Awp1221ParseThresholdTextTests.test_unsigned_4095_is_rejected) ... ok
+test_hex_hint_is_normalized_to_three_uppercase_digits (test_awp1221_signed_threshold.Awp1221ThresholdHexHintTests.test_hex_hint_is_normalized_to_three_uppercase_digits) ... ok
+test_invalid_4095_hint_is_empty (test_awp1221_signed_threshold.Awp1221ThresholdHexHintTests.test_invalid_4095_hint_is_empty) ... ok
+test_minus_2047_hint_is_0x801 (test_awp1221_signed_threshold.Awp1221ThresholdHexHintTests.test_minus_2047_hint_is_0x801) ... ok
+test_minus_one_hint_is_0xfff (test_awp1221_signed_threshold.Awp1221ThresholdHexHintTests.test_minus_one_hint_is_0xfff) ... ok
+test_empty_occupied_starts_at_data_start (test_awp1221_sram.AllocationTests.test_empty_occupied_starts_at_data_start) ... ok
+test_raises_when_sram_full (test_awp1221_sram.AllocationTests.test_raises_when_sram_full) ... ok
+test_skips_occupied_range (test_awp1221_sram.AllocationTests.test_skips_occupied_range) ... ok
+test_descriptor_encodes_range_vpk_offset (test_awp1221_sram.DescriptorTests.test_descriptor_encodes_range_vpk_offset) ... ok
+test_descriptor_rejects_range_outside_sram_data (test_awp1221_sram.DescriptorTests.test_descriptor_rejects_range_outside_sram_data) ... ok
+test_negative_uses_sign_bit (test_awp1221_sram.EncodeVal2Tests.test_negative_uses_sign_bit) ... ok
+test_non_negative_passthrough (test_awp1221_sram.EncodeVal2Tests.test_non_negative_passthrough) ... ok
+test_out_of_range_raises (test_awp1221_sram.EncodeVal2Tests.test_out_of_range_raises) ... ok
+test_allocation_invariants (test_awp1221_sram.SegmentIntervalAllocationTests.test_allocation_invariants) ... ok
+test_invalid_weights_are_rejected (test_awp1221_sram.SegmentIntervalAllocationTests.test_invalid_weights_are_rejected) ... ok
+test_single_segment_takes_every_interval (test_awp1221_sram.SegmentIntervalAllocationTests.test_single_segment_takes_every_interval) ... ok
+test_thirty_seventy_and_reverse_match_spec_examples (test_awp1221_sram.SegmentIntervalAllocationTests.test_thirty_seventy_and_reverse_match_spec_examples) ... ok
+test_tied_remainders_prefer_earlier_segment (test_awp1221_sram.SegmentIntervalAllocationTests.test_tied_remainders_prefer_earlier_segment) ... ok
+test_twenty_fifty_thirty_matches_spec_example (test_awp1221_sram.SegmentIntervalAllocationTests.test_twenty_fifty_thirty_matches_spec_example) ... ok
+test_zero_interval_is_not_a_weight_error (test_awp1221_sram.SegmentIntervalAllocationTests.test_zero_interval_is_not_a_weight_error) ... ok
+test_bad_weights_fail_before_capacity_search (test_awp1221_sram.SegmentWeightGenerationTests.test_bad_weights_fail_before_capacity_search) ... ok
+test_compression_failure_keeps_ratio_and_reports_capacity (test_awp1221_sram.SegmentWeightGenerationTests.test_compression_failure_keeps_ratio_and_reports_capacity) ... ok
+test_large_amplitude_search_reapplies_the_same_ratio (test_awp1221_sram.SegmentWeightGenerationTests.test_large_amplitude_search_reapplies_the_same_ratio) ... ok
+test_non_finite_controls_are_rejected (test_awp1221_sram.SegmentWeightGenerationTests.test_non_finite_controls_are_rejected) ... ok
+test_omitted_weights_match_legacy_equal_split (test_awp1221_sram.SegmentWeightGenerationTests.test_omitted_weights_match_legacy_equal_split) ... ok
+test_small_amplitude_boundary_codes_follow_requested_ratio (test_awp1221_sram.SegmentWeightGenerationTests.test_small_amplitude_boundary_codes_follow_requested_ratio) ... ok
+test_three_argument_waveform_still_defaults_intervals (test_awp1221_sram.SegmentWeightGenerationTests.test_three_argument_waveform_still_defaults_intervals) ... ok
+test_tiny_ratio_reports_capacity_without_mutating_weights (test_awp1221_sram.SegmentWeightGenerationTests.test_tiny_ratio_reports_capacity_without_mutating_weights) ... ok
+test_weighted_points_keep_shared_endpoints_once (test_awp1221_sram.SegmentWeightGenerationTests.test_weighted_points_keep_shared_endpoints_once) ... ok
+test_compress_decompress_matches_centered_shape (test_awp1221_sram.WaveformRoundTripTests.test_compress_decompress_matches_centered_shape) ... ok
+test_generate_waveform_round_trips (test_awp1221_sram.WaveformRoundTripTests.test_generate_waveform_round_trips) ... ok
+test_invalid_point_count_rejected (test_awp1221_sram.WaveformRoundTripTests.test_invalid_point_count_rejected) ... ok
+test_write_enters_access_mode_then_restores_play_mode (test_awp1221_sram.WriteWaveformTests.test_write_enters_access_mode_then_restores_play_mode) ... ok
+test_default_rom_hides_sram_editor (test_awp1221_sram_ui.Awp1221ButtonModeSramSwapTests.test_default_rom_hides_sram_editor) ... can't invoke "event" command: application has been destroyed
+    while executing
+"event generate $w <<ThemeChanged>>"
+    (procedure "ttk::ThemeChanged" line 6)
+    invoked from within
+"ttk::ThemeChanged"
+ok
+test_ram_collapses_rom_preview_so_editor_is_taller (test_awp1221_sram_ui.Awp1221ButtonModeSramSwapTests.test_ram_collapses_rom_preview_so_editor_is_taller) ... ok
+test_ram_source_shows_editor_and_keeps_source_combo (test_awp1221_sram_ui.Awp1221ButtonModeSramSwapTests.test_ram_source_shows_editor_and_keeps_source_combo) ... ok
+test_returning_to_rom_hides_editor (test_awp1221_sram_ui.Awp1221ButtonModeSramSwapTests.test_returning_to_rom_hides_editor) ... ok
+test_sinc_hides_editor_even_if_source_is_ram (test_awp1221_sram_ui.Awp1221ButtonModeSramSwapTests.test_sinc_hides_editor_even_if_source_is_ram) ... ok
+test_full_mode_grids_sram_editor_in_waveform_tab (test_awp1221_sram_ui.Awp1221FullModeSramTabTests.test_full_mode_grids_sram_editor_in_waveform_tab) ... ok
+test_button_and_full_pages_scroll_each_ratio_row_into_view (test_awp1221_sram_ui.Awp1221SegmentRatioLayoutTests.test_button_and_full_pages_scroll_each_ratio_row_into_view) ... ok
+test_ratio_controls_stay_reachable_at_default_min_and_zoom (test_awp1221_sram_ui.Awp1221SegmentRatioLayoutTests.test_ratio_controls_stay_reachable_at_default_min_and_zoom) ... ok
+test_default_four_points_show_three_equal_segments (test_awp1221_sram_ui.Awp1221SegmentRatioUiTests.test_default_four_points_show_three_equal_segments) ... ok
+test_illegal_ratio_blocks_refresh_drag_and_serial_write (test_awp1221_sram_ui.Awp1221SegmentRatioUiTests.test_illegal_ratio_blocks_refresh_drag_and_serial_write) ... ok
+test_invalid_ratio_text_is_rejected_and_not_writable (test_awp1221_sram_ui.Awp1221SegmentRatioUiTests.test_invalid_ratio_text_is_rejected_and_not_writable) ... ok
+test_keystroke_does_not_popup (test_awp1221_sram_ui.Awp1221SegmentRatioUiTests.test_keystroke_does_not_popup) ... ok
+test_mode_switch_keeps_instance_ratio_and_full_mode_has_rows (test_awp1221_sram_ui.Awp1221SegmentRatioUiTests.test_mode_switch_keeps_instance_ratio_and_full_mode_has_rows) ... ok
+test_ratio_dots_curve_and_hit_use_actual_intervals (test_awp1221_sram_ui.Awp1221SegmentRatioUiTests.test_ratio_dots_curve_and_hit_use_actual_intervals) ... ok
+test_three_points_show_left_right_and_amplitude_keeps_ratio (test_awp1221_sram_ui.Awp1221SegmentRatioUiTests.test_three_points_show_left_right_and_amplitude_keeps_ratio) ... ok
+test_ui_uses_returned_intervals_when_final_count_grows (test_awp1221_sram_ui.Awp1221SegmentRatioUiTests.test_ui_uses_returned_intervals_when_final_count_grows) ... can't invoke "event" command: application has been destroyed
+    while executing
+"event generate $w <<ThemeChanged>>"
+    (procedure "ttk::ThemeChanged" line 6)
+    invoked from within
+"ttk::ThemeChanged"
+ok
+test_unencodable_legal_ratio_still_allows_amplitude_drag (test_awp1221_sram_ui.Awp1221SegmentRatioUiTests.test_unencodable_legal_ratio_still_allows_amplitude_drag) ... ok
+test_write_locks_nested_ratio_controls_and_restores (test_awp1221_sram_ui.Awp1221SegmentRatioUiTests.test_write_locks_nested_ratio_controls_and_restores) ... ok
+test_realtime_entry_exports_editor_class (test_awp1221_sram_ui.Awp1221SramEditorImportTests.test_realtime_entry_exports_editor_class) ... ok
+test_editor_constructs_and_enables_write_for_default_shape (test_awp1221_sram_ui.Awp1221SramEditorWidgetTests.test_editor_constructs_and_enables_write_for_default_shape) ... ok
+
+======================================================================
+FAIL: test_06_theme_and_visual_evidence (test_awp1221_annotations.Awp1221AnnotationTests.test_06_theme_and_visual_evidence)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\wasd1\Desktop\GUI REV04\tests\test_awp1221_annotations.py", line 157, in test_06_theme_and_visual_evidence
+    self.assertLessEqual(last_bit.winfo_rootx() + last_bit.winfo_width(),
+AssertionError: 1127 not less than or equal to 1110
+
+----------------------------------------------------------------------
+Ran 122 tests in 33.081s
+
+FAILED (failures=1)

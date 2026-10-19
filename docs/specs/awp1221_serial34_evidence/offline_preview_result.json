@@ -1,0 +1,125 @@
+[
+  {
+    "serial": "serial3",
+    "times_us_by_slice": [
+      "4",
+      "7",
+      "8",
+      "9"
+    ],
+    "sin_repeat_count": 2,
+    "slices": [
+      24,
+      25,
+      26,
+      27
+    ],
+    "sram_word_addresses": [
+      96,
+      97,
+      98,
+      99,
+      100,
+      101,
+      102,
+      103,
+      104,
+      105,
+      106,
+      107,
+      108,
+      109,
+      110,
+      111
+    ],
+    "duration_us": 10240,
+    "sine_frequency_hz": 488.28125,
+    "match_text": "+100 / -10.9375 V，Vpp 110.938 V，10240 us",
+    "frequency_text": "首段 SIN 频率 488.281 Hz",
+    "repeat_control_geometry": {
+      "viewport_top": 374,
+      "viewport_bottom": 607,
+      "entry_top": 554,
+      "entry_bottom": 589
+    },
+    "screenshots": [
+      "docs/specs/awp1221_serial34_evidence/serial3_preview.bmp",
+      "docs/specs/awp1221_serial34_evidence/serial3_four_times.bmp",
+      "docs/specs/awp1221_serial34_evidence/serial3_repeat_control.bmp"
+    ]
+  },
+  {
+    "serial": "serial4",
+    "times_us_by_slice": [
+      "5",
+      "9",
+      "11",
+      "13"
+    ],
+    "sin_repeat_count": 1,
+    "slices": [
+      28,
+      29,
+      30,
+      31
+    ],
+    "sram_word_addresses": [
+      112,
+      113,
+      114,
+      115,
+      116,
+      117,
+      118,
+      119,
+      120,
+      121,
+      122,
+      123,
+      124,
+      125,
+      126,
+      127
+    ],
+    "duration_us": 11008,
+    "sine_frequency_hz": 390.625,
+    "match_text": "+100 / -10.9375 V，Vpp 110.938 V，11008 us",
+    "frequency_text": "首段 SIN 频率 390.625 Hz",
+    "repeat_control_geometry": {
+      "viewport_top": 374,
+      "viewport_bottom": 607,
+      "entry_top": 554,
+      "entry_bottom": 589
+    },
+    "screenshots": [
+      "docs/specs/awp1221_serial34_evidence/serial4_preview.bmp",
+      "docs/specs/awp1221_serial34_evidence/serial4_four_times.bmp",
+      "docs/specs/awp1221_serial34_evidence/serial4_repeat_control.bmp"
+    ]
+  },
+  {
+    "group_repeat_restore": "serial3=2, serial4=1"
+  },
+  {
+    "serial": "serial3",
+    "sin_repeat_count": 256,
+    "duration_us": 530432,
+    "sine_frequency_hz": 488.28125,
+    "preview_coordinate_count": 4420,
+    "screenshot": "docs/specs/awp1221_serial34_evidence/serial3_repeat256_preview.bmp"
+  },
+  {
+    "mode": "full_mode",
+    "serial": "serial4",
+    "times_us_by_slice": [
+      5,
+      9,
+      11,
+      13
+    ],
+    "sin_repeat_count": 2,
+    "duration_us": 13568,
+    "waveform_items": 3,
+    "screenshot": "docs/specs/awp1221_serial34_evidence/full_mode_serial4_preview.bmp"
+  }
+]

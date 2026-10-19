@@ -1,0 +1,380 @@
+--- awp1221_page.before.txt
++++ pages/awp1221_page.py
+@@ -1040,6 +1040,7 @@
+         self._sinc_active_group = AWP1221_SINC_SERIAL_GROUPS[0][0]
+         self._sinc_verified_key: tuple[Any, ...] | None = None
+         self.sinc_group_hint_var = tk.StringVar(value="")
++        self.sinc_haptic_period_var = tk.StringVar(value="")
+         self.auto_serial_var = (
+             auto_serial_var if auto_serial_var is not None else tk.BooleanVar(value=True)
+         )
+@@ -1280,6 +1281,12 @@
+         )
+         sinc_match.grid(row=12, column=0, columnspan=3, sticky="w", pady=(8, 0))
+         self._selector_widgets["awp1221_sinc_match"] = [sinc_match]
++        sinc_period = ttk.Label(
++            controls, textvariable=self.sinc_haptic_period_var,
++            style="Panel.TLabel", wraplength=280,
++        )
++        sinc_period.grid(row=13, column=0, columnspan=3, sticky="w", pady=(6, 0))
++        self._selector_widgets["awp1221_sinc_haptic_period"] = [sinc_period]
+         sinc_group_hint = ttk.Label(
+             controls,
+             textvariable=self.sinc_group_hint_var,
+@@ -1446,6 +1453,7 @@
+                 "repeat": tk.StringVar(value="0"),
+             }
+         self._button_stage_vars.append(variables)
++        variables["use_high_12_bits"].trace_add("write", lambda *_: self._refresh_adc_bits())
+ 
+         self._form_label(parent, "awp1221_ovv_time", row=0, column=0)
+         ttk.Combobox(
+@@ -1513,6 +1521,8 @@
+         )
+ 
+     def _show_button_stage(self, stage_index: int) -> None:
++        self._visible_button_stage_index = stage_index
++        self._refresh_adc_bits()
+         for frame in self._button_stage_frames.values():
+             frame.grid_remove()
+         self._button_stage_frames[stage_index].grid()
+@@ -2236,6 +2246,7 @@
+             )
+ 
+     def _refresh_sinc_group_hint(self) -> None:
++        self._refresh_sinc_haptic_period()
+         output = getattr(self, "sinc_group_hint_var", None)
+         serial_var = getattr(self, "sinc_serial_var", None)
+         if output is None or serial_var is None:
+@@ -2260,6 +2271,23 @@
+         self._refresh_sinc_slice_time_labels()
+         self._refresh_sinc_depth_hint()
+         self._refresh_sinc_match()
++
++    def _refresh_sinc_haptic_period(self) -> None:
++        output = getattr(self, "sinc_haptic_period_var", None)
++        if output is None:
++            return
++        period = "—"
++        try:
++            _serial, start, end = awp1221_sinc_serial_group(self.sinc_serial_var.get())
++            times = self._sinc_time_variables()
++            if start <= 0x12 < 0x13 <= end:
++                first = int(times[0x12 - start].get())
++                second = int(times[0x13 - start].get())
++                if first > 0 and second > 0:
++                    period = f"{(first + second) * 256} μs"
++        except (TypeError, ValueError, IndexError):
++            pass
++        output.set(self.tr("awp1221_sinc_haptic_period", period=period))
+ 
+     def _refresh_sinc_depth_hint(self) -> None:
+         widgets = getattr(self, "_selector_widgets", {}).get("awp1221_sinc_depth_hint", ())
+@@ -2396,6 +2424,7 @@
+             window_count = 0
+             slice_count = 0
+         sinc_keys = (
++            "awp1221_sinc_haptic_period",
+             "awp1221_sinc_serial_group",
+             "awp1221_sinc_depth",
+             "awp1221_sinc_depth_hint",
+@@ -3064,6 +3093,7 @@
+         for index, button in self._stage_buttons.items():
+             button.configure(style="Selected.TButton" if index == stage_index else "Secondary.TButton")
+         self._visible_stage_index = stage_index
++        self._refresh_adc_bits()
+         self._push_realtime_thresholds()
+ 
+     def _register_text(self, widget: tk.Widget, key: str) -> None:
+@@ -3087,6 +3117,22 @@
+         row: int,
+         column: int,
+     ) -> ttk.Label:
++        help_keys = {
++            "awp1221_ovv_time": "awp1221_ovv_time_help",
++            "awp1221_press_ovv_time": "awp1221_ovv_time_help",
++            "awp1221_release_ovv_time": "awp1221_ovv_time_help",
++            "awp1221_zero_time": "awp1221_zero_time_help",
++            "awp1221_press_return_bit_time": "awp1221_press_return_bit_time_help",
++            "awp1221_release_return_bit_time": "awp1221_release_return_bit_time_help",
++        }
++        if key in help_keys:
++            holder = ttk.Frame(parent, style="Panel.TFrame")
++            holder.grid(row=row, column=column, sticky="w", padx=(0 if column == 0 else 12, 8), pady=5)
++            label = ttk.Label(holder, style="Panel.TLabel")
++            label.grid(row=0, column=0, sticky="w")
++            self._register_text(label, key)
++            self._add_help_button(holder, 0, 1, help_keys[key])
++            return label
+         label = ttk.Label(parent, style="Panel.TLabel")
+         label.grid(row=row, column=column, sticky="w", padx=(0 if column == 0 else 12, 8), pady=5)
+         self._register_text(label, key)
+@@ -3162,6 +3208,7 @@
+         }
+         event_mode_var = tk.StringVar(value="press")
+         use_high_12_bits = tk.BooleanVar(value=False)
++        use_high_12_bits.trace_add("write", lambda *_: self._refresh_adc_bits())
+         threshold_entries: dict[str, ttk.Entry] = {}
+         self._stage_vars.append(
+             {
+@@ -3439,7 +3486,7 @@
+         category = ttk.Combobox(
+             frame,
+             textvariable=host.gpio_category_vars[index],
+-            values=tuple(GPIO_CATEGORY_LABELS.values()),
++            values=tuple(label for key, label in GPIO_CATEGORY_LABELS.items() if key != "debug"),
+             state="readonly",
+             width=22,
+         )
+@@ -3459,9 +3506,14 @@
+         function.grid(row=1, column=3, sticky="ew", pady=3)
+         host.gpio_function_combos[index].append(function)
+         self._form_label(frame, "awp1221_gpio_od", row=2, column=0)
+-        od = ttk.Checkbutton(frame, variable=host.gpio_od_vars[index])
+-        od.grid(row=2, column=1, sticky="w", pady=3)
+-        self._register_text(od, "awp1221_gpio_open_drain")
++        od = ttk.Combobox(
++            frame, textvariable=host.gpio_drive_mode_vars[index],
++            values=("Push-Pull", "OpenDrian"), state="readonly", width=16,
++        )
++        od.grid(row=2, column=1, sticky="ew", pady=3)
++        od.bind("<<ComboboxSelected>>", lambda _event, channel=index: host.gpio_od_vars[channel].set(
++            host.gpio_drive_mode_vars[channel].get() == "OpenDrian"
++        ))
+         drive = ttk.Frame(frame, style="Panel.TFrame")
+         drive.grid(row=2, column=2, columnspan=2, sticky="e", pady=3)
+         high_btn = ttk.Button(
+@@ -3501,7 +3553,7 @@
+         debounce_text = ttk.Label(debounce_label, style="Panel.TLabel")
+         debounce_text.grid(row=0, column=0, sticky="w")
+         self._register_text(debounce_text, "awp1221_debounce_time")
+-        self._add_help_button(debounce_label, 0, 1, "awp1018_debounce_time_help")
++        self._add_help_button(debounce_label, 0, 1, "awp1221_debounce_time_help")
+         ttk.Entry(section, textvariable=self.debounce_time_var, width=16).grid(
+             row=1, column=1, sticky="ew", pady=5
+         )
+@@ -3569,13 +3621,20 @@
+         adc_value_label = ttk.Label(section, style="Panel.TLabel")
+         adc_value_label.grid(row=5, column=0, sticky="w", pady=(10, 5), padx=(0, 8))
+         self._register_text(adc_value_label, "button_adc_value")
+-        ttk.Entry(section, textvariable=self.adc_value_var, state="readonly").grid(
+-            row=5,
+-            column=1,
+-            columnspan=3,
+-            sticky="ew",
+-            pady=(10, 5),
+-        )
++        adc_display = ttk.Frame(section, style="Panel.TFrame")
++        adc_display.grid(row=5, column=1, columnspan=3, sticky="ew", pady=(10, 5))
++        adc_display.columnconfigure(0, weight=1)
++        ttk.Entry(adc_display, textvariable=self.adc_value_var, state="readonly").grid(row=0, column=0, sticky="ew")
++        bits = ttk.Frame(adc_display, style="Panel.TFrame")
++        bits.grid(row=1, column=0, sticky="w", pady=(4, 0))
++        self._adc_bit_labels = []
++        for column, bit in enumerate(range(15, -1, -1)):
++            bits.columnconfigure(column, weight=1, uniform="adc_bits")
++            label = tk.Label(bits, text=f"{bit}\n—", padx=3, pady=3,
++                             font=("Consolas", 9), borderwidth=0)
++            label.grid(row=0, column=column, sticky="ew", padx=1)
++            self._adc_bit_labels.append(label)
++        self._refresh_adc_bits()
+ 
+         adc_buttons = ttk.Frame(section, style="Panel.TFrame")
+         adc_buttons.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(2, 0))
+@@ -3605,6 +3664,23 @@
+         )
+         trigger_button.grid(row=0, column=2, sticky="ew")
+         self._buttons["adc_read_on_trigger"] = trigger_button
++
++    def _refresh_adc_bits(self) -> None:
++        labels = getattr(self, "_adc_bit_labels", ())
++        if not labels:
++            return
++        stages = self._button_stage_vars if self.mode_key == "button_mode" else self._stage_vars
++        index = getattr(self, "_visible_button_stage_index", 0) if self.mode_key == "button_mode" else getattr(self, "_visible_stage_index", 0)
++        high = bool(stages[index]["use_high_12_bits"].get()) if stages else False
++        selected = range(4, 16) if high else range(12)
++        dark = self.ctx.state.theme == "dark"
++        active_bg, active_fg = ("#476C9B", "#FFFFFF") if dark else ("#A9C7EA", "#111827")
++        value = getattr(self, "_adc_raw_value", None)
++        for bit, label in zip(range(15, -1, -1), labels):
++            digit = "—" if value is None else str((value >> bit) & 1)
++            label.configure(text=f"{bit}\n{digit}",
++                            bg=active_bg if bit in selected else self.colors["panel"],
++                            fg=active_fg if bit in selected else self.colors["muted"])
+ 
+     def read_adc_value(self) -> None:
+         if self._ensure_connected():
+@@ -3830,6 +3906,8 @@
+                 self._show_adc_voltage_error(error)
+         elif value is not None:
+             raw_value = value & 0xFFFF
++            self._adc_raw_value = raw_value
++            self._refresh_adc_bits()
+             self.adc_value_var.set(
+                 f"0x{raw_value:04X} / {decode_awp1221_adc_value(raw_value)}"
+             )
+@@ -4424,6 +4502,32 @@
+         self._refresh_sinc_slice_time_labels()
+ 
+ 
++    def refresh_theme(self) -> None:
++        super().refresh_theme()
++        self._refresh_adc_bits()
++        colors = self.ctx.colors
++        canvas = getattr(self, "rom_canvas", None)
++        if canvas is not None:
++            try:
++                canvas.configure(
++                    bg=colors.get("canvas_bg", colors["bg"]),
++                    highlightbackground=colors.get("border", "#CBD5E1"),
++                )
++            except tk.TclError:
++                pass
++            self._draw_button_rom_preview()
++        editor = getattr(self, "sram_editor", None)
++        if editor is not None and hasattr(editor, "refresh_theme"):
++            editor.refresh_theme()
++        window = getattr(self, "_adc_voltage_window", None)
++        if window is not None:
++            try:
++                if int(window.winfo_exists()):
++                    window.refresh_theme(colors)
++            except tk.TclError:
++                pass
++
++
+ class AWP1221Page(BasePage):
+     page_name = "awp1221"
+     DEVICE_ADDRS = AWP1221_DEVICE_ADDRS
+@@ -4519,45 +4623,50 @@
+             self._buttons[key] = button
+ 
+     def _build_identity_bar(self, parent: ttk.Frame) -> None:
+-        self.make_serial_selector(parent, page_name=self.page_name, row=0, column=0)
+-        self._labels["current_chip_addr"] = ttk.Label(parent, style="Panel.TLabel")
+-        self._labels["current_chip_addr"].grid(row=0, column=2, padx=(0, 8))
++        serial_group = parent.add_group()
++        self.make_serial_selector(serial_group, page_name=self.page_name, row=0, column=0)
++        addr_group = parent.add_group()
++        self._labels["current_chip_addr"] = ttk.Label(addr_group, style="Panel.TLabel")
++        self._labels["current_chip_addr"].grid(row=0, column=0, padx=(0, 8))
+         self.addr_combo = ttk.Combobox(
+-            parent,
++            addr_group,
+             textvariable=self.addr_var,
+             values=[f"0x{addr:02X}" for addr in self.DEVICE_ADDRS],
+             state="readonly",
+             width=8,
+         )
+-        self.addr_combo.grid(row=0, column=3, padx=(0, 10))
++        self.addr_combo.grid(row=0, column=1)
+         self.addr_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_addr_changed())
+-        detect_btn = ttk.Button(parent, style="Primary.TButton", command=self.detect_chip)
+-        detect_btn.grid(row=0, column=4, padx=(0, 14))
++        detect_group = parent.add_group()
++        detect_btn = ttk.Button(detect_group, style="Primary.TButton", command=self.detect_chip)
++        detect_btn.grid(row=0, column=0)
+         self._buttons["detect_chip"] = detect_btn
+-        ttk.Label(parent, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=5, sticky="e")
++        status_group = parent.add_group()
++        ttk.Label(status_group, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+ 
+     def _build_register_bar(self, parent: ttk.Frame) -> None:
+-        self._labels["read_write_registers"] = ttk.Label(parent, style="Panel.TLabel")
+-        self._labels["read_write_registers"].grid(row=0, column=0, sticky="w", padx=(0, 12))
+-        self._labels["reg_addr"] = ttk.Label(parent, style="Panel.TLabel")
+-        self._labels["reg_addr"].grid(row=0, column=1, sticky="w", padx=(0, 6))
+-        ttk.Entry(parent, textvariable=self.reg_addr_var, width=8).grid(
+-            row=0, column=2, sticky="w", padx=(0, 12)
+-        )
+-        self._labels["write_value"] = ttk.Label(parent, style="Panel.TLabel")
+-        self._labels["write_value"].grid(row=0, column=3, sticky="w", padx=(0, 6))
+-        ttk.Entry(parent, textvariable=self.write_value_var, width=10).grid(
+-            row=0, column=4, sticky="w", padx=(0, 12)
+-        )
+-        self._labels["read_value"] = ttk.Label(parent, style="Panel.TLabel")
+-        self._labels["read_value"].grid(row=0, column=5, sticky="w", padx=(0, 6))
+-        ttk.Entry(parent, textvariable=self.read_value_var, width=12, state="readonly").grid(
+-            row=0, column=6, sticky="w", padx=(0, 12)
+-        )
+-        read_btn = ttk.Button(parent, style="Secondary.TButton", command=self.read_register)
+-        read_btn.grid(row=0, column=7, sticky="w", padx=(0, 6))
+-        write_btn = ttk.Button(parent, style="Primary.TButton", command=self.write_register)
+-        write_btn.grid(row=0, column=8, sticky="w", padx=(0, 14))
++        title_group = parent.add_group()
++        self._labels["read_write_registers"] = ttk.Label(title_group, style="Panel.TLabel")
++        self._labels["read_write_registers"].grid(row=0, column=0, sticky="w")
++        addr_group = parent.add_group()
++        self._labels["reg_addr"] = ttk.Label(addr_group, style="Panel.TLabel")
++        self._labels["reg_addr"].grid(row=0, column=0, sticky="w", padx=(0, 6))
++        ttk.Entry(addr_group, textvariable=self.reg_addr_var, width=8).grid(row=0, column=1, sticky="w")
++        write_group = parent.add_group()
++        self._labels["write_value"] = ttk.Label(write_group, style="Panel.TLabel")
++        self._labels["write_value"].grid(row=0, column=0, sticky="w", padx=(0, 6))
++        ttk.Entry(write_group, textvariable=self.write_value_var, width=10).grid(row=0, column=1, sticky="w")
++        read_group = parent.add_group()
++        self._labels["read_value"] = ttk.Label(read_group, style="Panel.TLabel")
++        self._labels["read_value"].grid(row=0, column=0, sticky="w", padx=(0, 6))
++        ttk.Entry(read_group, textvariable=self.read_value_var, width=12, state="readonly").grid(
++            row=0, column=1, sticky="w"
++        )
++        button_group = parent.add_group()
++        read_btn = ttk.Button(button_group, style="Secondary.TButton", command=self.read_register)
++        read_btn.grid(row=0, column=0, sticky="w", padx=(0, 6))
++        write_btn = ttk.Button(button_group, style="Primary.TButton", command=self.write_register)
++        write_btn.grid(row=0, column=1, sticky="w")
+         self._buttons["rr"] = read_btn
+         self._buttons["rw"] = write_btn
+ 
+@@ -4568,7 +4677,12 @@
+             tk.StringVar(value=GPIO_CATEGORY_LABELS["input"]),
+         ]
+         self.gpio_function_vars = [tk.StringVar(value=""), tk.StringVar(value="")]
+-        self.gpio_od_vars = [tk.BooleanVar(value=False), tk.BooleanVar(value=False)]
++        self.gpio_od_vars = [tk.BooleanVar(value=True), tk.BooleanVar(value=True)]
++        self.gpio_drive_mode_vars = [tk.StringVar(value="OpenDrian"), tk.StringVar(value="OpenDrian")]
++        for index, variable in enumerate(self.gpio_od_vars):
++            variable.trace_add("write", lambda *_, channel=index: self.gpio_drive_mode_vars[channel].set(
++                "OpenDrian" if self.gpio_od_vars[channel].get() else "Push-Pull"
++            ))
+         self.gpio_chip_status_vars = [
+             tk.StringVar(value=""),
+             tk.StringVar(value=""),
+@@ -4579,7 +4693,9 @@
+         self.gpio_action_widgets: list[list[tk.Widget]] = [[], []]
+ 
+     def _gpio_function_labels(self, channel: int) -> tuple[str, ...]:
+-        category = _GPIO_CATEGORY_BY_LABEL.get(self.gpio_category_vars[channel].get(), "input")
++        category = _GPIO_CATEGORY_BY_LABEL.get(self.gpio_category_vars[channel].get())
++        if category is None or category == "debug":
++            return ()
+         return tuple(GPIO_FUNCTION_LABELS[code] for code in GPIO_CATEGORY_FUNCTIONS[category])
+ 
+     def _on_gpio_category_selected(self, channel: int) -> None:
+@@ -4630,9 +4746,13 @@
+     def _apply_pending_to_vars(self, gpio0: GpioChannelBits, gpio1: GpioChannelBits) -> None:
+         for index, bits in enumerate((gpio0, gpio1)):
+             category = gpio_function_category(bits.function)
+-            self.gpio_category_vars[index].set(GPIO_CATEGORY_LABELS[category])
++            self.gpio_category_vars[index].set(
++                f"0x{bits.function:02X} (readback)" if category == "debug" else GPIO_CATEGORY_LABELS[category]
++            )
+             self.gpio_function_vars[index].set(GPIO_FUNCTION_LABELS[bits.function])
+             self.gpio_od_vars[index].set(bool(bits.open_drain))
++            for combo in self.gpio_function_combos[index]:
++                combo.configure(values=self._gpio_function_labels(index))
+             self._refresh_gpio_mcu_label(index)
+ 
+     def _refresh_gpio_status(self) -> None:
+@@ -5201,3 +5321,10 @@
+             for index in range(2):
+                 self._on_gpio_category_selected(index)
+             self._refresh_gpio_status()
++
++    def refresh_theme(self) -> None:
++        super().refresh_theme()
++        for page in self.mode_pages.values():
++            refresh = getattr(page, "refresh_theme", None)
++            if callable(refresh):
++                refresh()

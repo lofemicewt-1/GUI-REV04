@@ -1,0 +1,11 @@
+test_01_gpio_default_and_dropdown_encoding (tests.test_awp1221_annotations.Awp1221AnnotationTests.test_01_gpio_default_and_dropdown_encoding) ... ok
+test_02_gpio_readback_syncs_both_pages_without_rewriting_bits (tests.test_awp1221_annotations.Awp1221AnnotationTests.test_02_gpio_readback_syncs_both_pages_without_rewriting_bits) ... ok
+test_03_bits_follow_stage_precision_and_sample (tests.test_awp1221_annotations.Awp1221AnnotationTests.test_03_bits_follow_stage_precision_and_sample) ... ok
+test_04_sinc_period_is_first_pair_fixed_256_and_updates (tests.test_awp1221_annotations.Awp1221AnnotationTests.test_04_sinc_period_is_first_pair_fixed_256_and_updates) ... ok
+test_05_help_uses_existing_question_tooltip (tests.test_awp1221_annotations.Awp1221AnnotationTests.test_05_help_uses_existing_question_tooltip) ... ok
+test_06_theme_and_visual_evidence (tests.test_awp1221_annotations.Awp1221AnnotationTests.test_06_theme_and_visual_evidence) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 35.358s
+
+OK

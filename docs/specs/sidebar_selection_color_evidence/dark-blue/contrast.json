@@ -1,0 +1,21 @@
+{
+  "hardware_boundary": "offline; LocalI2cBridge.start and serial enumeration simulated; no serial/I2C/firmware action",
+  "method": "sRGB relative luminance from screenshot glyph cores versus neighboring fill, not style configuration",
+  "minimum_contrast": 4.5,
+  "failures": [],
+  "states": [
+    {"file": "dark-chip-selected.bmp", "fill": [40, 112, 248], "glyph": [5, 7, 13], "contrast": 4.568},
+    {"file": "dark-mode-selected.bmp", "fill": [40, 112, 248], "glyph": [5, 7, 13], "contrast": 4.568},
+    {"file": "dark-mode-idle.bmp", "fill": [20, 56, 112], "glyph": [255, 255, 255], "contrast": 11.479},
+    {"file": "dark-chip-active.bmp", "fill": [40, 112, 248], "glyph": [5, 7, 13], "contrast": 4.568},
+    {"file": "dark-chip-pressed.bmp", "fill": [40, 112, 248], "glyph": [5, 7, 13], "contrast": 4.568},
+    {"file": "dark-chip-disabled.bmp", "fill": [20, 32, 48], "glyph": [209, 213, 219], "contrast": 11.143},
+    {"file": "dark-mode-active.bmp", "fill": [40, 112, 248], "glyph": [5, 7, 13], "contrast": 4.568},
+    {"file": "dark-mode-pressed.bmp", "fill": [40, 112, 248], "glyph": [5, 7, 13], "contrast": 4.568},
+    {"file": "dark-mode-disabled.bmp", "fill": [20, 56, 112], "glyph": [209, 213, 219], "contrast": 7.79},
+    {"file": "light-chip-selected.bmp", "fill": [28, 76, 216], "glyph": [255, 255, 255], "contrast": 6.83},
+    {"file": "light-mode-selected.bmp", "fill": [28, 76, 216], "glyph": [255, 255, 255], "contrast": 6.83},
+    {"file": "dark-return-chip-selected.bmp", "fill": [40, 112, 248], "glyph": [5, 7, 13], "contrast": 4.568},
+    {"file": "dark-return-mode-selected.bmp", "fill": [40, 112, 248], "glyph": [5, 7, 13], "contrast": 4.568}
+  ]
+}

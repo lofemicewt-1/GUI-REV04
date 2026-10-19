@@ -1,0 +1,28 @@
+--- languages.before.txt
++++ config/languages.py
+@@ -139,6 +139,12 @@
+         "awp1221_basic_parameters": "\u57fa\u7840\u53c2\u6570\uff1a\u5f85\u5bc4\u5b58\u5668\u8868\u8865\u5145\uff08\u4e0d\u4f1a\u5199\u5165\u82af\u7247\uff09",
+         "awp1221_adc": "ADC \u9608\u503c\u68c0\u6d4b",
+         "awp1221_ovv_time": "ADC OVV Time",
++        "awp1221_ovv_time_help": "\u4ee3\u8868\u8fde\u7eed\u8d85\u8fc7\u9608\u503c\u591a\u5c11\u65f6\u95f4\u89e6\u53d1ADC\u4e8b\u4ef6\u3002",
++        "awp1221_debounce_time_help": "ADC\u5728\u6b64\u6bb5\u65f6\u95f4\u5185\uff0c\u4e0d\u8ba1\u6570\uff0c\u4f46\u4ecd\u8fdb\u884cADC\u68c0\u6d4b\uff0c\u8f93\u5165\u5355\u4f4d\u4e3ams\u3002",
++        "awp1221_zero_time_help": "\u6ce2\u5f62\u64ad\u653e\u5b8c\u6210\u540e\u64ad\u653e\u6240\u9009\u65f6\u95f4\u7684\u9676\u74f7\u7247\u4e24\u7aef0V\u3002",
++        "awp1221_press_return_bit_time_help": "\u914d\u7f6epress\u4e8b\u4ef6\u89e6\u53d1\u4e4b\u540e\u7684\u9000bit\u65f6\u95f4\u5468\u671f\uff0c\u6bcf\u7ecf\u8fc71\u4e2a\u5468\u671f\u90001\u4e2a\u7801\u5b57\u3002",
++        "awp1221_release_return_bit_time_help": "\u914d\u7f6erelease\u4e8b\u4ef6\u89e6\u53d1\u4e4b\u540e\u7684\u9000bit\u65f6\u95f4\u5468\u671f\uff0c\u6bcf\u7ecf\u8fc71\u4e2a\u5468\u671f\u90001\u4e2a\u7801\u5b57\u3002",
++        "awp1221_sinc_haptic_period": "\u632f\u611f\u63d0\u4f9b\u7684\u5468\u671f\u957f\u5ea6\uff1a{period}",
+         "awp1221_jump_target": "\u8df3\u8f6c\u76ee\u6807",
+         "awp1221_adc_event_mode": "\u68c0\u6d4b\u6a21\u5f0f",
+         "awp1221_detection_threshold": "\u68c0\u6d4b\u9608\u503c",
+@@ -828,6 +834,12 @@
+         "awp1221_basic_parameters": "Basic parameters: awaiting register table (no chip writes)",
+         "awp1221_adc": "ADC Threshold Detection",
+         "awp1221_ovv_time": "ADC OVV Time",
++        "awp1221_ovv_time_help": "The continuous time above the threshold required to trigger an ADC event.",
++        "awp1221_debounce_time_help": "ADC counting is paused during this interval, but ADC detection continues. Enter the duration in ms.",
++        "awp1221_zero_time_help": "After waveform playback, hold 0 V across the piezo for the selected duration.",
++        "awp1221_press_return_bit_time_help": "Return-bit interval after a press event: decrease by one code word per interval.",
++        "awp1221_release_return_bit_time_help": "Return-bit interval after a release event: decrease by one code word per interval.",
++        "awp1221_sinc_haptic_period": "Haptic period length: {period}",
+         "awp1221_jump_target": "Jump Target",
+         "awp1221_adc_event_mode": "Detection Mode",
+         "awp1221_detection_threshold": "Detection Threshold",
