@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import threading
 import time
 import tkinter as tk
 import unittest
@@ -34,13 +36,27 @@ class ConnectableSerial(FakeSerial):
 
 class HomeFirmwareLockTests(unittest.TestCase):
     def setUp(self) -> None:
+        # Collect Tk garbage left by earlier tests on the main thread, so a GC
+        # pass triggered inside a background thread (e.g. port scan) cannot
+        # finalize tkinter Variables there (Windows: Tcl_AsyncDelete crash).
+        gc.collect()
+        self._threads_before = set(threading.enumerate())
         self.root = tk.Tk()
         self.root.withdraw()
+        self.addCleanup(self._final_cleanup)
         self.addCleanup(self.root.destroy)
         self.serial = ConnectableSerial([SerialPortInfo(device="COM3", name="USB-SERIAL CH340")])
         ctx = ApplicationContext(state=AppState(), serial=self.serial, colors=get_colors("light"), app=SimpleNamespace())
         self.page = HomePage(self.root, ctx)
         self.addCleanup(self.page.destroy)
+
+    def _final_cleanup(self) -> None:
+        for thread in set(threading.enumerate()) - self._threads_before:
+            if thread is not threading.main_thread():
+                thread.join(timeout=2.0)
+        self.page = None
+        self.root = None
+        gc.collect()
 
     def pump(self, seconds: float, until=lambda: False) -> None:
         deadline = time.monotonic() + seconds
