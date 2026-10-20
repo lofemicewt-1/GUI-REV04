@@ -7,9 +7,13 @@ SPECDIR = Path(SPECPATH).resolve()
 if str(SPECDIR) not in sys.path:
     sys.path.insert(0, str(SPECDIR))
 
-from build_support.bundle_paths import tcl_tk_bundle
+from build_support.bundle_paths import firmware_tool_files, tcl_tk_bundle
 
 bundle = tcl_tk_bundle(sys.base_prefix)
+# Firmware flasher tools (avrdude + CH340 driver installer) ship inside
+# 'assets/tools' via the 'assets' data entry below; fail the build early if
+# they are missing.  No firmware .hex is bundled.
+firmware_tool_files(SPECDIR)
 
 a = Analysis(
     ['main.py'],

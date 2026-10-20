@@ -99,3 +99,30 @@ def tcl_tk_bundle(base_prefix: str | Path) -> TclTkBundle:
             f"{base}: " + ", ".join(str(path) for path in missing)
         )
     return bundle
+
+
+FIRMWARE_TOOL_FILES = (
+    Path("assets") / "tools" / "avrdude" / "avrdude.exe",
+    Path("assets") / "tools" / "avrdude" / "avrdude.conf",
+    Path("assets") / "tools" / "ch340" / "CH341SER.EXE",
+)
+
+
+def resource_root() -> Path:
+    """Folder holding ``assets``: PyInstaller's ``sys._MEIPASS`` or the repo root."""
+    import sys
+
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root:
+        return Path(frozen_root)
+    return Path(__file__).resolve().parent.parent
+
+
+def firmware_tool_files(root: str | Path) -> list[Path]:
+    """Bundled flasher tools; raises if any is missing (used by the spec)."""
+    base = Path(root)
+    paths = [base / rel for rel in FIRMWARE_TOOL_FILES]
+    missing = [str(path) for path in paths if not path.is_file()]
+    if missing:
+        raise FileNotFoundError("Firmware flasher tools missing: " + ", ".join(missing))
+    return paths

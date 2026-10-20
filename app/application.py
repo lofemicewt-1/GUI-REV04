@@ -260,6 +260,9 @@ class HomePage(BasePage):
         self.connect_btn = ttk.Button(toolbar, style="Primary.TButton", command=self.toggle_connection)
         self.connect_btn.grid(row=0, column=5, padx=(8, 0))
 
+        self.flash_btn = ttk.Button(toolbar, style="Secondary.TButton", command=self.open_firmware_flash_dialog)
+        self.flash_btn.grid(row=0, column=6, padx=(8, 0))
+
         self.current_port_name_label = ttk.Label(toolbar, style="Panel.TLabel")
         self.current_port_name_label.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
 
@@ -2893,6 +2896,51 @@ class HomePage(BasePage):
         except Exception as exc:
             messagebox.showerror(self.tr("error"), str(exc))
 
+    # -- firmware flashing ------------------------------------------------------
+    def open_firmware_flash_dialog(self) -> None:
+        from pages.firmware_flash_dialog import FirmwareFlashDialog
+
+        dialog = getattr(self, "_firmware_flash_dialog", None)
+        if dialog is not None and not getattr(dialog, "_closed", True):
+            try:
+                if dialog.winfo_exists():
+                    dialog.lift()
+                    return
+            except tk.TclError:
+                pass
+        self._firmware_flash_dialog = FirmwareFlashDialog(self)
+
+    def firmware_port_connected(self, port: str) -> bool:
+        if getattr(self, "_connect_attempt", None) is not None and self._connect_attempt.port == port:
+            return True
+        return self._is_selected_port_connected(port) or bool(
+            getattr(self.ctx.serial, "is_port_connected", lambda _p: False)(port)
+        )
+
+    def firmware_release_port(self, port: str) -> None:
+        """Close the app's connection on ``port`` so avrdude can open it."""
+        attempt = getattr(self, "_connect_attempt", None)
+        if attempt is not None and attempt.port == port:
+            self.cancel_connection()
+        self._cancel_continuous_read("connection_changed")
+        self._status_invalidate_port(port)
+        self.ctx.serial.disconnect(port)
+        self.ctx.state.serial_connected = bool(getattr(self.ctx.serial, "connected_ports", lambda: [])())
+        self.ctx.state.extra["connection_detail"] = f"{port}: {self.tr('flash_firmware')}"
+        self.ctx.state.extra.pop("selected_port_name", None)
+        if hasattr(self.ctx.app, "navigation"):
+            self.ctx.app.navigation.refresh_language()
+        self.refresh_language()
+
+    def firmware_restore_port(self, port: str) -> None:
+        """Reconnect ``port`` through the normal connect flow after flashing."""
+        self.ctx.state.extra.pop("connection_detail", None)
+        if self._is_selected_port_connected(port) or getattr(self, "_connect_attempt", None) is not None:
+            self.refresh_language()
+            return
+        self.port_var.set(port)
+        self.toggle_connection()
+
     def open_continuous_read_dialog(self) -> None:
         dialog = getattr(self, "_continuous_read_dialog", None)
         if dialog is not None and not getattr(dialog, "_closed", True):
@@ -3130,6 +3178,12 @@ class HomePage(BasePage):
         else:
             connect_text = t(lang, "connect")
         self.connect_btn.configure(text=connect_text)
+        flash_btn = getattr(self, "flash_btn", None)
+        if flash_btn is not None:
+            flash_btn.configure(text=t(lang, "flash_firmware"))
+        flash_dialog = getattr(self, "_firmware_flash_dialog", None)
+        if flash_dialog is not None and not getattr(flash_dialog, "_closed", True):
+            flash_dialog.refresh_language()
 
         self.device_addr_label.configure(text=t(lang, "device_addr"))
         self.reg_addr_label.configure(text=t(lang, "reg_addr"))
