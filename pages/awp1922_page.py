@@ -100,7 +100,7 @@ class AWP1922Page(BasePage):
         self.enable_pinned_footer_layout()
 
         header = self.make_title(self, "awp1922")
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
         footer, actions, reg_panel, identity = self.make_merged_footer()
         footer.grid(row=2, column=0, sticky="ew", pady=(12, 0))
@@ -270,13 +270,15 @@ class AWP1922Page(BasePage):
             if current_wrap != target_wrap:
                 self.hint_label.configure(wraplength=target_wrap)
             if stack == getattr(self, "_columns_stacked", None):
+                if stack and self._grid_pady(self._left) != (0, self._module_spacing()):
+                    self._left.grid_configure(pady=(0, self._module_spacing()))
                 return
             self._columns_stacked = stack
             if stack:
                 self._body.columnconfigure(0, weight=1, uniform="")
                 self._body.columnconfigure(1, weight=0, uniform="")
                 self._body.rowconfigure(1, weight=1)
-                self._left.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=0, pady=(0, 12))
+                self._left.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=0, pady=(0, self._module_spacing()))
                 self._right.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=0, pady=0)
             else:
                 self._body.columnconfigure(0, weight=1, uniform="awp1922_pair")

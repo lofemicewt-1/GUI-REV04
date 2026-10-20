@@ -166,7 +166,7 @@ class WaveformGeneratorPage(BasePage):
 
         if not self.embedded:
             header = self.make_title(self, "waveform_generator")
-            header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+            header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1 if not self.embedded else 0, column=0, sticky="nsew")

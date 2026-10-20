@@ -284,6 +284,7 @@ class VerticalScrollArea(ttk.Frame):
         propagate_height: bool = False,
         clamp_width: bool = False,
         reserve_vertical_gutter: bool = False,
+        scroll_region_extra: int = 16,
     ) -> None:
         super().__init__(parent, style="App.TFrame")
         self.ctx = ctx
@@ -293,6 +294,7 @@ class VerticalScrollArea(ttk.Frame):
         self.propagate_height = bool(propagate_height)
         self.clamp_width = bool(clamp_width)
         self.reserve_vertical_gutter = bool(reserve_vertical_gutter)
+        self.scroll_region_extra = max(0, int(scroll_region_extra))
         self._scrollbar_visible = False
         self._horizontal_scrollbar_visible = False
         self._layout_job: str | None = None
@@ -392,13 +394,13 @@ class VerticalScrollArea(ttk.Frame):
                 width = canvas_width
             if self._window_item_span("width") != width:
                 self.canvas.itemconfigure(self.window_id, width=width)
-            height = natural_height + 16
+            height = natural_height + self.scroll_region_extra
             if self.propagate_height:
-                requested_height = max(natural_height, canvas_height - 16)
+                requested_height = max(natural_height, canvas_height - self.scroll_region_extra)
                 if self._window_item_span("height") != requested_height:
                     self.canvas.itemconfigure(self.window_id, height=requested_height)
                 height = max(height, requested_height)
-                if natural_height + 16 <= canvas_height:
+                if natural_height + self.scroll_region_extra <= canvas_height:
                     height = min(height, canvas_height)
             region = (0, 0, width, height)
             if tuple(map(float, self.canvas.tk.splitlist(self.canvas.cget("scrollregion")))) != region:
@@ -849,14 +851,7 @@ def _warm_title_fonts(widget: tk.Misc) -> None:
     weight = page_title_weight(root)
     title_size = int(getattr(root, "_piezo_title_font_size", 18) or 18)
     prominent = int(getattr(root, "_piezo_prominent_title_font_size", title_size + 1) or (title_size + 1))
-    chip = int(getattr(root, "_piezo_chip_title_font_size", 0) or 0)
-    if not chip:
-        height = int(getattr(root, "_piezo_top_chrome_height", 0) or 42)
-        chip = _font_size_for_pixel_height(root, "Microsoft YaHei UI", "bold", height)
-        try:
-            setattr(root, "_piezo_chip_title_font_size", chip)
-        except (tk.TclError, AttributeError):
-            pass
+    chip = int(getattr(root, "_piezo_chip_title_font_size", 0) or (prominent + 6))
     for size in {int(title_size), int(prominent), int(chip)}:
         _ensure_title_font(widget, ("Microsoft YaHei UI", size, weight))
         _ensure_title_font(widget, ("Microsoft YaHei UI", size, weight, "underline"))
@@ -939,7 +934,7 @@ class CanvasTitle(tk.Canvas):
         title_size = int(getattr(root, "_piezo_title_font_size", 18) or 18)
         prominent = int(getattr(root, "_piezo_prominent_title_font_size", title_size + 1) or (title_size + 1))
         if self._style_name == "ChipTitle.TLabel":
-            size = int(getattr(root, "_piezo_chip_title_font_size", 0) or 0) or max(prominent, 28)
+            size = int(getattr(root, "_piezo_chip_title_font_size", 0) or 0) or prominent + 6
         elif self._style_name == "Prominent.TLabel":
             size = prominent
         else:
@@ -1127,6 +1122,9 @@ class BasePage(ttk.Frame):
         self._logo_images: list[tk.PhotoImage] = []
         self._chrome_headers: list[ttk.Frame] = []
         self._mode_headers: list[ttk.Frame] = []
+        self._title_spacing_widgets: list[tk.Misc] = []
+        self._module_spacing_widgets: list[tuple[tk.Misc, bool, bool]] = []
+        self._header_layout_job: str | None = None
         self._serial_log_text: tk.Text | None = None
         self._serial_log_listener: Any = None
         self._serial_log_clear_listener: Any = None
@@ -1162,6 +1160,7 @@ class BasePage(ttk.Frame):
                 pass
         self._refresh_serial_selectors()
         self._sync_mode_headers()
+        self._queue_header_layout()
 
     def _sync_mode_button_styles(self) -> None:
         current = getattr(self, "current_mode", None)
@@ -1184,6 +1183,7 @@ class BasePage(ttk.Frame):
         self._refresh_canvas_titles()
         self._sync_header_chrome()
         self._sync_mode_headers()
+        self._queue_header_layout()
         self._refresh_serial_log_theme()
         for area in self._vertical_scroll_areas:
             area.refresh_theme()
@@ -1296,6 +1296,7 @@ class BasePage(ttk.Frame):
         propagate_height: bool = False,
         clamp_width: bool = False,
         reserve_vertical_gutter: bool = False,
+        scroll_region_extra: int = 16,
     ) -> tuple[VerticalScrollArea, ttk.Frame]:
         area = VerticalScrollArea(
             parent,
@@ -1306,6 +1307,7 @@ class BasePage(ttk.Frame):
             propagate_height=propagate_height,
             clamp_width=clamp_width,
             reserve_vertical_gutter=reserve_vertical_gutter,
+            scroll_region_extra=scroll_region_extra,
         )
         self._vertical_scroll_areas.append(area)
         return area, area.content
@@ -1320,6 +1322,7 @@ class BasePage(ttk.Frame):
     ) -> ttk.Frame:
         _warm_title_fonts(self)
         header = ttk.Frame(parent, style="App.TFrame")
+        self._title_spacing_widgets.append(header)
         header.columnconfigure(0, weight=1)
 
         title_style = "ChipTitle.TLabel" if title_key in _CHIP_TITLE_KEYS else (
@@ -1353,41 +1356,44 @@ class BasePage(ttk.Frame):
         if show_logo:
             logo = self._make_header_logo(header)
             logo.grid(row=0, column=1, rowspan=2, sticky="e", padx=(16, 0))
-            header.bind("<Configure>", lambda _event, label=logo: self._configure_header_logo(label), add="+")
+            header.bind("<Configure>", self._queue_header_layout, add="+")
             self._chrome_headers.append(header)
             self._sync_header_chrome_widget(header)
         else:
             self._mode_headers.append(header)
+            header.bind("<Configure>", self._queue_header_layout, add="+")
             self._sync_mode_header(header)
 
         return header
 
     def make_preset_frame(self, header: ttk.Frame) -> ttk.Frame:
         """Keep the five action columns aligned and reachable on small windows."""
-        area, content = self.make_vertical_scroll_area(header)
+        area, content = self.make_vertical_scroll_area(header, scroll_region_extra=0)
         area.grid(row=0, column=1, sticky="new", padx=(24, 0))
         frame = ttk.Frame(content, style="App.TFrame")
         frame.grid(row=0, column=0, sticky="nw")
         header._preset_area = area
         header._preset_frame = frame
+        area.bind("<Configure>", self._queue_header_layout, add="+")
+        frame.bind("<Configure>", self._queue_header_layout, add="+")
         self._sync_mode_header(header)
         return frame
 
     def _sync_mode_headers(self) -> None:
         for header in self._mode_headers:
             self._sync_mode_header(header)
+        self._queue_header_layout()
 
     def _sync_mode_header(self, header: ttk.Frame) -> None:
         # Unmapped probes follow ttk font/theme changes without visible controls.
         root = self._root()
         probes = getattr(root, "_piezo_header_probes", None)
-        if probes is None:
+        if probes is None or len(probes) != 3:
             probes = (ttk.Button(root, style="Bg.TButton"),
                       ttk.Combobox(root, width=4),
-                      ttk.Scrollbar(root, orient="horizontal"),
                       ttk.Label(root, style="App.TLabel"))
             root._piezo_header_probes = probes
-        button, combo, scrollbar, slot_label = probes
+        button, combo, slot_label = probes
         combo.configure(font=("Microsoft YaHei UI", int(getattr(root, "_piezo_body_font_size", 10))))
         size = int(getattr(root, "_piezo_prominent_title_font_size", 19))
         font = ("Microsoft YaHei UI", size, page_title_weight(self))
@@ -1396,14 +1402,9 @@ class BasePage(ttk.Frame):
                           for lang in ("zh", "en") for key in title_keys) + 4
         header.columnconfigure(0, weight=0, minsize=title_width)
         header.columnconfigure(1, weight=1)
-        # Reserve both action rows and scrollbar space even on pages without
-        # presets. CanvasTitle uses sticky=nw so action height cannot move it.
-        row_height = max(button.winfo_reqheight(), combo.winfo_reqheight())
-        canvas_height = row_height * 2 + 8 + 16
-        header.rowconfigure(0, minsize=canvas_height + scrollbar.winfo_reqheight())
+        header._mode_title_width = title_width
         area = getattr(header, "_preset_area", None)
         if area is not None:
-            area.canvas.configure(height=canvas_height)
             keys = ("button_mode_preset_1", "button_mode_import_user_preset",
                     "button_mode_export_user_preset", "save_to_board", "set_active",
                     "apply_slot", "read_slot", "awp1221_type4_active",
@@ -1421,6 +1422,167 @@ class BasePage(ttk.Frame):
             for column in range(5):
                 header._preset_frame.columnconfigure(column, weight=1,
                     uniform="page_preset_columns", minsize=width)
+            module_gap = self._module_spacing()
+            for child in header._preset_frame.grid_slaves(row=1):
+                if self._grid_pady(child) != (module_gap, 0):
+                    child.grid_configure(pady=(module_gap, 0))
+            content_height = max(1, int(header._preset_frame.winfo_reqheight()))
+            if int(area.canvas.cget("height")) != content_height:
+                area.canvas.configure(height=content_height)
+        self._queue_header_layout()
+
+    def _queue_header_layout(self, _event: tk.Event | None = None) -> None:
+        if self._header_layout_job is not None:
+            return
+        try:
+            self._header_layout_job = self.after_idle(self._run_header_layout)
+        except tk.TclError:
+            self._header_layout_job = None
+
+    def _run_header_layout(self) -> None:
+        self._header_layout_job = None
+        self._sync_title_spacing_widgets()
+        self._sync_module_spacing_widgets()
+        for header in tuple(self._chrome_headers):
+            try:
+                for label in self._logo_widgets:
+                    if label.master is header:
+                        self._configure_header_logo(label)
+            except tk.TclError:
+                continue
+        for header in tuple(self._mode_headers):
+            try:
+                self._layout_mode_header(header)
+            except tk.TclError:
+                continue
+
+    def _sync_title_spacing_widgets(self) -> None:
+        desired = self._title_grid_padding()
+        live: list[tk.Misc] = []
+        for widget in self._title_spacing_widgets:
+            try:
+                if widget.winfo_manager() != "grid":
+                    live.append(widget)
+                    continue
+                current = widget.grid_info().get("pady", 0)
+                if isinstance(current, (tuple, list)):
+                    current_padding = tuple(int(value) for value in current)
+                else:
+                    current_padding = (int(current), int(current))
+                if current_padding != desired:
+                    widget.grid_configure(pady=desired)
+            except (tk.TclError, TypeError, ValueError):
+                continue
+            live.append(widget)
+        self._title_spacing_widgets = live
+
+    @staticmethod
+    def _grid_pady(widget: tk.Misc) -> tuple[int, int]:
+        try:
+            current = widget.grid_info().get("pady", 0)
+        except tk.TclError:
+            return (0, 0)
+        if isinstance(current, (tuple, list)):
+            values = tuple(int(value) for value in current)
+            if len(values) == 1:
+                return (values[0], values[0])
+            return (values[0], values[1])
+        value = int(current)
+        return (value, value)
+
+    def _register_module_spacing_widget(
+        self,
+        widget: tk.Misc,
+        *,
+        before: bool = False,
+        after: bool = True,
+    ) -> None:
+        self._module_spacing_widgets.append((widget, bool(before), bool(after)))
+        self._queue_header_layout()
+
+    def _sync_module_spacing_widgets(self) -> None:
+        gap = self._module_spacing()
+        live: list[tuple[tk.Misc, bool, bool]] = []
+        for widget, before, after in self._module_spacing_widgets:
+            try:
+                if widget.winfo_manager() != "grid":
+                    live.append((widget, before, after))
+                    continue
+                desired = (gap if before else 0, gap if after else 0)
+                if self._grid_pady(widget) != desired:
+                    widget.grid_configure(pady=desired)
+            except (tk.TclError, TypeError, ValueError):
+                continue
+            live.append((widget, before, after))
+        self._module_spacing_widgets = live
+
+    def _register_title_spacing_widget(self, widget: tk.Misc) -> None:
+        self._title_spacing_widgets.append(widget)
+        self._queue_header_layout()
+
+    @staticmethod
+    def _vertical_grid_padding(widget: tk.Misc) -> int:
+        try:
+            padding = widget.grid_info().get("pady", 0)
+        except tk.TclError:
+            return 0
+        if isinstance(padding, (tuple, list)):
+            return sum(int(value) for value in padding)
+        return 2 * int(padding)
+
+    def _mode_title_height(self, header: ttk.Frame) -> int:
+        row_heights: dict[int, int] = {}
+        preset_area = getattr(header, "_preset_area", None)
+        for child in header.grid_slaves():
+            try:
+                if child is preset_area:
+                    continue
+                info = child.grid_info()
+                row = int(info.get("row", 0))
+                column = int(info.get("column", 0))
+                if column != 0 or row not in (0, 1):
+                    continue
+                height = int(child.winfo_reqheight()) + self._vertical_grid_padding(child)
+            except (tk.TclError, TypeError, ValueError):
+                continue
+            row_heights[row] = max(row_heights.get(row, 0), height)
+        return max(1, sum(row_heights.values()))
+
+    def _layout_mode_header(self, header: ttk.Frame) -> None:
+        title_height = self._mode_title_height(header)
+        area = getattr(header, "_preset_area", None)
+        if area is None:
+            header.rowconfigure(0, weight=0, minsize=title_height)
+            header.rowconfigure(1, weight=0, minsize=0)
+            return
+
+        title_width = max(1, int(getattr(header, "_mode_title_width", 0)))
+        frame = getattr(header, "_preset_frame", None)
+        action_width = max(1, int(frame.winfo_reqwidth())) if frame is not None else 1
+        try:
+            available_width = int(header.winfo_width())
+        except tk.TclError:
+            available_width = 0
+        if available_width <= 1:
+            try:
+                available_width = int(header.master.winfo_width())
+            except tk.TclError:
+                available_width = 0
+
+        side_by_side = available_width >= title_width + action_width + 24
+        if side_by_side:
+            area.grid_configure(row=0, column=1, columnspan=1, sticky="new", padx=(24, 0))
+        else:
+            area.grid_configure(row=1, column=0, columnspan=2, sticky="new", padx=0)
+
+        content_height = max(1, int(frame.winfo_reqheight())) if frame is not None else 1
+        if int(area.canvas.cget("height")) != content_height:
+            area.canvas.configure(height=content_height)
+        action_height = content_height
+        if area._horizontal_scrollbar_visible:
+            action_height += int(area.horizontal_scrollbar.winfo_reqheight())
+        header.rowconfigure(0, weight=0, minsize=max(title_height, action_height) if side_by_side else title_height)
+        header.rowconfigure(1, weight=0, minsize=0 if side_by_side else action_height)
 
     def _sync_header_chrome(self) -> None:
         for header in self._chrome_headers:
@@ -1430,20 +1592,10 @@ class BasePage(ttk.Frame):
                 pass
 
     def _sync_header_chrome_widget(self, header: ttk.Frame) -> None:
-        target = int(getattr(self.winfo_toplevel(), "_piezo_top_chrome_height", 0)) or 42
-        bg = self.ctx.colors["bg"]
-        sizer = getattr(header, "_chrome_sizer", None)
-        if sizer is None:
-            sizer = tk.Frame(header, width=1, highlightthickness=0, bd=0, bg=bg)
-            sizer.grid(row=0, column=2, rowspan=3)
-            header._chrome_sizer = sizer
-        try:
-            same = int(sizer.cget("height")) == target and str(sizer.cget("bg")) == bg
-        except (tk.TclError, ValueError):
-            same = False
-        if same:
-            return
-        sizer.configure(height=target, bg=bg)
+        for label in self._logo_widgets:
+            if label.master is header:
+                self._configure_header_logo(label)
+        self._queue_header_layout()
 
     def _configure_title_link(self, title: CanvasTitle, title_key: str) -> None:
         url = CHIP_WEBSITE_URLS.get(title_key, "").strip()
@@ -1486,9 +1638,10 @@ class BasePage(ttk.Frame):
         return label
 
     def _chip_title_size(self) -> int:
-        height = int(getattr(self.winfo_toplevel(), "_piezo_top_chrome_height", 0)) or 42
-        size = _font_size_for_pixel_height(self.winfo_toplevel(), "Microsoft YaHei UI", "bold", height)
-        setattr(self.winfo_toplevel(), "_piezo_chip_title_font_size", size)
+        root = self.winfo_toplevel()
+        size = int(getattr(root, "_piezo_chip_title_font_size", 0))
+        if not size:
+            size = int(getattr(root, "_piezo_prominent_title_font_size", 19)) + 6
         _warm_title_fonts(self)
         return size
 
@@ -1502,6 +1655,7 @@ class BasePage(ttk.Frame):
                 title.configure(font=font)
             except tk.TclError:
                 continue
+        self._queue_header_layout()
 
     def _refresh_header_logos(self) -> None:
         self._refresh_chip_titles()
@@ -1519,9 +1673,8 @@ class BasePage(ttk.Frame):
         if width <= 1:
             return 0
         title_width = 0
-        sizer = getattr(header, "_chrome_sizer", None)
         for child in header.winfo_children():
-            if child is label or child is sizer:
+            if child is label:
                 continue
             try:
                 title_width = max(title_width, int(child.winfo_reqwidth()))
@@ -1530,11 +1683,13 @@ class BasePage(ttk.Frame):
         return max(0, width - title_width - 24)
 
     def _configure_header_logo(self, label: ttk.Label) -> None:
-        height = int(getattr(self.winfo_toplevel(), "_piezo_top_chrome_height", 0)) or 42
+        root = self.winfo_toplevel()
+        chip_size = self._chip_title_size()
+        title_height = _font_linespace(root, "Microsoft YaHei UI", page_title_weight(root), chip_size)
         theme = str(getattr(self.ctx.state, "theme", "light"))
         header = label.master
-        family, weight = sidebar_brand_font_spec(self.winfo_toplevel())
-        preferred = _font_size_for_pixel_height(self.winfo_toplevel(), family, weight, height)
+        family, weight = sidebar_brand_font_spec(root)
+        preferred = _font_size_for_pixel_height(root, family, weight, title_height)
         available = self._wordmark_slot(header, label) if isinstance(header, tk.Misc) else 0
         size = preferred
         own_row = False
@@ -1552,7 +1707,7 @@ class BasePage(ttk.Frame):
                         hi = mid - 1
             own_row = _wordmark_width(root, family, size, weight) > available
         text_color = self.ctx.colors.get("text", "#111827")
-        key = ("wordmark", height, theme, text_color, size, own_row)
+        key = ("wordmark", title_height, theme, text_color, size, own_row)
         if getattr(label, "_logo_key", None) == key:
             return
         font: tuple[Any, ...] = (family, size) if weight == "normal" else (family, size, weight)
@@ -1562,6 +1717,25 @@ class BasePage(ttk.Frame):
         else:
             label.grid(row=0, column=1, columnspan=1, rowspan=2, sticky="e", padx=(16, 0), pady=0)
         setattr(label, "_logo_key", key)
+
+    def _title_after_spacing(self) -> int:
+        root = self.winfo_toplevel()
+        value = int(getattr(root, "_piezo_title_after_gap", 0))
+        if value > 0:
+            return value
+        body_size = int(getattr(root, "_piezo_body_font_size", 10))
+        return max(1, int(round(body_size * 1.7 * 0.3)))
+
+    def _module_spacing(self) -> int:
+        root = self.winfo_toplevel()
+        value = int(getattr(root, "_piezo_module_gap", 0))
+        if value > 0:
+            return value
+        body_size = int(getattr(root, "_piezo_body_font_size", 10))
+        return max(1, int(round(body_size * 1.7 * 0.45)))
+
+    def _title_grid_padding(self) -> tuple[int, int]:
+        return (0, self._title_after_spacing())
 
     def _header_logo_image(self, path: Path, max_h: int) -> tk.PhotoImage:
         root = self.winfo_toplevel()
@@ -1739,6 +1913,12 @@ class BasePage(ttk.Frame):
             pass
 
     def destroy(self) -> None:
+        if self._header_layout_job is not None:
+            try:
+                self.after_cancel(self._header_layout_job)
+            except tk.TclError:
+                pass
+            self._header_layout_job = None
         if self._serial_log_listener is not None:
             self.ctx.serial.remove_log_listener(self._serial_log_listener)
             self._serial_log_listener = None

@@ -90,7 +90,7 @@ class AWP1018Page(BasePage):
         self.gpio_controls = GpioControlGroup()
 
         header = self.make_title(self, "awp1018")
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
         self.mode_scroll, self.mode_container = self.make_vertical_scroll_area(
             self,
@@ -1240,7 +1240,7 @@ class AWP1018NormalModePage(BasePage):
         self._bind_page_action_tooltip(export_button, "button_mode_export_user_preset")
 
         slot_cell = ttk.Frame(preset_frame, style="App.TFrame")
-        slot_cell.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        slot_cell.grid(row=1, column=0, sticky="ew", pady=(self._module_spacing(), 0))
 
         board_slot_label = ttk.Label(slot_cell, style="App.TLabel")
         board_slot_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
@@ -1263,7 +1263,7 @@ class AWP1018NormalModePage(BasePage):
         )
         for column, (key, command) in enumerate(actions, start=1):
             button = ttk.Button(preset_frame, style="Bg.TButton", command=command)
-            button.grid(row=1, column=column, sticky="ew", pady=(8, 0), padx=(6, 0))
+            button.grid(row=1, column=column, sticky="ew", pady=(self._module_spacing(), 0), padx=(6, 0))
             self._buttons[key] = button
             self._board_preset_buttons[key] = button
             self._bind_board_preset_tooltip(button, key)
@@ -1295,7 +1295,7 @@ class AWP1018NormalModePage(BasePage):
         self.rowconfigure(1, weight=1)
 
         header = self._build_preset_header(self)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
@@ -5647,7 +5647,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         yield
 
         header = self.make_title(self, "full_mode", show_logo=False)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
@@ -6236,7 +6236,7 @@ class AWP1018ReservedModePage(BasePage):
         self.rowconfigure(1, weight=1)
 
         header = self.make_title(self, self.title_key, show_logo=False)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
         self.title_label = header.grid_slaves(row=0, column=0)[0]
 
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)

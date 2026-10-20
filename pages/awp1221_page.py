@@ -1194,7 +1194,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self.rowconfigure(1, weight=1)
 
         header = self.make_title(self, self.mode_key, show_logo=False)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
         yield
         self.mode_title_label = header.grid_slaves(row=0, column=0)[0]
 
@@ -2447,7 +2447,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
     def _build_button_preset_header(self) -> None:
         header = self.make_title(self, self.mode_key, show_logo=False)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
         self.mode_title_label = header.grid_slaves(row=0, column=0)[0]
 
@@ -2491,7 +2491,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 )
 
         slot_cell = ttk.Frame(preset_frame, style="App.TFrame")
-        slot_cell.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        slot_cell.grid(row=1, column=0, sticky="ew", pady=(self._module_spacing(), 0))
         slot_label = ttk.Label(slot_cell, style="App.TLabel")
         slot_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._register_text(slot_label, "board_slot")
@@ -2511,7 +2511,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 style="Bg.TButton",
                 command=board_actions[column - 1],
             )
-            button.grid(row=1, column=column, sticky="ew", pady=(8, 0), padx=(6, 0))
+            button.grid(row=1, column=column, sticky="ew", pady=(self._module_spacing(), 0), padx=(6, 0))
             self._buttons[key] = button
 
             self._tooltips.append(SimpleTooltip(
@@ -4996,7 +4996,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if host is None:
             return
         section = ttk.Frame(parent, style="Panel.TFrame")
-        section.grid(row=row, column=0, sticky="ew", pady=(0, 12))
+        section.grid(row=row, column=0, sticky="ew", pady=(0, self._module_spacing()))
+        self._register_module_spacing_widget(section)
         section.columnconfigure(1, weight=1)
         title = ttk.Label(section, style="SectionTitle.TLabel")
         title.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
@@ -6724,7 +6725,7 @@ class AWP1221Page(BasePage):
     def _build_ui_steps(self) -> Iterator[None]:
         self.enable_pinned_footer_layout()
 
-        self.make_title(self, "awp1221").grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        self.make_title(self, "awp1221").grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
         # The footer stays visible on short windows, so the mode area must
         # own its scrolling.  Without this wrapper the full mode page (often

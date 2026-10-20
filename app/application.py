@@ -209,7 +209,8 @@ class HomePage(BasePage):
         self.rowconfigure(1, weight=1)
 
         top = ttk.Frame(self, style="App.TFrame")
-        top.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        top.grid(row=0, column=0, sticky="ew", pady=(0, self._title_after_spacing()))
+        self._register_title_spacing_widget(top)
         top.columnconfigure(0, weight=1)
         self._header_band = top
 
@@ -223,7 +224,8 @@ class HomePage(BasePage):
         panel.columnconfigure(0, weight=1)
 
         main_title = ttk.Label(panel, style="SectionTitle.TLabel")
-        main_title.grid(row=0, column=0, sticky="w", pady=(0, 12))
+        main_title.grid(row=0, column=0, sticky="w", pady=(0, self._module_spacing()))
+        self._register_module_spacing_widget(main_title)
         self.bind_text(main_title, "connect_board_title")
 
         self.status_label = ttk.Label(panel, style="Panel.TLabel")
@@ -3882,7 +3884,7 @@ class SettingsPage(BasePage):
         self.columnconfigure(0, weight=1)
 
         header = self.make_title(self, "settings")
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
         panel.grid(row=1, column=0, sticky="nsew")

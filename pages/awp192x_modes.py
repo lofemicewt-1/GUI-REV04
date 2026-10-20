@@ -501,7 +501,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         self.rowconfigure(1, weight=1)
 
         header = self.make_title(self, "button_mode", show_logo=False)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
         header.columnconfigure(0, weight=0)
         header.columnconfigure(1, weight=1)
         yield
@@ -542,7 +542,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         yield
 
         slot_cell = ttk.Frame(preset_frame, style="App.TFrame")
-        slot_cell.grid(row=1, column=0, sticky="ew", pady=(8, 0), padx=(0, 0))
+        slot_cell.grid(row=1, column=0, sticky="ew", pady=(self._module_spacing(), 0), padx=(0, 0))
 
         board_slot_label = ttk.Label(slot_cell, style="App.TLabel")
         board_slot_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
@@ -557,7 +557,7 @@ class ButtonModePage(ButtonModeView, BasePage):
             style="Bg.TButton",
             command=self.save_board_preset,
         )
-        save_board_button.grid(row=1, column=1, sticky="ew", pady=(8, 0), padx=(6, 0))
+        save_board_button.grid(row=1, column=1, sticky="ew", pady=(self._module_spacing(), 0), padx=(6, 0))
         self._buttons["save_to_board"] = save_board_button
         self._bind_action_tooltip(save_board_button, "save_to_board")
 
@@ -567,7 +567,7 @@ class ButtonModePage(ButtonModeView, BasePage):
             command=self.set_board_preset_active,
         )
         yield
-        set_active_button.grid(row=1, column=2, sticky="ew", pady=(8, 0), padx=(6, 0))
+        set_active_button.grid(row=1, column=2, sticky="ew", pady=(self._module_spacing(), 0), padx=(6, 0))
         self._buttons["set_active"] = set_active_button
         self._bind_action_tooltip(set_active_button, "set_active")
 
@@ -576,7 +576,7 @@ class ButtonModePage(ButtonModeView, BasePage):
             style="Bg.TButton",
             command=self.apply_board_preset,
         )
-        apply_board_button.grid(row=1, column=3, sticky="ew", pady=(8, 0), padx=(6, 0))
+        apply_board_button.grid(row=1, column=3, sticky="ew", pady=(self._module_spacing(), 0), padx=(6, 0))
         self._buttons["apply_slot"] = apply_board_button
         yield
         self._bind_action_tooltip(apply_board_button, "apply_slot")
@@ -586,7 +586,7 @@ class ButtonModePage(ButtonModeView, BasePage):
             style="Bg.TButton",
             command=self.read_current_settings,
         )
-        read_board_button.grid(row=1, column=4, sticky="ew", pady=(8, 0), padx=(6, 0))
+        read_board_button.grid(row=1, column=4, sticky="ew", pady=(self._module_spacing(), 0), padx=(6, 0))
         self._buttons["read_slot"] = read_board_button
         self._bind_action_tooltip(read_board_button, "read_slot")
 
@@ -3059,7 +3059,7 @@ class FullModePage(ButtonModePage):
         self.rowconfigure(1, weight=1)
 
         header = self.make_title(self, "full_mode", show_logo=False)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
         body = ttk.Frame(self, style="App.TFrame")
         yield
@@ -4689,7 +4689,7 @@ class PumpModePage(BasePage):
         self.rowconfigure(1, weight=1)
 
         header = self._make_pump_title()
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
         panel.grid(row=1, column=0, sticky="nsew")

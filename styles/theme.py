@@ -4,6 +4,7 @@ import math
 from styles.fonts import page_title_weight
 from pathlib import Path
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import ttk
 
 
@@ -813,18 +814,32 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
     body_size = max(8, min(24, _scaled(base_font_size, scale)))
     title_size = max(14, min(34, _scaled(base_font_size + 8, scale)))
     prominent_size = min(36, title_size + 3)
+    chip_title_size = min(40, max(prominent_size + 6, _scaled(base_font_size + 16, scale)))
     subtitle_size = max(8, min(22, _scaled(base_font_size, scale)))
     sidebar_title_size = max(12, min(28, _scaled(base_font_size + 6, scale)))
     small_size = max(7, min(20, _scaled(base_font_size - 1, scale)))
     mono_size = max(7, min(20, _scaled(9, scale * (base_font_size / 10))))
+    try:
+        body_line_height = int(tkfont.Font(
+            root=root,
+            family="Microsoft YaHei UI",
+            size=body_size,
+        ).metrics("linespace"))
+    except tk.TclError:
+        body_line_height = max(1, int(round(body_size * 1.7)))
+    title_after_gap = max(1, int(round(body_line_height * 0.3)))
+    module_gap = max(1, int(round(body_line_height * 0.45)))
 
     setattr(root, "_piezo_font_family", "Microsoft YaHei UI")
     setattr(root, "_piezo_body_font_size", body_size)
     setattr(root, "_piezo_title_font_size", title_size)
     setattr(root, "_piezo_prominent_title_font_size", prominent_size)
+    setattr(root, "_piezo_chip_title_font_size", chip_title_size)
     setattr(root, "_piezo_sidebar_title_font_size", sidebar_title_size)
     setattr(root, "_piezo_mono_font_size", mono_size)
     setattr(root, "_piezo_spacing_scale", scale)
+    setattr(root, "_piezo_title_after_gap", title_after_gap)
+    setattr(root, "_piezo_module_gap", module_gap)
 
     style = ttk.Style(root)
     try:
@@ -894,7 +909,6 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
         foreground=colors["text"],
         font=("Microsoft YaHei UI", prominent_size, title_weight),
     )
-    chip_title_size = int(getattr(root, "_piezo_chip_title_font_size", 0) or max(prominent_size, 28))
     style.configure(
         "ChipTitle.TLabel",
         background=colors["bg"],
@@ -905,7 +919,7 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
         "Wordmark.TLabel",
         background=colors["bg"],
         foreground=colors["text"],
-        font=("Microsoft YaHei UI", title_size, "bold"),
+        font=("Microsoft YaHei UI", chip_title_size, title_weight),
     )
 
     style.configure(

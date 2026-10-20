@@ -566,12 +566,6 @@ class Navigation:
             cache[key] = image
         return image
 
-    def _refresh_header_wordmarks(self) -> None:
-        for page in self.pages.built_values():
-            refresh = getattr(page, "_refresh_header_logos", None)
-            if callable(refresh):
-                refresh()
-
     def _redraw_sidebar_brand(self, _event: tk.Event | None = None) -> None:
         if _event is not None and self._suspend_brand_configure:
             return
@@ -587,7 +581,6 @@ class Navigation:
         max_width = allocated if allocated > 10 else self._scaled(round(184 * BRAND_ENLARGE))
         image = self._sidebar_logo(theme, max_width)
         chrome_h = max(int(image.height()) if image is not None else 0, self._scaled(36))
-        setattr(self.root, "_piezo_top_chrome_height", chrome_h)
         state = (max_width, chrome_h, bg, theme, None if image is None else (int(image.width()), int(image.height())))
         if state == self._brand_state:
             return
@@ -598,7 +591,6 @@ class Navigation:
         if image is None:
             return
         canvas.create_image(max_width / 2, chrome_h / 2, image=image, anchor="center")
-        self._refresh_header_wordmarks()
 
     def _align_home_panel(self) -> None:
         if getattr(self, "_aligning_home", False):

@@ -209,7 +209,7 @@ class AWP1921AWP1923Page(BasePage):
         self.grid_propagate(False)
 
         header = self.make_title(self, "awp1921_1923")
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
         self.mode_scroll, self.mode_container = self.make_vertical_scroll_area(self, propagate_width=True)
         self.mode_scroll.grid(row=1, column=0, sticky="nsew")
@@ -972,7 +972,7 @@ class AWP1744AWP1766Page(BasePage):
         self.enable_pinned_footer_layout()
 
         header = self.make_title(self, "awp1744_awp1766")
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
         self.mode_scroll, self.mode_container = self.make_vertical_scroll_area(self)
         self.mode_scroll.grid(row=1, column=0, sticky="nsew")
@@ -1227,7 +1227,7 @@ class AWP1744AWP1766PumpModePage(BasePage):
         self.rowconfigure(1, weight=1)
 
         header = self.make_title(self, "awp1744_awp1766_pump_mode", show_logo=False)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
         panel.grid(row=1, column=0, sticky="nsew")
@@ -1524,7 +1524,7 @@ class ReservedModePage(BasePage):
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
         header = self.make_title(self, self.title_key, show_logo=False)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
         self.title_label = header.grid_slaves(row=0, column=0)[0]
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
         panel.grid(row=1, column=0, sticky="nsew")
@@ -1548,7 +1548,7 @@ class PlaceholderChipPage(BasePage):
         self.rowconfigure(1, weight=1)
 
         self.header = self.make_title(self, self.title_key)
-        self.header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        self.header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
         panel.grid(row=1, column=0, sticky="nsew")
