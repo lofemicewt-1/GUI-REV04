@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+
 from types import SimpleNamespace
 import tkinter as tk
 from tkinter import font as tkfont
@@ -27,8 +29,13 @@ class PageTitleLayoutTests(unittest.TestCase):
         self.page.grid(row=0, column=0, sticky="nsew")
         self.root.rowconfigure(0, weight=1)
         self.root.columnconfigure(0, weight=1)
-        self.addCleanup(self.root.destroy)
-        self.addCleanup(self._cancel_after_jobs)
+        self.addCleanup(self._cleanup_tk)
+
+    def _cleanup_tk(self) -> None:
+        self._cancel_after_jobs()
+        self.root.destroy()
+        self.page = self.root = None
+        gc.collect()
 
     def _cancel_after_jobs(self) -> None:
         for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
