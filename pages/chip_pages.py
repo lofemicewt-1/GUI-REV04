@@ -218,18 +218,27 @@ class AWP1921AWP1923Page(BasePage):
         self.footer_scroll, footer_content = self.make_vertical_scroll_area(self, horizontal=False)
         self.footer_scroll.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         footer_content.columnconfigure(0, weight=1)
-        footer, actions, self.reg_panel, identity = self.make_merged_footer(footer_content)
+        footer = ttk.Frame(footer_content, style="Panel.TFrame", padding=(12, 8))
         footer.grid(row=0, column=0, sticky="ew")
+        footer.columnconfigure(0, weight=1)
         self._footer_fit_job = None
         yield
         footer.bind("<Configure>", self._queue_footer_fit)
         self.bind("<Configure>", self._queue_footer_fit, add="+")
         self._footer = footer
-        yield from self._build_state_actions_steps(actions)
-        yield from self._build_register_bar_steps(self.reg_panel)
-        yield from self._build_identity_bar_steps(identity)
+        from pages.base_page import WrappingGroupBar
+
+        self.identity_bar = WrappingGroupBar(footer)
+        self.identity_bar.grid(row=0, column=0, sticky="ew")
+        yield from self._build_identity_bar_steps(self.identity_bar)
         yield
-        yield from self._build_detail_host_steps(footer)
+        self.trapezoid = self.mount_trapezoid(
+            self._build_state_actions,
+            self._build_register_bar,
+            state_key="awp1921_1923",
+            build_extra=self._build_detail_host,
+        )
+        self.reg_panel = self.trapezoid.registers
         # Keep mode headers away from the inner canvas clip edge on compact
         # windows while retaining horizontal scrolling for wide panels.
         self.mode_container.configure(padding=(8, 0, 8, 0))
@@ -255,7 +264,7 @@ class AWP1921AWP1923Page(BasePage):
         self._footer_fit_job = None
         try:
             if self.winfo_height() > 1:
-                desired = min(self._footer.winfo_reqheight() + 16, max(96, int(self.winfo_height() * .35)))
+                desired = min(self._footer.winfo_reqheight() + 16, max(48, int(self.winfo_height() * .2)))
                 if self.footer_scroll.canvas.winfo_reqheight() != desired:
                     self.footer_scroll.canvas.configure(height=desired)
         except tk.TclError:
@@ -478,7 +487,7 @@ class AWP1921AWP1923Page(BasePage):
         self._detail_host.configure(height=min(cap, content))
 
     def _show_detail_editor(self) -> None:
-        self._detail_host.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self._detail_host.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         self._apply_detail_host_height()
         self.write_value_label.configure(text=self.tr("detail_register_value"))
 
@@ -839,22 +848,32 @@ class AWP1921AWP1923Page(BasePage):
             if not resp.ok:
                 from tkinter import messagebox
                 messagebox.showerror(self.tr("error"), resp.error)
-            elif definition is not None:
-                self._refresh_detail_fields(definition=definition, view="write")
+            else:
+                for bar in list(self._step_progress_bars):
+                    bar.reset_all()
+                if definition is not None:
+                    self._refresh_detail_fields(definition=definition, view="write")
         except Exception as exc:
             from tkinter import messagebox
             messagebox.showerror(self.tr("error"), str(exc))
 
     def write_chip_state(self, value: int) -> None:
+        from core.ui_dispatch import post_to_ui
+
         if not self.ctx.serial.is_connected:
             messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
             return
 
         device_addr = self.ctx.state.awp192x_device_addr
+        progress_context = self._step_progress_context()
 
         def finish(ok: bool, error: str) -> None:
             if not ok:
                 messagebox.showerror(self.tr("error"), error)
+                return
+            if value == 0x5283 and progress_context == self._step_progress_context():
+                for bar in list(self._step_progress_bars):
+                    bar.reset_all()
 
         def worker() -> None:
             response = self.ctx.serial.write_register_value(
@@ -863,14 +882,12 @@ class AWP1921AWP1923Page(BasePage):
                 value & 0xFFFF,
                 bits=16,
             )
-            try:
-                self.after(0, finish, response.ok, response.error)
-            except tk.TclError:
-                pass
+            post_to_ui(self, finish, response.ok, response.error)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_addr_changed(self) -> None:
+        previous_addr = getattr(self.ctx.state, "awp192x_device_addr", None)
         selected = self.addr_var.get()
         if "0x45" in selected:
             addr = 0x45
@@ -880,21 +897,34 @@ class AWP1921AWP1923Page(BasePage):
             addr = 0x44
 
         self.ctx.state.awp192x_device_addr = addr
+        if previous_addr is not None and int(previous_addr) != addr:
+            for bar in list(self._step_progress_bars):
+                bar.reset_all()
 
-    def on_show(self) -> None:
-        self._on_addr_changed()
-        page = self.mode_pages.get(self.current_mode)
-        if page is not None and hasattr(page, "on_show"):
-            page.on_show()
+    def _step_progress_context(self) -> Any:
+        from core.awp192x_settings import connection_key_for_context
+        from pages.step_progress import ProgressContext
+
+        serial = self.ctx.serial
+        try:
+            session = connection_key_for_context(self.ctx) if bool(getattr(serial, "is_connected", False)) else None
+        except Exception:
+            session = None
+        try:
+            address = int(self.ctx.state.awp192x_device_addr)
+        except (AttributeError, TypeError, ValueError):
+            address = 0
+        return ProgressContext(session, address, str(self.current_mode))
 
     def on_show(self) -> None:
         super().on_show()
         if getattr(self, "_prepared_activation_pending", False):
             self._prepared_activation_pending = False
             self._on_addr_changed()
-            page = dict.get(self.mode_pages, self.current_mode)
-            if page is not None and hasattr(page, "on_show"):
-                page.on_show()
+        page = dict.get(self.mode_pages, self.current_mode)
+        self.show_step_chrome(page if getattr(page, "step_progress", None) is not None else None)
+        if page is not None and hasattr(page, "on_show"):
+            page.on_show()
 
     def show_mode(self, mode: str, *, activate: bool = True) -> None:
         if mode not in self.mode_pages:
@@ -905,6 +935,10 @@ class AWP1921AWP1923Page(BasePage):
             page.grid_remove()
         page = self.mode_pages[mode]
         page.grid()
+        if activate:
+            self.show_step_chrome(page if getattr(page, "step_progress", None) is not None else None)
+        else:
+            self.show_step_chrome(None)
         if activate and hasattr(page, "on_show"):
             page.on_show()
         self._sync_detail_mode_state()

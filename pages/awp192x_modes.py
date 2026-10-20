@@ -51,7 +51,9 @@ from pages.base_page import (
     fit_toplevel_to_screen,
 )
 from pages.preset_toolbar import PresetToolbar
+from pages.step_progress import StepSpec
 from pages.waveform_generator import WAVEFORM_DEFAULT_POINTS_PER_WRITE, WaveformGeneratorPage
+from core.ui_dispatch import post_to_ui
 
 
 def build_awp192x_amp_options() -> list[tuple[str, float, int]]:
@@ -506,6 +508,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._detect_adc_busy_tries = 0
         self._detect_poll_job: str | None = None
         self._tooltips: list[SimpleTooltip] = []
+        self._button_rom_reconcile_job: str | None = None
 
         self._preparing = defer_build
         self._prepared_registers_pending = defer_build
@@ -572,6 +575,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._on_endless_play_changed()
         self._initialize_awp192x_settings_model()
         self._attach_shared_settings_traces()
+        self._mount_button_step_progress()
 
     def _create_preset_toolbar(self, parent: tk.Misc) -> PresetToolbar:
         callbacks = {
@@ -833,6 +837,8 @@ class ButtonModePage(ButtonModeView, BasePage):
             variables.extend([*waveform_page.serial_slice_vars, *waveform_page.serial_repeat_vars])
         for variable in variables:
             variable.trace_add("write", lambda *_: self._on_shared_settings_changed())
+            if self.page_name == "button_mode":
+                variable.trace_add("write", lambda *_: self._on_button_progress_inputs_changed())
         if self.page_name == "full_mode":
             advanced_variables = [
                 self.adc_mode_var,
@@ -1264,6 +1270,178 @@ class ButtonModePage(ButtonModeView, BasePage):
     def _on_button_runtime_threshold_changed(self) -> None:
         self._mark_button_runtime_dirty()
         self._refresh_threshold_register_value_labels()
+
+    def _awp192x_chip_host(self) -> Any | None:
+        parent = getattr(self, "master", None)
+        while parent is not None:
+            if callable(getattr(parent, "_step_progress_context", None)):
+                return parent
+            parent = getattr(parent, "master", None)
+        return None
+
+    def _mount_button_step_progress(self) -> None:
+        if self.page_name != "button_mode":
+            return
+        host = self._awp192x_chip_host()
+        if host is None:
+            return
+        self.mount_step_progress(
+            host=host,
+            steps=(
+                StepSpec("waveform", 1, "step_done_192x_waveform"),
+                StepSpec("config", 2, "step_done_192x_config"),
+                StepSpec("detection", 3, "step_done_192x_detection"),
+            ),
+            context=host._step_progress_context,
+        )
+        self._sync_button_step_progress_params()
+        self._reconcile_rom_waveform_progress()
+
+    def _button_active_waveform_requirements(self) -> tuple[int, ...] | None:
+        waveform_page = getattr(self, "waveform_page", None)
+        if waveform_page is None:
+            return None
+        try:
+            actions = (
+                waveform_number(self.press_waveform_var.get()),
+                waveform_number(self.release_waveform_var.get()),
+                waveform_number(self.play_waveform_var.get()),
+            )
+            serial_values = {0x17: 0, 0x18: 0, 0x19: 0, 0x1A: 0}
+            if self.SERIAL_WAVE_NUMBER in actions:
+                serial_values.update(dict(waveform_page.build_serial_register_values()))
+            return required_awp192x_button_waveform_slices(
+                press_action_base=actions[0],
+                release_action_base=actions[1],
+                manual_play_reg=actions[2],
+                serial_config_0x17=serial_values[0x17],
+                serial_config_0x18=serial_values[0x18],
+                serial_config_0x19=serial_values[0x19],
+                serial_config_0x1A=serial_values[0x1A],
+            )
+        except (AttributeError, KeyError, TypeError, ValueError, tk.TclError):
+            return None
+
+    def _button_waveform_progress_fingerprint(self) -> tuple[Any, ...]:
+        waveform_page = getattr(self, "waveform_page", None)
+        editor = (
+            waveform_page.progress_input_fingerprint()
+            if waveform_page is not None and hasattr(waveform_page, "progress_input_fingerprint")
+            else ()
+        )
+        requirements = self._button_active_waveform_requirements()
+        return (
+            editor,
+            str(self.duration_var.get()),
+            str(self.max_voltage_var.get()),
+            ("invalid",) if requirements is None else tuple(requirements),
+        )
+
+    def _button_config_progress_fingerprint(self) -> tuple[Any, ...]:
+        variables = (
+            self.press_threshold_var,
+            self.release_threshold_var,
+            self.button_adc_gain_var,
+            self.button_adc_pol_var,
+            self.adc_average_time_var,
+            self.adc_ovv_time_var,
+            self.press_repeat_count_var,
+            self.release_repeat_count_var,
+            self.press_waveform_var,
+            self.release_waveform_var,
+            self.play_repeat_count_var,
+            self.play_waveform_var,
+            self.endless_play_var,
+        )
+        values: list[Any] = [variable.get() for variable in variables]
+        waveform_page = getattr(self, "waveform_page", None)
+        if waveform_page is not None:
+            values.extend(variable.get() for variable in waveform_page.serial_slice_vars)
+            values.extend(variable.get() for variable in waveform_page.serial_repeat_vars)
+        return tuple(values)
+
+    def _sync_button_step_progress_params(self) -> None:
+        bar = getattr(self, "step_progress", None)
+        if bar is None or self.page_name != "button_mode":
+            return
+        waveform = self._button_waveform_progress_fingerprint()
+        config = self._button_config_progress_fingerprint()
+        bar.update_params("waveform", {"settings": waveform})
+        bar.update_params("config", {"settings": config})
+        bar.update_params("detection", {"settings": (waveform, config)})
+
+    def _on_button_progress_inputs_changed(self) -> None:
+        if (
+            getattr(self, "_syncing_chip_settings", False)
+            or getattr(self, "_reading_current_settings", False)
+            or getattr(self, "_preparing", False)
+        ):
+            return
+        self._sync_button_step_progress_params()
+        if self._button_rom_reconcile_job is not None:
+            return
+        try:
+            self._button_rom_reconcile_job = self.after_idle(self._run_button_rom_progress_reconcile)
+        except tk.TclError:
+            self._button_rom_reconcile_job = None
+
+    def _run_button_rom_progress_reconcile(self) -> None:
+        self._button_rom_reconcile_job = None
+        self._reconcile_rom_waveform_progress()
+
+    def _reconcile_rom_waveform_progress(self) -> None:
+        if self.page_name != "button_mode" or self.step_progress is None:
+            return
+        if self._button_active_waveform_requirements() != ():
+            return
+        self._sync_button_step_progress_params()
+        token = self.step_progress.begin("waveform")
+        self.step_progress.mark("waveform", "done", token)
+
+    def _begin_button_progress_step(self, step_key: str) -> Any | None:
+        if self.page_name != "button_mode" or self.step_progress is None:
+            return None
+        self._sync_button_step_progress_params()
+        return self.step_progress.begin(step_key)
+
+    def _mark_button_progress_step(self, step_key: str, state: str, token: Any | None) -> None:
+        if self.step_progress is not None and token is not None:
+            self.step_progress.mark(step_key, state, token)
+
+    def _begin_button_preset_progress(self) -> dict[str, Any]:
+        if self.page_name != "button_mode" or self.step_progress is None:
+            return {}
+        self._sync_button_step_progress_params()
+        return {
+            "waveform": self.step_progress.begin("waveform"),
+            "config": self.step_progress.begin("config"),
+        }
+
+    def _finish_button_preset_progress(self, tokens: dict[str, Any] | None, *, success: bool) -> None:
+        if self.step_progress is None or not tokens:
+            return
+        state = "done" if success else "error"
+        for step_key in ("waveform", "config"):
+            self._mark_button_progress_step(step_key, state, tokens.get(step_key))
+
+    def _on_button_waveform_write_result(
+        self,
+        token: Any,
+        outcome: str,
+        _device_addr: int,
+        slice_index: int,
+    ) -> None:
+        if token is None or self.step_progress is None:
+            return
+        if outcome == "done":
+            requirements = self._button_active_waveform_requirements()
+            if requirements is None or (requirements and int(slice_index) not in requirements):
+                return
+            self._mark_button_progress_step("waveform", "done", token)
+        elif outcome == "error":
+            self._mark_button_progress_step("waveform", "error", token)
+        elif outcome == "cancelled":
+            self._mark_button_progress_step("waveform", "idle", token)
 
     def _add_entry(self, parent: tk.Misc, row: int, key: str, variable: tk.StringVar, unit: str = "") -> None:
         label = ttk.Label(parent, style="Panel.TLabel")
@@ -2327,6 +2505,9 @@ class ButtonModePage(ButtonModeView, BasePage):
             messagebox.showerror(self.tr("error"), f"{self.tr('invalid_input')}\n{exc}")
             return
 
+        begin_progress = getattr(self, "_begin_button_preset_progress", None)
+        progress_tokens = begin_progress() if callable(begin_progress) else {}
+
         self._preset_waveform_write_busy = True
         if page is not None:
             page._set_waveform_write_busy(True)
@@ -2363,7 +2544,14 @@ class ButtonModePage(ButtonModeView, BasePage):
                         end_addr,
                     )
             try:
-                self.after(0, self._finish_preset_write, write_data, error, recipe)
+                post_to_ui(
+                    self,
+                    self._finish_preset_write,
+                    write_data,
+                    error,
+                    recipe,
+                    progress_tokens,
+                )
             except tk.TclError:
                 pass
 
@@ -2567,6 +2755,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         write_data: tuple[list[int], list[float], int, int, int, str],
         error: str | None,
         power_on_recipe: Awp192xWaveformRecipe | Awp192xSineWaveformRecipe | None = None,
+        progress_tokens: dict[str, Any] | None = None,
     ) -> None:
         page = getattr(self, "waveform_page", None)
         self._preset_waveform_write_busy = False
@@ -2574,6 +2763,9 @@ class ButtonModePage(ButtonModeView, BasePage):
             page._set_waveform_write_busy(False)
         self._set_preset_buttons_state("normal")
         if error:
+            finish_progress = getattr(self, "_finish_button_preset_progress", None)
+            if callable(finish_progress):
+                finish_progress(progress_tokens, success=False)
             messagebox.showerror(self.tr("error"), error)
             return
 
@@ -2609,6 +2801,9 @@ class ButtonModePage(ButtonModeView, BasePage):
         if model is not None:
             model.mark_applied()
         self._update_period_hint(write_register=False)
+        finish_progress = getattr(self, "_finish_button_preset_progress", None)
+        if callable(finish_progress):
+            finish_progress(progress_tokens, success=True)
         messagebox.showinfo(self.tr("info"), self.tr("preset_write_success"))
 
     @staticmethod
@@ -3584,6 +3779,8 @@ class ButtonModePage(ButtonModeView, BasePage):
     def on_show(self) -> None:
         self._sync_awp192x_settings_from_model()
         if self.page_name == "button_mode":
+            self._sync_button_step_progress_params()
+            self._reconcile_rom_waveform_progress()
             self._mark_button_runtime_dirty()
             self._update_period_hint(write_register=bool(getattr(self, '_prepared_registers_pending', False)))
             self._prepared_registers_pending = False
@@ -3614,19 +3811,43 @@ class ButtonModePage(ButtonModeView, BasePage):
 
     def _start_detection_direct(self) -> None:
         self._invalidate_detect_session()
+        detect_generation = self._detect_generation
+        config_token = self._begin_button_progress_step("config")
+        detection_token = self._begin_button_progress_step("detection")
         if not self._write_button_output_timing_config():
+            if detect_generation == self._detect_generation:
+                self._mark_button_progress_step("config", "error", config_token)
+                self._mark_button_progress_step("detection", "error", detection_token)
             return
         if not self._apply_adc_threshold_config():
+            if detect_generation == self._detect_generation:
+                self._mark_button_progress_step("config", "error", config_token)
+                self._mark_button_progress_step("detection", "error", detection_token)
             return
         if not self._apply_serial_waveform_config():
+            if detect_generation == self._detect_generation:
+                self._mark_button_progress_step("config", "error", config_token)
+                self._mark_button_progress_step("detection", "error", detection_token)
             return
         if not self._apply_sense_event_config():
+            if detect_generation == self._detect_generation:
+                self._mark_button_progress_step("config", "error", config_token)
+                self._mark_button_progress_step("detection", "error", detection_token)
             return
         if not self._write_button_adc_event_config(show_error=True):
+            if detect_generation == self._detect_generation:
+                self._mark_button_progress_step("config", "error", config_token)
+                self._mark_button_progress_step("detection", "error", detection_token)
             return
+        if detect_generation == self._detect_generation:
+            self._mark_button_progress_step("config", "done", config_token)
         if not self.write_reg(0x06, 0x0001):
+            if detect_generation == self._detect_generation:
+                self._mark_button_progress_step("detection", "error", detection_token)
             return
         self._direct_detection_active = True
+        if detect_generation == self._detect_generation:
+            self._mark_button_progress_step("detection", "done", detection_token)
         self._reset_direct_detect_cycle()
         self._detect_gui_state = "ready"
         self._set_button_selected("start_detection", True)
@@ -3636,6 +3857,8 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._invalidate_detect_session()
         if not self.write_reg(0x06, 0x0002):
             return
+        if self.page_name == "button_mode" and self.step_progress is not None:
+            self.step_progress.invalidate_from("detection")
         self._clear_sense_playback_registers(show_error=False)
         self._finish_detection_stop_ui()
 
@@ -6068,9 +6291,77 @@ class PumpModePage(BasePage):
         self.slow_up_var.trace_add("write", lambda *_: self._on_amp_changed())
         yield
         self.slow_down_var.trace_add("write", lambda *_: self._on_amp_changed())
+        self.precise_frequency_var.trace_add("write", lambda *_: self._sync_pump_step_progress_params())
 
         self._refresh_frequency_options()
         self.refresh_language()
+        self._mount_pump_step_progress()
+
+    def _pump_step_host(self) -> Any | None:
+        parent = getattr(self, "master", None)
+        while parent is not None:
+            if callable(getattr(parent, "_step_progress_context", None)):
+                return parent
+            parent = getattr(parent, "master", None)
+        return None
+
+    def _mount_pump_step_progress(self) -> None:
+        host = self._pump_step_host()
+        if host is None:
+            return
+        self.mount_step_progress(
+            host=host,
+            steps=(
+                StepSpec("output", 1, "step_done_pump_output", ("frequency", "amplitude")),
+                StepSpec("start", 2, "step_done_pump_start"),
+            ),
+            context=host._step_progress_context,
+        )
+        for variable in (
+            self.amp_var,
+            self.freq_var,
+            self.slow_up_var,
+            self.slow_down_var,
+            self.precise_frequency_var,
+        ):
+            variable.trace_add("write", lambda *_: self._sync_pump_step_progress_params())
+        self._sync_pump_step_progress_params()
+
+    def _pump_output_fingerprints(self) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+        option = self._current_frequency_option()
+        depth = option[3] if option is not None else None
+        frequency = (
+            str(self.freq_var.get()),
+            bool(self.precise_frequency_var.get()),
+            None if option is None else tuple(option[1:]),
+        )
+        amplitude = (
+            str(self.amp_var.get()),
+            str(self.slow_up_var.get()),
+            str(self.slow_down_var.get()),
+            depth,
+        )
+        return frequency, amplitude
+
+    def _sync_pump_step_progress_params(self) -> None:
+        bar = getattr(self, "step_progress", None)
+        if bar is None:
+            return
+        frequency, amplitude = self._pump_output_fingerprints()
+        bar.update_params("output", {"frequency": frequency, "amplitude": amplitude})
+        bar.update_params("start", {"settings": (frequency, amplitude)})
+
+    def _begin_pump_output_attempt(self) -> Any | None:
+        bar = getattr(self, "step_progress", None)
+        if bar is None:
+            return None
+        self._sync_pump_step_progress_params()
+        return bar.begin("output")
+
+    def _record_pump_output_part(self, part_key: str, ok: bool, token: Any | None) -> None:
+        bar = getattr(self, "step_progress", None)
+        if bar is not None and token is not None:
+            bar.mark_part("output", part_key, "done" if ok else "error", token)
 
     def _make_pump_title(self) -> ttk.Frame:
         header = ttk.Frame(self, style="App.TFrame")
@@ -6216,7 +6507,9 @@ class PumpModePage(BasePage):
         self._refresh_frequency_options()
         self._on_freq_changed()
 
-    def _on_amp_changed(self) -> None:
+    def _on_amp_changed(self, *, progress_token: Any | None = None) -> bool:
+        self._sync_pump_step_progress_params()
+        token = progress_token if progress_token is not None else self._begin_pump_output_attempt()
         selected = self.amp_var.get()
         for label, voltage, reg_value in self.amp_options:
             if label == selected:
@@ -6228,16 +6521,25 @@ class PumpModePage(BasePage):
                 )
                 self.ctx.state.current_max_output_voltage = voltage
                 self.ctx.state.current_max_output_reg_value = value
-                self.write_reg(0x14, value, show_error=False)
-                break
+                ok = self.write_reg(0x14, value, show_error=False)
+                self._record_pump_output_part("amplitude", ok, token)
+                return ok
+        return False
 
     def _on_freq_changed(self) -> None:
+        self._sync_pump_step_progress_params()
         option = self._current_frequency_option()
         if option is None:
             return
+        token = self._begin_pump_output_attempt()
         _label, _freq, reg_value, _data_depth_label = option
-        self.write_reg(0x15, reg_value, show_error=False)
-        self._on_amp_changed()
+        frequency_ok = self.write_reg(0x15, reg_value, show_error=False)
+        self._record_pump_output_part("frequency", frequency_ok, token)
+        self._on_amp_changed(progress_token=token)
+        if not frequency_ok:
+            # The amplitude write still runs in its existing position, while
+            # retaining the failed frequency outcome for the aggregate step.
+            self._record_pump_output_part("frequency", False, token)
 
     def _current_data_depth_label(self) -> str:
         option = self._current_frequency_option()
@@ -6261,7 +6563,14 @@ class PumpModePage(BasePage):
             messagebox.showerror(self.tr("error"), resp.error)
         return resp.ok
 
-    def write_reg_async(self, reg: int, value: int, *, on_success: Any = None) -> None:
+    def write_reg_async(
+        self,
+        reg: int,
+        value: int,
+        *,
+        on_success: Any = None,
+        on_failure: Any = None,
+    ) -> None:
         if getattr(self, '_preparing', False):
             return
         if not self.ctx.serial.is_connected:
@@ -6273,21 +6582,47 @@ class PumpModePage(BasePage):
         def finish(ok: bool, error: str) -> None:
             if not ok:
                 messagebox.showerror(self.tr("error"), error)
+                if on_failure is not None:
+                    on_failure(error)
                 return
             if on_success is not None:
                 on_success()
 
         def worker() -> None:
             resp = self.ctx.serial.write_register_value(dev, reg, value, bits=16)
-            try:
-                self.after(0, finish, resp.ok, resp.error)
-            except tk.TclError:
-                pass
+            post_to_ui(self, finish, resp.ok, resp.error)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def start_play(self) -> None:
-        self.write_reg_async(0x06, 0x0004, on_success=lambda: self._set_button_selected("start_play", True))
+        bar = getattr(self, "step_progress", None)
+        token = None
+        if bar is not None and self.ctx.serial.is_connected and not getattr(self, "_preparing", False):
+            self._sync_pump_step_progress_params()
+            token = bar.begin("start")
+
+        def started() -> None:
+            self._set_button_selected("start_play", True)
+            if bar is not None and token is not None:
+                bar.mark("start", "done", token)
+
+        def failed(_error: str) -> None:
+            if bar is not None and token is not None:
+                bar.mark("start", "error", token)
+
+        self.write_reg_async(0x06, 0x0004, on_success=started, on_failure=failed)
 
     def stop_play(self) -> None:
-        self.write_reg_async(0x06, 0x0008, on_success=lambda: self._set_button_selected("start_play", False))
+        host = self._pump_step_host()
+        stop_context = host._step_progress_context() if host is not None else None
+
+        def stopped() -> None:
+            self._set_button_selected("start_play", False)
+            if (
+                self.step_progress is not None
+                and stop_context is not None
+                and host._step_progress_context() == stop_context
+            ):
+                self.step_progress.reset_all()
+
+        self.write_reg_async(0x06, 0x0008, on_success=stopped)
