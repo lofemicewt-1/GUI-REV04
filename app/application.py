@@ -61,6 +61,9 @@ class _ConnectAttempt:
     cancelled: threading.Event = field(default_factory=threading.Event)
     lock: threading.Lock = field(default_factory=threading.Lock)
     result: SerialResponse | None = None
+    # Optional quiet failure handler (firmware reconnect retries); when set
+    # it replaces the error message box.
+    on_failure: Callable[[str], None] | None = None
 
 
 @dataclass
@@ -930,6 +933,12 @@ class HomePage(BasePage):
         target: chip_status_cache.TargetIdentity,
         enabled: bool,
     ) -> None:
+        if getattr(self, "_firmware_flash_port", None) == port:
+            row = self._status_row(slot)
+            if row is not None:
+                row["enabled"].set(not enabled)
+            self._set_status_row_text(slot, "firmware flashing")
+            return
         active = getattr(self, "_status_operation", None)
         if active is not None:
             row = self._status_row(slot)
@@ -1921,6 +1930,9 @@ class HomePage(BasePage):
         self.refresh_language()
 
     def toggle_connection(self) -> None:
+        if getattr(self, "_firmware_flash_port", None):
+            messagebox.showwarning(self.tr("error"), self.tr("firmware_busy_locked"))
+            return
         if getattr(self, "_connect_attempt", None) is not None:
             self.cancel_connection()
             return
@@ -2062,6 +2074,8 @@ class HomePage(BasePage):
             self._finish_connection_when_ready(port)
         elif str(resp.error).startswith(BLUETOOTH_PORT_ERROR):
             messagebox.showwarning(self.tr("error"), self.tr("bluetooth_port_refused", port=port))
+        elif attempt.on_failure is not None:
+            attempt.on_failure(str(resp.error))
         else:
             messagebox.showerror(self.tr("error"), resp.error)
 
@@ -2910,6 +2924,29 @@ class HomePage(BasePage):
                 pass
         self._firmware_flash_dialog = FirmwareFlashDialog(self)
 
+    def firmware_lock(self, port: str) -> bool:
+        """Block Connect / status polling / continuous read while flashing."""
+        if getattr(self, "_firmware_flash_port", None):
+            return False
+        self._firmware_flash_port = port
+        self._cancel_continuous_read("connection_changed")
+        for widget in (getattr(self, "connect_btn", None), getattr(self, "flash_btn", None)):
+            try:
+                if widget is not None:
+                    widget.state(["disabled"])
+            except tk.TclError:
+                pass
+        return True
+
+    def firmware_unlock(self, port: str | None = None) -> None:
+        self._firmware_flash_port = None
+        for widget in (getattr(self, "connect_btn", None), getattr(self, "flash_btn", None)):
+            try:
+                if widget is not None:
+                    widget.state(["!disabled"])
+            except tk.TclError:
+                pass
+
     def firmware_port_connected(self, port: str) -> bool:
         if getattr(self, "_connect_attempt", None) is not None and self._connect_attempt.port == port:
             return True
@@ -2932,14 +2969,32 @@ class HomePage(BasePage):
             self.ctx.app.navigation.refresh_language()
         self.refresh_language()
 
-    def firmware_restore_port(self, port: str) -> None:
-        """Reconnect ``port`` through the normal connect flow after flashing."""
+    def firmware_restore_port(self, port: str, retries: int | None = None) -> None:
+        """Reconnect ``port`` through the normal connect flow after flashing.
+
+        A failed attempt is retried once after ``RECONNECT_DELAY_MS``; only
+        the last failure shows the usual error box.
+        """
+        from core.firmware_flasher import RECONNECT_DELAY_MS, RECONNECT_RETRIES
+
+        retries = RECONNECT_RETRIES if retries is None else retries
         self.ctx.state.extra.pop("connection_detail", None)
         if self._is_selected_port_connected(port) or getattr(self, "_connect_attempt", None) is not None:
             self.refresh_language()
             return
         self.port_var.set(port)
         self.toggle_connection()
+        attempt = getattr(self, "_connect_attempt", None)
+        if attempt is None or retries <= 0:
+            return
+
+        def on_failure(error: str) -> None:
+            emit = getattr(self.ctx.serial, "emit_log", None)
+            if callable(emit):
+                emit(f"[flash] {self.tr('firmware_reconnect_retry', port=port, seconds=RECONNECT_DELAY_MS // 1000)} ({error})")
+            self.after(RECONNECT_DELAY_MS, self.firmware_restore_port, port, retries - 1)
+
+        attempt.on_failure = on_failure
 
     def open_continuous_read_dialog(self) -> None:
         dialog = getattr(self, "_continuous_read_dialog", None)
@@ -2962,6 +3017,9 @@ class HomePage(BasePage):
         dialog: ContinuousRegisterReadDialog,
         settings: ContinuousReadSettings,
     ) -> bool:
+        if getattr(self, "_firmware_flash_port", None):
+            messagebox.showwarning(self.tr("error"), self.tr("firmware_busy_locked"), parent=dialog)
+            return False
         if getattr(self, "_continuous_read_operation", None) is not None:
             dialog.wait_for_previous()
             return False
@@ -4281,6 +4339,12 @@ class PiezoApplication:
         if callable(cancel_continuous_read):
             cancel_continuous_read("application_closing")
         self._clear_waveform_cache_files()
+        try:
+            from core.firmware_flasher import kill_active_processes
+
+            kill_active_processes()  # a running avrdude would keep the COM port
+        except Exception:
+            pass
         try:
             self.i2c_bridge.close()
         except Exception:

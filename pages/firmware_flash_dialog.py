@@ -7,6 +7,7 @@ user must always pick a .hex (the last choice is remembered per session).
 
 from __future__ import annotations
 
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -53,6 +54,8 @@ class FirmwareFlashDialog(tk.Toplevel):
         self._ask_yes_no = ask_yes_no
         self._start_thread = start_thread or self._default_start_thread
         self._session: ff.FlashSession | None = None
+        self._port: str = ""
+        self._connect_thread: Any = None
         self._status_key = "firmware_status_ready"
         self._status_kwargs: dict[str, Any] = {}
         self._labels: list[tuple[Any, str]] = []
@@ -86,15 +89,27 @@ class FirmwareFlashDialog(tk.Toplevel):
     def _post(self, fn: Callable[..., Any], *args: Any) -> None:
         post_to_ui(self, fn, *args)
 
-    def _log(self, line: str) -> None:
-        """Worker thread: shared serial log + dialog log."""
+    def _emit_shared_log(self, line: str) -> None:
+        """Tk thread: append to the app's serial log."""
         logger = getattr(self.home.ctx.serial, "emit_log", None)
         if callable(logger):
             try:
                 logger(f"[flash] {line}")
             except Exception:
                 pass
+
+    def _log(self, line: str) -> None:
+        """Any thread: shared serial log + dialog log, both on the Tk thread."""
+        self._post(self._emit_shared_log, line)
         self._post(self._append_log, line)
+
+    def _hwnd(self) -> int | None:
+        if not sys.platform.startswith("win"):
+            return None
+        try:
+            return int(self.wm_frame(), 16) or None
+        except (tk.TclError, ValueError):
+            return None
 
     # -- UI -----------------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -122,15 +137,18 @@ class FirmwareFlashDialog(tk.Toplevel):
 
         controls = ttk.Frame(body, style="Panel.TFrame")
         controls.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 4))
-        controls.columnconfigure(2, weight=1)
+        controls.columnconfigure(3, weight=1)
         self.start_btn = ttk.Button(controls, style="Primary.TButton", command=self.start)
         self.start_btn.grid(row=0, column=0, padx=(0, 8))
         self._labels.append((self.start_btn, "firmware_start"))
+        self.cancel_btn = ttk.Button(controls, style="Secondary.TButton", command=self.cancel, state="disabled")
+        self.cancel_btn.grid(row=0, column=1, padx=(0, 8))
+        self._labels.append((self.cancel_btn, "firmware_cancel"))
         self.close_btn = ttk.Button(controls, style="Secondary.TButton", command=self.close)
-        self.close_btn.grid(row=0, column=1, padx=(0, 8))
+        self.close_btn.grid(row=0, column=2, padx=(0, 8))
         self._labels.append((self.close_btn, "firmware_close"))
         self.progress = ttk.Progressbar(controls, variable=self.progress_var, maximum=100, mode="determinate")
-        self.progress.grid(row=0, column=2, sticky="ew")
+        self.progress.grid(row=0, column=3, sticky="ew")
 
         self.status_label = make_label(body, textvariable=self.status_var, style="Panel.TLabel", wraplength=560)
         self.status_label.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 6))
@@ -176,7 +194,10 @@ class FirmwareFlashDialog(tk.Toplevel):
     def _set_status(self, key: str, **kwargs: Any) -> None:
         self._status_key, self._status_kwargs = key, kwargs
         if not self._closed:
-            self.status_var.set(self.tr(key, **kwargs))
+            try:
+                self.status_var.set(self.tr(key, **kwargs))
+            except tk.TclError:
+                pass
 
     def _append_log(self, line: str) -> None:
         if self._closed:
@@ -191,10 +212,19 @@ class FirmwareFlashDialog(tk.Toplevel):
 
     def _set_progress(self, value: float) -> None:
         if not self._closed:
-            self.progress_var.set(float(value))
+            try:
+                self.progress_var.set(float(value))
+            except tk.TclError:
+                pass
 
     def _set_busy(self, busy: bool) -> None:
         self.busy = busy
+        if self._closed:
+            return
+        try:
+            self.cancel_btn.configure(state="normal" if busy else "disabled")
+        except tk.TclError:
+            pass
         state = "disabled" if busy else "normal"
         for widget in (self.start_btn, self.browse_btn, self.hex_entry, self.port_combo):
             try:
@@ -209,7 +239,7 @@ class FirmwareFlashDialog(tk.Toplevel):
             parent=self,
             title=self.tr("firmware_select_hex_title"),
             initialdir=initial_dir or None,
-            filetypes=[(self.tr("firmware_hex_filetype"), "*.hex"), ("*", "*.*")],
+            filetypes=[(self.tr("firmware_hex_filetype"), "*.hex"), (self.tr("firmware_all_files"), "*.*")],
         )
         if path:
             self.hex_var.set(path)
@@ -230,6 +260,12 @@ class FirmwareFlashDialog(tk.Toplevel):
             messagebox.showwarning(self.tr("error"), self.tr(exc.key, **exc.kwargs), parent=self)
             return False
         remember_hex_path(hex_path)
+        locker = getattr(self.home, "firmware_lock", None)
+        if callable(locker) and not locker(port):
+            messagebox.showwarning(self.tr("error"), self.tr("firmware_busy_locked"), parent=self)
+            return False
+        self._port = port
+        self._flasher.cancel_event.clear()
         self._set_busy(True)
         self._set_progress(0)
         self._set_status("firmware_status_checking_driver")
@@ -248,22 +284,36 @@ class FirmwareFlashDialog(tk.Toplevel):
             key = "ch340_missing_prompt" if not status.installed else "ch340_problem_prompt"
             if self._ask_yes_no(self.tr("info"), self.tr(key), parent=self):
                 self._set_status("firmware_status_installing_driver")
-                self._start_thread(lambda: self._install_worker(port, hex_path))
+                hwnd = self._hwnd()
+                self._start_thread(lambda: self._install_worker(port, hex_path, hwnd))
                 return
             self._log(self.tr("ch340_skip_continue"))
+        elif status.note:
+            self._log(status.note)
         self._begin_flash(port, hex_path)
 
-    def _install_worker(self, port: str, hex_path: str) -> None:
+    def _install_worker(self, port: str, hex_path: str, hwnd: int | None) -> None:
+        proceed = True
+        kwargs: dict[str, Any] = {}
         try:
-            status = self._install_driver()
-            note = "ch340_install_failed" if (status.checked and not status.installed) else "ch340_install_done"
+            self._install_driver(hwnd=hwnd)
+            note = "ch340_install_done"
         except ff.FirmwareFlashError as exc:
-            note = exc.key
+            note, kwargs = exc.key, dict(exc.kwargs)
+            # Installer still running: never flash on top of it.
+            proceed = exc.key != "ch340_install_still_running"
         except Exception as exc:  # never leave the dialog busy
-            note = "ch340_install_failed"
-            self._log(str(exc))
-        self._log(self.tr(note))
-        self._post(self._begin_flash, port, hex_path)
+            note, kwargs = "ch340_install_failed", {"code": str(exc)}
+        kwargs.setdefault("code", "")
+        self._log(self.tr(note, **kwargs))
+        if proceed:
+            self._post(self._begin_flash, port, hex_path)
+        else:
+            self._post(
+                self._finish_flash,
+                port,
+                ff.FlashResult(ok=False, error_key=note, error_kwargs=kwargs),
+            )
 
     def _begin_flash(self, port: str, hex_path: str) -> None:
         home = self.home
@@ -274,11 +324,23 @@ class FirmwareFlashDialog(tk.Toplevel):
             reconnect=home.firmware_restore_port,
             schedule=lambda ms, fn: home.after(ms, fn),
         )
+        if self._flasher.cancel_event.is_set():
+            self._finish_flash(port, ff.FlashResult(ok=False, error_key="firmware_error_cancelled"))
+            return
         self._session.begin()
+        # A cancelled connect may still own the port: the worker joins it.
+        self._connect_thread = getattr(home, "_connect_previous_thread", None)
         self._set_status("firmware_status_flashing", port=port)
         self._start_thread(lambda: self._flash_worker(port, hex_path))
 
     def _flash_worker(self, port: str, hex_path: str) -> None:
+        thread = self._connect_thread
+        if thread is not None and thread is not threading.current_thread():
+            try:
+                if thread.is_alive():
+                    thread.join(timeout=ff.PORT_RELEASE_TIMEOUT_S + 30)
+            except Exception:
+                pass
         try:
             result = self._flasher.flash(
                 port,
@@ -298,18 +360,16 @@ class FirmwareFlashDialog(tk.Toplevel):
             error = self.tr(result.error_key or "firmware_error_avrdude", **(result.error_kwargs or {"code": result.returncode}))
             message_key, kwargs = "firmware_failed", {"error": error}
         final_text = self.tr(message_key, **kwargs)
-        logger = getattr(self.home.ctx.serial, "emit_log", None)
-        if callable(logger):
-            try:
-                logger(f"[flash] {final_text}")
-            except Exception:
-                pass
+        self._emit_shared_log(final_text)
         self._append_log(final_text)
 
         def done() -> None:
             self._set_busy(False)
             self._set_status(message_key, **kwargs)
 
+        unlocker = getattr(self.home, "firmware_unlock", None)
+        if callable(unlocker):
+            unlocker(port)  # before the reconnect, which Connect-lock would refuse
         session = self._session
         self._session = None
         if session is not None and session.was_connected:
@@ -321,10 +381,19 @@ class FirmwareFlashDialog(tk.Toplevel):
         if result.ok:
             self._set_progress(100)
 
+    def cancel(self) -> None:
+        """Stop the running flash; avrdude is killed by the worker."""
+        if self.busy:
+            self._flasher.cancel()
+            self._set_status("firmware_status_cancelling")
+
     def close(self) -> None:
         if self.busy:
-            messagebox.showinfo(self.tr("info"), self.tr("firmware_busy_close"), parent=self)
-            return
+            if not self._ask_yes_no(self.tr("info"), self.tr("firmware_busy_close"), parent=self):
+                return
+            # Cancel and close; the worker still finishes, unlocks the Home
+            # page and restores the connection (all guarded for a dead dialog).
+            self._flasher.cancel()
         self._closed = True
         try:
             self.destroy()

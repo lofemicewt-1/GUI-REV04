@@ -32,3 +32,6 @@ htmlcov/
 
 *.egg-info/
 *.whl
+
+# Bundled firmware-flasher tools (avrdude, WCH CH340 installer) are tracked.
+!assets/tools/**/*.exe

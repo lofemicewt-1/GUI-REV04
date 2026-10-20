@@ -108,16 +108,6 @@ FIRMWARE_TOOL_FILES = (
 )
 
 
-def resource_root() -> Path:
-    """Folder holding ``assets``: PyInstaller's ``sys._MEIPASS`` or the repo root."""
-    import sys
-
-    frozen_root = getattr(sys, "_MEIPASS", None)
-    if frozen_root:
-        return Path(frozen_root)
-    return Path(__file__).resolve().parent.parent
-
-
 def firmware_tool_files(root: str | Path) -> list[Path]:
     """Bundled flasher tools; raises if any is missing (used by the spec)."""
     base = Path(root)
