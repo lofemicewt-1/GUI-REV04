@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import math
 import queue
 import sys
@@ -9,6 +11,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
 from core.lazy_pages import LazyPages
+from core.ui_dispatch import post_to_ui
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -43,7 +46,8 @@ from core.base_tool import (
     SerialResponse,
     execute_register_script_operations,
 )
-from pages.base_page import BasePage, CanvasTitle, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
+from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
+from pages.waveform_preview import PreviewSegment, compact_preview, draw_omissions
 from pages.gpio_controls import GpioControlGroup, GpioControlPanel, active_serial_identity
 from styles.fonts import page_title_weight
 
@@ -55,7 +59,7 @@ class AWP1018Page(BasePage):
     ID_REG = 0x2B
     CHIP_ID = 0x1018
 
-    def __init__(self, parent: tk.Misc, ctx: Any) -> None:
+    def __init__(self, parent: tk.Misc, ctx: Any, *, defer_build: bool = False) -> None:
         super().__init__(parent, ctx)
         self.addr_var = tk.StringVar(value="0x48")
         self.reg_addr_var = tk.StringVar(value="0x00")
@@ -67,9 +71,21 @@ class AWP1018Page(BasePage):
         self.mode_pages = LazyPages(self._install_mode_page)
         self._labels: dict[str, ttk.Label] = {}
         self._buttons: dict[str, ttk.Button] = {}
-        self._build_ui()
+        self._preparing = defer_build
+        self._build_steps = self._initialize_steps()
+        if not defer_build:
+            for _ in self._build_steps:
+                pass
+
+    def _initialize_steps(self) -> Iterator[None]:
+        yield from self._build_ui_steps()
+        self._preparing = False
 
     def _build_ui(self) -> None:
+        for _ in self._build_ui_steps():
+            pass
+
+    def _build_ui_steps(self) -> Iterator[None]:
         self.enable_pinned_footer_layout()
         self.gpio_controls = GpioControlGroup()
 
@@ -83,27 +99,32 @@ class AWP1018Page(BasePage):
             propagate_height=True,
         )
         self.mode_scroll.grid(row=1, column=0, sticky="nsew")
+        yield
         # Keep the first glyph inside the canvas clip edge when a small
         # window is scrolled fully left.
         self.mode_container.configure(padding=(8, 0, 8, 0))
         self.mode_container.rowconfigure(0, weight=1)
         self.mode_container.columnconfigure(0, weight=1)
 
-        self.footer_scroll, footer_content = self.make_vertical_scroll_area(self, horizontal=False)
+        self.footer_scroll, footer_content = self.make_vertical_scroll_area(
+            self, horizontal=False, reserve_vertical_gutter=True
+        )
         self.footer_scroll.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         footer_content.columnconfigure(0, weight=1)
+        yield
         footer, actions, reg_panel, identity = self.make_merged_footer(footer_content)
         footer.grid(row=0, column=0, sticky="ew")
         self._footer_panel = footer
         self._footer_fit_job = None
         footer.bind("<Configure>", self._queue_footer_fit)
         self.bind("<Configure>", self._queue_footer_fit, add="+")
-        self._build_state_actions(actions)
+        yield
+        yield from self._build_state_actions_steps(actions)
         reg_panel.columnconfigure(8, weight=1)
-        self._build_register_bar(reg_panel)
-        self._build_identity_bar(identity)
+        yield from self._build_register_bar_steps(reg_panel)
+        yield from self._build_identity_bar_steps(identity)
 
-        self.mode_pages.register("awp1018_normal_mode", lambda: AWP1018NormalModePage(
+        self.mode_pages.register("awp1018_normal_mode", lambda defer_build=False: AWP1018NormalModePage(
             self.mode_container,
             self.ctx,
             import_page_settings=self.import_settings,
@@ -112,8 +133,9 @@ class AWP1018Page(BasePage):
             gpio_group=self.gpio_controls,
             on_gpio_mode_success=self._on_gpio_mode_success,
             on_gpio_mode_failure=self._on_gpio_mode_failure,
-        ))
-        self.mode_pages.register("awp1018_diff_mode", lambda: AWP1018NormalModePage(
+            defer_build=defer_build,
+        ), staged=True)
+        self.mode_pages.register("awp1018_diff_mode", lambda defer_build=False: AWP1018NormalModePage(
             self.mode_container,
             self.ctx,
             diff_mode=True,
@@ -123,18 +145,24 @@ class AWP1018Page(BasePage):
             gpio_group=self.gpio_controls,
             on_gpio_mode_success=self._on_gpio_mode_success,
             on_gpio_mode_failure=self._on_gpio_mode_failure,
-        ))
-        self.mode_pages.register("full_mode", lambda: AWP1018FullModePage(
+            defer_build=defer_build,
+        ), staged=True)
+        yield
+        self.mode_pages.register("full_mode", lambda defer_build=False: AWP1018FullModePage(
             self.mode_container,
             self.ctx,
             gpio_group=self.gpio_controls,
             on_gpio_mode_success=self._on_gpio_mode_success,
             on_gpio_mode_failure=self._on_gpio_mode_failure,
-        ))
+            defer_build=defer_build,
+        ), staged=True)
 
         self.refresh_language()
-        self._on_addr_changed()
-        self.show_mode(self.current_mode)
+        if not self._preparing:
+            self._on_addr_changed()
+        yield from self.mode_pages.prepare(self.current_mode)
+        self.show_mode(self.current_mode, update_chip=not self._preparing)
+        self._prepared_mode_pending = self._preparing
 
     def _install_mode_page(self, _name: str, page: ttk.Frame) -> None:
         page.grid(row=0, column=0, sticky="nsew")
@@ -164,6 +192,11 @@ class AWP1018Page(BasePage):
             pass
 
     def _build_state_actions(self, parent: tk.Misc) -> None:
+        for _ in self._build_state_actions_steps(parent):
+            pass
+
+    def _build_state_actions_steps(self, parent: tk.Misc) -> Iterator[None]:
+        yield
         buttons = (
             ("awp1018_reset", "Secondary.TButton", self.reset_chip),
             ("awp1018_sleep", "Secondary.TButton", self.sleep_chip),
@@ -177,12 +210,17 @@ class AWP1018Page(BasePage):
             self._buttons[key] = button
 
     def _build_identity_bar(self, parent: tk.Misc) -> None:
+        for _ in self._build_identity_bar_steps(parent):
+            pass
+
+    def _build_identity_bar_steps(self, parent: tk.Misc) -> Iterator[None]:
         serial_group = parent.add_group()
         self.make_serial_selector(serial_group, page_name=self.page_name, row=0, column=0)
         addr_group = parent.add_group()
         addr_label = ttk.Label(addr_group, style="Panel.TLabel")
         addr_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels["current_chip_addr"] = addr_label
+        yield
         self.addr_combo = ttk.Combobox(
             addr_group,
             textvariable=self.addr_var,
@@ -195,11 +233,16 @@ class AWP1018Page(BasePage):
         detect_group = parent.add_group()
         detect_btn = ttk.Button(detect_group, style="Primary.TButton", command=self.detect_chip)
         detect_btn.grid(row=0, column=0, sticky="w")
+        yield
         self._buttons["detect_chip"] = detect_btn
         status_group = parent.add_group()
         ttk.Label(status_group, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
 
     def _build_register_bar(self, parent: tk.Misc) -> None:
+        for _ in self._build_register_bar_steps(parent):
+            pass
+
+    def _build_register_bar_steps(self, parent: tk.Misc) -> Iterator[None]:
         title_group = parent.add_group()
         title_label = ttk.Label(title_group, style="Panel.TLabel")
         title_label.grid(row=0, column=0, sticky="w")
@@ -207,6 +250,7 @@ class AWP1018Page(BasePage):
 
         addr_group = parent.add_group()
         reg_addr_label = ttk.Label(addr_group, style="Panel.TLabel")
+        yield
         reg_addr_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._labels["reg_addr"] = reg_addr_label
         ttk.Entry(addr_group, textvariable=self.reg_addr_var, width=8).grid(row=0, column=1, sticky="w")
@@ -214,6 +258,7 @@ class AWP1018Page(BasePage):
         write_group = parent.add_group()
         write_value_label = ttk.Label(write_group, style="Panel.TLabel")
         write_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
+        yield
         self._labels["write_value"] = write_value_label
         ttk.Entry(write_group, textvariable=self.write_value_var, width=10).grid(row=0, column=1, sticky="w")
 
@@ -221,6 +266,7 @@ class AWP1018Page(BasePage):
         read_value_label = ttk.Label(read_group, style="Panel.TLabel")
         read_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._labels["read_value"] = read_value_label
+        yield
         ttk.Entry(read_group, textvariable=self.read_value_var, width=12, state="readonly").grid(row=0, column=1, sticky="w")
 
         button_group = parent.add_group()
@@ -228,6 +274,7 @@ class AWP1018Page(BasePage):
         read_btn.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self._buttons["rr"] = read_btn
         write_btn = ttk.Button(button_group, style="Primary.TButton", command=self.write_register)
+        yield
         write_btn.grid(row=0, column=1, sticky="w")
         self._buttons["rw"] = write_btn
 
@@ -467,6 +514,9 @@ class AWP1018Page(BasePage):
     def _start_awp1018_txt_import(self, preset: RegisterScriptPreset) -> None:
         if not self._ensure_connected():
             return
+        cancel = getattr(type(self.ctx.serial), "cancel_register_settings", None)
+        if callable(cancel):
+            self.ctx.serial.cancel_register_settings(self.page_name)
         self._set_user_preset_buttons_state("disabled")
 
         def worker() -> None:
@@ -752,6 +802,13 @@ class AWP1018Page(BasePage):
             pass
 
     def _set_diff_mode_registers(self, enabled: bool) -> None:
+        submit = getattr(type(self.ctx.serial), "queue_register_setting", None)
+        if callable(submit):
+            self.ctx.serial.queue_register_setting(
+                self.page_name, self._addr(), 0x34, (1 << 3) if enabled else 0,
+                clear_mask=1 << 3, address_state_key="awp1018_device_addr",
+            )
+            return
         if not self.ctx.serial.is_connected:
             return
 
@@ -840,6 +897,9 @@ class AWP1018Page(BasePage):
             gpio_controls.invalidate_modes()
 
     def on_show(self) -> None:
+        if getattr(self, "_prepared_mode_pending", False):
+            self._prepared_mode_pending = False
+            self._set_diff_mode_registers(self.current_mode == "awp1018_diff_mode")
         gpio_controls = getattr(self, "gpio_controls", None)
         if gpio_controls is not None:
             gpio_controls.invalidate_modes()
@@ -1030,6 +1090,7 @@ class AWP1018NormalModePage(BasePage):
         gpio_group: GpioControlGroup | None = None,
         on_gpio_mode_success: Callable[[str, str], None] | None = None,
         on_gpio_mode_failure: Callable[[str], None] | None = None,
+        defer_build: bool = False,
     ) -> None:
         super().__init__(parent, ctx)
         self.diff_mode = diff_mode
@@ -1111,7 +1172,7 @@ class AWP1018NormalModePage(BasePage):
         self._diff_status_frames: dict[int, tk.Frame] = {}
         self._diff_status_value_vars: dict[int, tk.StringVar] = {}
         self._tooltips: list[SimpleTooltip] = []
-        self._loading_settings = False
+        self._loading_settings = defer_build
         self._diff_detect_active = False
         self._diff_value_poll_job: str | None = None
         self._diff_status_blink_job: str | None = None
@@ -1126,8 +1187,17 @@ class AWP1018NormalModePage(BasePage):
         self._rom_draw_retries = 0
         self._sinc_segment_cache: tuple[Any, list] | None = None
 
-        self._build_ui()
+        self._preparing = defer_build
+        self._build_steps = self._initialize_steps()
+        if not defer_build:
+            for _ in self._build_steps:
+                pass
+
+    def _initialize_steps(self) -> Iterator[None]:
+        yield from self._build_ui_steps()
+        self._preparing = False
         self.ctx.serial.add_log_listener(self._handle_serial_status_log)
+        self._loading_settings = False
 
     def _trace_stage_threshold(self, stage: str, kind: str, variable: tk.StringVar) -> None:
         variable.trace_add("write", lambda *_args, s=stage, k=kind: self._on_stage_threshold_changed(s, k))
@@ -1138,10 +1208,7 @@ class AWP1018NormalModePage(BasePage):
         header.columnconfigure(0, weight=0)
         header.columnconfigure(1, weight=1)
 
-        preset_frame = ttk.Frame(header, style="App.TFrame")
-        preset_frame.grid(row=0, column=1, sticky="ew", padx=(24, 0))
-        for column in range(5):
-            preset_frame.columnconfigure(column, weight=1, uniform="awp1018_preset_cols", minsize=118)
+        preset_frame = self.make_preset_frame(header)
 
         for index in range(3):
             key = f"button_mode_preset_{index + 1}"
@@ -1220,6 +1287,10 @@ class AWP1018NormalModePage(BasePage):
         return row + 1
 
     def _build_ui(self) -> None:
+        for _ in self._build_ui_steps():
+            pass
+
+    def _build_ui_steps(self) -> Iterator[None]:
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
@@ -1228,6 +1299,7 @@ class AWP1018NormalModePage(BasePage):
 
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
+        yield
         body.columnconfigure(0, weight=1, minsize=640, uniform="awp1018_columns")
         body.columnconfigure(1, weight=1, minsize=640, uniform="awp1018_columns")
         body.rowconfigure(0, weight=1)
@@ -1235,6 +1307,7 @@ class AWP1018NormalModePage(BasePage):
         left = ttk.Frame(body, style="Panel.TFrame", padding=14)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         left.columnconfigure(1, weight=2, minsize=145)
+        yield
         left.columnconfigure(3, weight=2, minsize=145)
 
         right = ttk.Frame(body, style="Panel.TFrame", padding=10)
@@ -1242,27 +1315,31 @@ class AWP1018NormalModePage(BasePage):
         right.rowconfigure(0, weight=1)
         right.rowconfigure(1, weight=0)
         right.columnconfigure(0, weight=1)
+        yield
 
         row = 0
         row = self._add_section_title(left, row, "awp1018_adc_threshold_detection")
-        self._build_stage_selector(left, row)
+        yield from self._build_stage_selector_steps(left, row)
         row += 1
         self.stage_container = ttk.Frame(left, style="Panel.TFrame")
         self.stage_container.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(4, 8))
+        yield
         self.stage_container.columnconfigure(0, weight=1)
         for stage in ("Stage0", "Stage1", "Stage2", "Stage3"):
-            self._build_stage_frame(stage)
+            yield from self._build_stage_frame_steps(stage)
         row += 1
 
         row = self._add_section_title(left, row, "full_mode_adc")
-        self._build_adc_channel_selector(left, row)
+        yield from self._build_adc_channel_selector_steps(left, row)
         row += 1
-        self._build_adc_timing_row(left, row)
+        yield
+        yield from self._build_adc_timing_row_steps(left, row)
         row += 1
-        self._build_zero_return_bit_row(left, row)
+        yield from self._build_zero_return_bit_row_steps(left, row)
         row += 1
-        self._build_arbitration_return_time_row(left, row)
+        yield from self._build_arbitration_return_time_row_steps(left, row)
         row += 1
+        yield
 
         zps_check = ttk.Checkbutton(left, variable=self.zps_enable_var, command=self._on_zps_enable_changed)
         zps_check.grid(row=row, column=0, columnspan=4, sticky="w", pady=(12, 7))
@@ -1271,15 +1348,17 @@ class AWP1018NormalModePage(BasePage):
 
         interrupt_check = ttk.Checkbutton(left, variable=self.interrupt_enable_var, command=self._on_interrupt_enable_changed)
         interrupt_check.grid(row=row, column=0, columnspan=4, sticky="w", pady=(4, 7))
+        yield
         self._checks["awp1018_interrupt_enable"] = interrupt_check
         row += 1
 
-        self._build_control_buttons(left, row)
+        yield from self._build_control_buttons_steps(left, row)
         row += 1
         if self.diff_mode:
             self._build_diff_channel_status(left, row)
             row += 1
         row = self._attach_gpio_controls(left, row)
+        yield
 
         self.tabs = ttk.Notebook(right)
         self.tabs.grid(row=0, column=0, sticky="nsew")
@@ -1287,7 +1366,8 @@ class AWP1018NormalModePage(BasePage):
         selector_tab = ttk.Frame(self.tabs, style="Panel.TFrame", padding=14)
         selector_tab.rowconfigure(2, weight=1)
         selector_tab.columnconfigure(0, weight=1)
-        self._build_rom_selector(selector_tab)
+        yield from self._build_rom_selector_steps(selector_tab)
+        yield
 
         self.tabs.add(selector_tab, text=self.tr("awp1018_waveform_selector"))
 
@@ -1313,6 +1393,7 @@ class AWP1018NormalModePage(BasePage):
             *self.diff_serial4_segment_vars,
         ):
             var.trace_add("write", self._queue_rom_waveform_draw)
+        yield
         if self.diff_mode:
             self.diff_serial_var.trace_add("write", lambda *_: self._refresh_diff_slice_group_options())
             self.diff_serial_var.trace_add("write", lambda *_: self._refresh_diff_waveform_controls())
@@ -1323,6 +1404,7 @@ class AWP1018NormalModePage(BasePage):
         self.adc_sample_update_var.trace_add("write", lambda *_: self._on_adc_sample_update_changed())
         self.return_bit_time_var.trace_add("write", lambda *_: self._on_return_bit_config_changed())
         self.dac_sample_rate_var.trace_add("write", lambda *_: self._on_dac_sample_rate_changed())
+        yield
         self.rom_canvas.bind("<Configure>", self._on_rom_canvas_configure)
 
         self.refresh_language()
@@ -1330,6 +1412,11 @@ class AWP1018NormalModePage(BasePage):
         self._queue_rom_waveform_draw()
 
     def _build_stage_selector(self, parent: tk.Misc, row: int) -> None:
+        for _ in self._build_stage_selector_steps(parent, row):
+            pass
+
+    def _build_stage_selector_steps(self, parent: tk.Misc, row: int) -> Iterator[None]:
+        yield
         frame = ttk.Frame(parent, style="Panel.TFrame")
         frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, 6))
         for index, stage in enumerate(("Stage0", "Stage1", "Stage2", "Stage3")):
@@ -1344,6 +1431,10 @@ class AWP1018NormalModePage(BasePage):
             self._stage_buttons[stage] = btn
 
     def _build_adc_channel_selector(self, parent: tk.Misc, row: int) -> None:
+        for _ in self._build_adc_channel_selector_steps(parent, row):
+            pass
+
+    def _build_adc_channel_selector_steps(self, parent: tk.Misc, row: int) -> Iterator[None]:
         label = ttk.Label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="nw", pady=7, padx=(0, 8))
         self._labels["awp1018_channel_select"] = label
@@ -1360,6 +1451,7 @@ class AWP1018NormalModePage(BasePage):
             )
             check.grid(row=index // 4, column=index % 4, sticky="w", padx=(0, 8), pady=2)
             self._channel_checks[index] = check
+        yield
 
     def _add_help_button(self, parent: tk.Misc, row: int, column: int, text_key: str) -> None:
         label = ttk.Label(parent, text=self.tr("awp1018_help_symbol"), style="Muted.TLabel", cursor="question_arrow")
@@ -1367,12 +1459,17 @@ class AWP1018NormalModePage(BasePage):
         self._tooltips.append(SimpleTooltip(label, lambda key=text_key: self.tr(key)))
 
     def _build_adc_timing_row(self, parent: tk.Misc, row: int) -> None:
+        for _ in self._build_adc_timing_row_steps(parent, row):
+            pass
+
+    def _build_adc_timing_row_steps(self, parent: tk.Misc, row: int) -> Iterator[None]:
         debounce_frame = ttk.Frame(parent, style="Panel.TFrame")
         debounce_frame.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
         debounce_label = ttk.Label(debounce_frame, style="Panel.TLabel")
         debounce_label.grid(row=0, column=0, sticky="w")
         self._labels["awp1018_debounce"] = debounce_label
         self._add_help_button(debounce_frame, 0, 1, "awp1018_debounce_time_help")
+        yield
         ttk.Entry(parent, textvariable=self.debounce_time_var, width=10).grid(row=row, column=1, sticky="ew", pady=7)
 
         sample_frame = ttk.Frame(parent, style="Panel.TFrame")
@@ -1380,6 +1477,7 @@ class AWP1018NormalModePage(BasePage):
         sample_label = ttk.Label(sample_frame, style="Panel.TLabel")
         sample_label.grid(row=0, column=0, sticky="w")
         self._labels["awp1018_adc_sample_update_time"] = sample_label
+        yield
         self._add_help_button(sample_frame, 0, 1, "awp1018_adc_sample_update_time_help")
         ttk.Combobox(
             parent,
@@ -1390,6 +1488,10 @@ class AWP1018NormalModePage(BasePage):
         ).grid(row=row, column=3, sticky="ew", pady=7)
 
     def _build_generator_dac_rate(self, parent: tk.Misc) -> None:
+        for _ in self._build_generator_dac_rate_steps(parent):
+            pass
+
+    def _build_generator_dac_rate_steps(self, parent: tk.Misc) -> Iterator[None]:
         frame = ttk.Frame(parent, style="Panel.TFrame", padding=(14, 10))
         frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         frame.columnconfigure(1, weight=1)
@@ -1397,9 +1499,14 @@ class AWP1018NormalModePage(BasePage):
         label = ttk.Label(frame, style="Panel.TLabel")
         label.grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._labels["awp1018_dac_sample_rate"] = label
+        yield
         ttk.Entry(frame, textvariable=self.dac_sample_rate_var, width=14).grid(row=0, column=1, sticky="w")
 
     def _build_zero_return_bit_row(self, parent: tk.Misc, row: int) -> None:
+        for _ in self._build_zero_return_bit_row_steps(parent, row):
+            pass
+
+    def _build_zero_return_bit_row_steps(self, parent: tk.Misc, row: int) -> Iterator[None]:
         label = ttk.Label(parent, style="Panel.TLabel")
         label.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
         self._labels["awp1018_zero_time"] = label
@@ -1414,6 +1521,7 @@ class AWP1018NormalModePage(BasePage):
 
         return_frame = ttk.Frame(parent, style="Panel.TFrame")
         return_frame.grid(row=row, column=2, columnspan=2, sticky="ew", pady=7, padx=(12, 0))
+        yield
         return_frame.columnconfigure(0, weight=1)
         return_frame.columnconfigure(1, weight=1)
 
@@ -1426,6 +1534,7 @@ class AWP1018NormalModePage(BasePage):
         self._checks["awp1018_press_return_bit_enable"] = press_return_check
 
         release_return_frame = ttk.Frame(return_frame, style="Panel.TFrame")
+        yield
         release_return_frame.grid(row=0, column=1, sticky="w", padx=(0, 8), pady=2)
         release_return_check = ttk.Checkbutton(
             release_return_frame,
@@ -1437,6 +1546,7 @@ class AWP1018NormalModePage(BasePage):
         self._checks["awp1018_release_return_bit_enable"] = release_return_check
 
         enhance_frame = ttk.Frame(return_frame, style="Panel.TFrame")
+        yield
         enhance_frame.grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
         release_time_enhance_check = ttk.Checkbutton(
             enhance_frame,
@@ -1448,6 +1558,10 @@ class AWP1018NormalModePage(BasePage):
         self._checks["awp1018_release_return_bit_time_enhance"] = release_time_enhance_check
 
     def _build_arbitration_return_time_row(self, parent: tk.Misc, row: int) -> None:
+        for _ in self._build_arbitration_return_time_row_steps(parent, row):
+            pass
+
+    def _build_arbitration_return_time_row_steps(self, parent: tk.Misc, row: int) -> Iterator[None]:
         arbitration_label = ttk.Label(parent, style="Panel.TLabel")
         arbitration_label.grid(row=row, column=0, sticky="w", pady=7, padx=(0, 8))
         self._labels["awp1018_arbitration_mode"] = arbitration_label
@@ -1460,6 +1574,7 @@ class AWP1018NormalModePage(BasePage):
         )
         self.arbitration_mode_combo.grid(row=row, column=1, sticky="ew", pady=7)
         self.arbitration_mode_combo.bind("<<ComboboxSelected>>", self._on_arbitration_mode_changed)
+        yield
 
         return_time_frame = ttk.Frame(parent, style="Panel.TFrame")
         return_time_frame.grid(row=row, column=2, sticky="w", pady=7, padx=(12, 8))
@@ -1467,6 +1582,7 @@ class AWP1018NormalModePage(BasePage):
         return_time_label.grid(row=0, column=0, sticky="w")
         self._labels["awp1018_return_bit_time"] = return_time_label
         self._add_help_button(return_time_frame, 0, 1, "awp1018_return_bit_time_help")
+        yield
 
         ttk.Combobox(
             parent,
@@ -1478,12 +1594,17 @@ class AWP1018NormalModePage(BasePage):
 
 
     def _build_stage_frame(self, stage: str) -> None:
+        for _ in self._build_stage_frame_steps(stage):
+            pass
+
+    def _build_stage_frame_steps(self, stage: str) -> Iterator[None]:
         frame = ttk.Frame(self.stage_container, style="Panel.TFrame")
         frame.grid(row=0, column=0, sticky="ew")
         frame.columnconfigure(0, weight=0, minsize=92)
         frame.columnconfigure(1, weight=1, minsize=120)
         frame.columnconfigure(2, weight=0, minsize=92)
         frame.columnconfigure(3, weight=1, minsize=120)
+        yield
         frame.columnconfigure(5, weight=2, minsize=220)
         frame.grid_remove()
 
@@ -1491,6 +1612,7 @@ class AWP1018NormalModePage(BasePage):
         release_debounce_enabled_var = tk.BooleanVar(value=False)
         ovv_time_var = tk.StringVar(value="1 ms")
         high_var = tk.StringVar(value="500" if stage == "Stage0" else "0")
+        yield
         low_var = tk.StringVar(value="200" if stage == "Stage1" else "0")
         waveform_default = "slice0"
         if self.diff_mode and stage == "Stage0":
@@ -1505,6 +1627,7 @@ class AWP1018NormalModePage(BasePage):
             jump_target_default = "Stage0"
         else:
             jump_target_default = stage
+        yield
         jump_target_var = tk.StringVar(value=jump_target_default)
         self.stage_vars[stage] = {
             "press_debounce_enabled": press_debounce_enabled_var,
@@ -1521,6 +1644,7 @@ class AWP1018NormalModePage(BasePage):
 
         ovv_label = ttk.Label(frame, style="Panel.TLabel")
         ovv_label.grid(row=0, column=0, sticky="w", pady=5, padx=(0, 8))
+        yield
         self._labels[f"{stage}_ovv_time"] = ovv_label
         ttk.Combobox(
             frame,
@@ -1541,6 +1665,7 @@ class AWP1018NormalModePage(BasePage):
             state="readonly",
             width=10,
         ).grid(row=0, column=3, sticky="ew", pady=5)
+        yield
 
         high_label = ttk.Label(frame, style="Panel.TLabel")
         high_label.grid(row=1, column=0, sticky="w", pady=5, padx=(0, 8))
@@ -1549,6 +1674,7 @@ class AWP1018NormalModePage(BasePage):
         high_entry.grid(row=1, column=1, sticky="ew", pady=5)
 
         low_label = ttk.Label(frame, style="Panel.TLabel")
+        yield
         low_label.grid(row=1, column=2, sticky="w", pady=5, padx=(12, 8))
         self._labels[f"{stage}_low"] = low_label
         low_entry = ttk.Entry(frame, textvariable=low_var, width=10)
@@ -1556,6 +1682,7 @@ class AWP1018NormalModePage(BasePage):
         self._stage_entries[stage] = {"press": high_entry, "release": low_entry}
 
         waveform_label = ttk.Label(frame, style="Panel.TLabel")
+        yield
         waveform_label.grid(row=2, column=0, sticky="w", pady=5, padx=(0, 8))
         self._labels[f"{stage}_waveform"] = waveform_label
         ttk.Combobox(
@@ -1569,6 +1696,7 @@ class AWP1018NormalModePage(BasePage):
         jump_condition_label = ttk.Label(frame, style="Panel.TLabel")
         jump_condition_label.grid(row=2, column=2, sticky="w", pady=5, padx=(12, 8))
         self._labels[f"{stage}_jump_condition"] = jump_condition_label
+        yield
 
         jump_condition_frame = ttk.Frame(frame, style="Panel.TFrame")
         jump_condition_frame.grid(row=2, column=3, columnspan=3, sticky="ew", pady=5)
@@ -1582,6 +1710,7 @@ class AWP1018NormalModePage(BasePage):
             command=lambda s=stage: self._on_stage_jump_changed(s),
         )
         press_radio.grid(row=0, column=0, sticky="w")
+        yield
         self._checks[f"{stage}_jump_press"] = press_radio
 
         release_radio = ttk.Radiobutton(
@@ -1600,6 +1729,7 @@ class AWP1018NormalModePage(BasePage):
             command=lambda s=stage: self._on_stage_debounce_enable_changed(s, "press"),
         )
         press_debounce_check.grid(row=3, column=0, columnspan=3, sticky="w", pady=5, padx=(0, 8))
+        yield
         self._checks[f"{stage}_press_debounce_enable"] = press_debounce_check
 
         release_debounce_check = ttk.Checkbutton(
@@ -1612,6 +1742,7 @@ class AWP1018NormalModePage(BasePage):
         self._stage_debounce_checks[stage] = {"press": press_debounce_check, "release": release_debounce_check}
 
         group_label = ttk.Label(frame, style="Panel.TLabel")
+        yield
         group_label.grid(row=4, column=0, sticky="nw", pady=5, padx=(0, 8))
         self._labels[f"{stage}_group_start"] = group_label
 
@@ -1627,6 +1758,7 @@ class AWP1018NormalModePage(BasePage):
             )
             check.grid(row=group // 4, column=group % 4, sticky="w", padx=(0, 8), pady=2)
             self._stage_group_checks[stage][group] = check
+        yield
 
         waveform_var.trace_add(
             "write",
@@ -1642,6 +1774,10 @@ class AWP1018NormalModePage(BasePage):
         return [f"slice{i}" for i in range(31)] + ["serial"]
 
     def _build_control_buttons(self, parent: tk.Misc, row: int) -> None:
+        for _ in self._build_control_buttons_steps(parent, row):
+            pass
+
+    def _build_control_buttons_steps(self, parent: tk.Misc, row: int) -> Iterator[None]:
         frame = ttk.Frame(parent, style="Panel.TFrame")
         frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         frame.columnconfigure(0, weight=1)
@@ -1656,6 +1792,7 @@ class AWP1018NormalModePage(BasePage):
         ]
         if self.diff_mode:
             actions.append(("awp1018_realtime_display", self.start_realtime_display, "Primary.TButton"))
+        yield
         for index, (key, command, style) in enumerate(actions):
             is_full_width = key in {"awp1018_stop_all", "awp1018_realtime_display"}
             grid_row = index // 2
@@ -2251,6 +2388,10 @@ class AWP1018NormalModePage(BasePage):
         return self.write_reg(0x0D, value, show_error=show_error)
 
     def _build_rom_selector(self, parent: tk.Misc) -> None:
+        for _ in self._build_rom_selector_steps(parent):
+            pass
+
+    def _build_rom_selector_steps(self, parent: tk.Misc) -> Iterator[None]:
         parent.columnconfigure(0, weight=0, minsize=280 if self.diff_mode else 340)
         parent.columnconfigure(1, weight=1)
         parent.rowconfigure(0, weight=1)
@@ -2258,6 +2399,7 @@ class AWP1018NormalModePage(BasePage):
         controls = ttk.Frame(parent, style="Panel.TFrame")
         controls.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
         controls.columnconfigure(1, weight=1)
+        yield
         controls.columnconfigure(2, weight=0)
         controls.columnconfigure(3, weight=0)
 
@@ -2422,7 +2564,7 @@ class AWP1018NormalModePage(BasePage):
             self.diff_play_hint_label = ttk.Label(controls, style="Muted.TLabel", wraplength=280)
             self.diff_play_hint_label.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(8, 0))
 
-            self._build_rom_preview(parent)
+            yield from self._build_rom_preview_steps(parent)
             self._refresh_diff_waveform_controls()
             self._refresh_rom_depth_options()
             return
@@ -2436,6 +2578,7 @@ class AWP1018NormalModePage(BasePage):
             column=0,
         )
         row += 1
+        yield
         self._add_selector_combo(
             controls,
             row,
@@ -2457,6 +2600,7 @@ class AWP1018NormalModePage(BasePage):
         row += 1
         self._add_selector_entry(controls, row, "awp1018_rom_point_time", self.rom_point_time_var, column=0)
         row += 1
+        yield
 
         self._add_selector_combo(
             controls,
@@ -2487,6 +2631,7 @@ class AWP1018NormalModePage(BasePage):
             width=8,
         )
         infinite_check = ttk.Checkbutton(controls, variable=self.rom_infinite_loop_var)
+        yield
         infinite_check.grid(row=row, column=2, columnspan=2, sticky="w", pady=5, padx=(4, 0))
         self._checks["awp1018_rom_infinite_loop"] = infinite_check
         row += 1
@@ -2508,6 +2653,7 @@ class AWP1018NormalModePage(BasePage):
             self.ROM_AMPLITUDE_OPTIONS,
             column=0,
         )
+        yield
         row += 1
 
         apply_btn = ttk.Button(controls, style="Primary.TButton", command=self.apply_rom_waveform_selection)
@@ -2516,12 +2662,17 @@ class AWP1018NormalModePage(BasePage):
         row += 1
 
         self.rom_hint_label = ttk.Label(controls, style="Muted.TLabel", wraplength=280)
+        yield
         self.rom_hint_label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 0))
 
-        self._build_rom_preview(parent)
+        yield from self._build_rom_preview_steps(parent)
         self._refresh_rom_depth_options()
 
     def _build_rom_preview(self, parent: tk.Misc) -> None:
+        for _ in self._build_rom_preview_steps(parent):
+            pass
+
+    def _build_rom_preview_steps(self, parent: tk.Misc) -> Iterator[None]:
         preview = ttk.Frame(parent, style="Panel.TFrame")
         preview.grid(row=0, column=1, sticky="nsew")
         preview.columnconfigure(0, weight=1)
@@ -2529,6 +2680,7 @@ class AWP1018NormalModePage(BasePage):
 
         self.rom_metric_label = ttk.Label(preview, textvariable=self.rom_metric_var, style="Panel.TLabel", wraplength=760)
         self.rom_metric_label.grid(row=0, column=0, sticky="w", pady=(0, 4))
+        yield
 
         self.rom_frequency_label = ttk.Label(preview, textvariable=self.rom_frequency_var, style="Muted.TLabel", wraplength=760)
         self.rom_frequency_label.grid(row=1, column=0, sticky="w", pady=(0, 8))
@@ -3057,6 +3209,9 @@ class AWP1018NormalModePage(BasePage):
             if variable is not None:
                 set_variable(variable, value)
 
+        cancel = getattr(type(self.ctx.serial), "cancel_register_settings", None)
+        if callable(cancel):
+            self.ctx.serial.cancel_register_settings("awp1018")
         self._loading_settings = True
         try:
             if 0x05 in normalized_registers:
@@ -4236,6 +4391,9 @@ class AWP1018NormalModePage(BasePage):
     ) -> None:
         if self._board_preset_poll_active:
             return
+        cancel = getattr(type(self.ctx.serial), "cancel_register_settings", None)
+        if callable(cancel):
+            self.ctx.serial.cancel_register_settings("awp1018")
         self._set_board_preset_controls_state("disabled")
         self._board_preset_poll_active = True
         self.after(50, self._poll_board_preset_results)
@@ -4379,9 +4537,23 @@ class AWP1018NormalModePage(BasePage):
 
         self._start_board_preset_operation("read", worker)
 
+    def _queue_general_setting(self, register: int, value: int, clear_mask: int | None = None) -> bool:
+        # Standalone editors/legacy transports retain their existing synchronous
+        # contract. The application's router can pin the board for worker I/O.
+        if not callable(getattr(type(self.ctx.serial), "queue_register_setting", None)):
+            return False
+        if not self._loading_settings:
+            self.ctx.serial.queue_register_setting(
+                "awp1018", self._device_addr(), register, value, clear_mask=clear_mask,
+                address_state_key="awp1018_device_addr",
+            )
+        return True
+
     def _on_zero_time_changed(self) -> None:
         code = self.ZERO_TIME_CODES.get(self.zero_time_var.get())
         if code is None:
+            return
+        if self._queue_general_setting(0x06, (code & 0b11) << 14, 0b11 << 14):
             return
         current = self.read_reg(0x06, show_error=False)
         if current is None:
@@ -4398,6 +4570,8 @@ class AWP1018NormalModePage(BasePage):
             return
 
         self.ctx.state.single_point_duration_us = value
+        if self._queue_general_setting(0x27, value):
+            return
         self.write_reg(0x27, value, show_error=False)
 
     def _on_debounce_time_changed(self) -> None:
@@ -4411,6 +4585,8 @@ class AWP1018NormalModePage(BasePage):
         code = round(time_value * 0x03FF / 1024) if time_value else 0
         code = max(0, min(0x03FF, code))
 
+        if self._queue_general_setting(0x22, code, 0x03FF):
+            return
         current = self.read_reg(0x22, show_error=False)
         if current is None:
             return
@@ -4432,6 +4608,8 @@ class AWP1018NormalModePage(BasePage):
         except ValueError:
             return
 
+        if self._queue_general_setting(0x22, (code & 0b11) << 10, 0b11 << 10):
+            return
         current = self.read_reg(0x22, show_error=False)
         if current is None:
             return
@@ -4805,7 +4983,7 @@ class AWP1018NormalModePage(BasePage):
 
     def _handle_serial_status_log(self, line: str) -> None:
         try:
-            self.after(0, self._process_serial_status_log, line)
+            post_to_ui(self, self._process_serial_status_log, line)
         except Exception:
             pass
 
@@ -5228,7 +5406,6 @@ class AWP1018NormalModePage(BasePage):
             except Exception:
                 diff_values = []
             values = [value / 95.0 for value in diff_values]
-            points = len(values)
         else:
             values: list[float] = []
             points = 160
@@ -5245,31 +5422,54 @@ class AWP1018NormalModePage(BasePage):
                     value = math.sin(phase)
                 values.append(value)
 
-        coords: list[float] = []
-        for i, value in enumerate(values):
-            x = pad_l + (i / max(1, points - 1)) * plot_w
-            y = mid - value * amp
-            coords.extend([x, y])
-
         if self.diff_mode and diff_segments:
             palette = (colors["primary"], "#7c3aed", "#0f766e", "#d97706", "#dc2626")
-            offset = 0
+            serial4 = self._diff_serial4_selected()
+            try:
+                repeats = max(1, int(self.rom_repeat_var.get().strip(), 0))
+            except ValueError:
+                repeats = 1
+            if waveform == "SINC" or serial4:
+                repeats = 1
+            selected = self._serial4_selected_slices() if serial4 else []
+            preview = []
+            for index, (label, segment) in enumerate(diff_segments):
+                period = None
+                if serial4:
+                    item = self._diff_slice_preview_cache.get(selected[index], {})
+                    period = float(item.get("period_us", 0)) or None
+                preview.append(PreviewSegment(label, segment, repeats, period))
+            layout = compact_preview(preview, merge_adjacent=serial4)
             legend_x = pad_l + 8
-            for segment_index, (label, segment) in enumerate(diff_segments):
-                segment_coords: list[float] = []
-                for value in segment:
-                    x = pad_l + (offset / max(1, points - 1)) * plot_w
-                    y = mid - (value / 95.0) * amp
-                    segment_coords.extend([x, y])
-                    offset += 1
-                color = palette[segment_index % len(palette)]
+            for part in layout.parts:
+                if part.omitted:
+                    continue
+                segment_coords = []
+                for index, value in enumerate(part.samples):
+                    position = (part.start + (part.end-part.start)*index/max(1, len(part.samples)-1)) / layout.display_total
+                    segment_coords.extend((pad_l + position*plot_w, mid - value/95.0*amp))
+                color = palette[part.source_index % len(palette)]
                 if len(segment_coords) >= 4:
-                    canvas.create_line(*segment_coords, fill=color, width=2, smooth=True)
+                    canvas.create_line(*segment_coords, fill=color, width=2, smooth=True, tags="wave_curve")
                 canvas.create_rectangle(legend_x, pad_t + 8, legend_x + 10, pad_t + 18, fill=color, outline=color)
-                canvas.create_text(legend_x + 14, pad_t + 13, anchor="w", text=label, fill=colors["muted"])
+                canvas.create_text(legend_x + 14, pad_t + 13, anchor="w", text=part.label, fill=colors["muted"])
                 legend_x += 68
-        elif len(coords) >= 4:
-            canvas.create_line(*coords, fill=colors["primary"], width=2, smooth=True)
+            draw_omissions(canvas, layout, pad_l, plot_w, mid, colors)
+        elif len(values) >= 2:
+            try:
+                repeats = max(1, int(self.rom_repeat_var.get().strip(), 0))
+            except ValueError:
+                repeats = 1
+            layout = compact_preview([PreviewSegment(waveform, values, repeats)])
+            for part in layout.parts:
+                if part.omitted:
+                    continue
+                segment_coords = []
+                for index, value in enumerate(part.samples):
+                    position = (part.start + (part.end-part.start)*index/max(1, len(part.samples)-1)) / layout.display_total
+                    segment_coords.extend((pad_l + position*plot_w, mid - value*amp))
+                canvas.create_line(*segment_coords, fill=colors["primary"], width=2, smooth=True, tags="wave_curve")
+            draw_omissions(canvas, layout, pad_l, plot_w, mid, colors)
 
         if self.diff_mode:
             try:
@@ -5422,12 +5622,17 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         super().__init__(parent, ctx, diff_mode=False, **kwargs)
 
     def _build_ui(self) -> None:
+        for _ in self._build_ui_steps():
+            pass
+
+    def _build_ui_steps(self) -> Iterator[None]:
         self.full_status_value_var = tk.StringVar(value="")
         self.full_chip_id_var = tk.StringVar(value="")
         self.full_ram_addr_var = tk.StringVar(value="0x0000")
         self.full_sram_data_var = tk.StringVar(value="0x0000")
         self.full_adc_channel_var = tk.StringVar(value="CH0")
         self.full_adc_value_var = tk.StringVar(value="")
+        yield
         self.full_action_status_var = tk.StringVar(value="")
         self.full_serial4_segment_combos: list[ttk.Combobox] = []
         self._rom_selector_window: tk.Toplevel | None = None
@@ -5439,6 +5644,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
 
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
+        yield
 
         header = self.make_title(self, "full_mode", show_logo=False)
         header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
@@ -5451,6 +5657,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         # desktop widths, even though the outer page has spare space.
         body.columnconfigure(0, weight=2, minsize=760)
         body.columnconfigure(1, weight=4, minsize=360)
+        yield
         body.columnconfigure(2, weight=3, minsize=360)
         body.rowconfigure(0, weight=1)
 
@@ -5459,6 +5666,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
 
         right = ttk.Frame(body, style="Panel.TFrame", padding=0)
         right.grid(row=0, column=2, sticky="nsew")
+        yield
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=3)
         right.rowconfigure(1, weight=2)
@@ -5467,6 +5675,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         self._build_full_middle_column(middle)
 
         register_panel = ttk.Frame(right, style="Panel.TFrame", padding=0)
+        yield
         register_panel.grid(row=0, column=0, sticky="nsew")
         register_panel.rowconfigure(0, weight=1)
         register_panel.columnconfigure(0, weight=1)
@@ -5474,6 +5683,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
 
         log_frame = self.make_serial_log(right, height=14, width=42, subscribe=True)
         log_frame.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+        yield
 
         self._bind_full_mode_traces()
 
@@ -6023,14 +6233,15 @@ class AWP1018ReservedModePage(BasePage):
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        header = self.make_title(self, self.title_key, show_logo=False)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        self.title_label = header.grid_slaves(row=0, column=0)[0]
 
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
-        panel.grid(row=0, column=0, sticky="nsew")
+        panel.grid(row=1, column=0, sticky="nsew")
         panel.columnconfigure(0, weight=1)
-
-        self.title_label = CanvasTitle(panel, style="Prominent.TLabel")
-        self.title_label.grid(row=0, column=0, sticky="w")
 
         self.hint_label = ttk.Label(panel, style="Muted.TLabel", wraplength=720)
         self.hint_label.grid(row=1, column=0, sticky="w", pady=(10, 0))

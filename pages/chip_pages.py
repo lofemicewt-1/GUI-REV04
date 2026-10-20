@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import json
 import re
 import threading
@@ -13,7 +15,7 @@ from core.lazy_pages import LazyPages
 from pages import awp192x_registers
 from pages.awp1221_page import AWP1221Page
 from pages.awp192x_modes import ButtonModePage, FullModePage, PumpModePage
-from pages.base_page import BasePage, CanvasTitle, SimpleTooltip
+from pages.base_page import BasePage, SimpleTooltip
 
 
 AWP1744_AWP1766_VOLTAGE_TABLE = [
@@ -161,7 +163,7 @@ class AWP1921AWP1923Page(BasePage):
         ("full_cmd_hbridge_clear", 0x5F76, "Secondary.TButton"),
     )
 
-    def __init__(self, parent: tk.Misc, ctx: Any) -> None:
+    def __init__(self, parent: tk.Misc, ctx: Any, *, defer_build: bool = False) -> None:
         super().__init__(parent, ctx)
         self.addr_var = tk.StringVar(value="Pull-down 0x44")
         self.reg_addr_var = tk.StringVar(value="0x00")
@@ -186,9 +188,22 @@ class AWP1921AWP1923Page(BasePage):
         self.detail_fields_canvas: tk.Canvas | None = None
         self.detail_fields_frame: tk.Frame | None = None
         self._detail_fields_window_id: int | None = None
-        self._build_ui()
+        self._preparing = defer_build
+        self._build_steps = self._initialize_steps()
+        if not defer_build:
+            for _ in self._build_steps:
+                pass
+
+    def _initialize_steps(self) -> Iterator[None]:
+        yield from self._build_ui_steps()
+        self._preparing = False
 
     def _build_ui(self) -> None:
+        for _ in self._build_ui_steps():
+            pass
+
+    def _build_ui_steps(self) -> Iterator[None]:
+        yield
         self.enable_pinned_footer_layout()
         # The navigation owns this pinned viewport; child requests must not resize it.
         self.grid_propagate(False)
@@ -198,6 +213,7 @@ class AWP1921AWP1923Page(BasePage):
 
         self.mode_scroll, self.mode_container = self.make_vertical_scroll_area(self, propagate_width=True)
         self.mode_scroll.grid(row=1, column=0, sticky="nsew")
+        yield
 
         self.footer_scroll, footer_content = self.make_vertical_scroll_area(self, horizontal=False)
         self.footer_scroll.grid(row=2, column=0, sticky="ew", pady=(12, 0))
@@ -205,13 +221,15 @@ class AWP1921AWP1923Page(BasePage):
         footer, actions, self.reg_panel, identity = self.make_merged_footer(footer_content)
         footer.grid(row=0, column=0, sticky="ew")
         self._footer_fit_job = None
+        yield
         footer.bind("<Configure>", self._queue_footer_fit)
         self.bind("<Configure>", self._queue_footer_fit, add="+")
         self._footer = footer
-        self._build_state_actions(actions)
-        self._build_register_bar(self.reg_panel)
-        self._build_identity_bar(identity)
-        self._build_detail_host(footer)
+        yield from self._build_state_actions_steps(actions)
+        yield from self._build_register_bar_steps(self.reg_panel)
+        yield from self._build_identity_bar_steps(identity)
+        yield
+        yield from self._build_detail_host_steps(footer)
         # Keep mode headers away from the inner canvas clip edge on compact
         # windows while retaining horizontal scrolling for wide panels.
         self.mode_container.configure(padding=(8, 0, 8, 0))
@@ -219,11 +237,15 @@ class AWP1921AWP1923Page(BasePage):
         self.mode_container.columnconfigure(0, weight=1)
 
         for name, page_type in (("button_mode", ButtonModePage), ("pump_mode", PumpModePage), ("full_mode", FullModePage)):
-            self.mode_pages.register(name, lambda page_type=page_type: page_type(self.mode_container, self.ctx))
+            self.mode_pages.register(name, lambda page_type=page_type, defer_build=False: page_type(self.mode_container, self.ctx, defer_build=defer_build), staged=True)
 
         self.refresh_language()
-        self._on_addr_changed()
-        self.show_mode("button_mode")
+        yield
+        if not self._preparing:
+            self._on_addr_changed()
+        yield from self.mode_pages.prepare("button_mode")
+        self.show_mode("button_mode", activate=not self._preparing)
+        self._prepared_activation_pending = self._preparing
 
     def _queue_footer_fit(self, _event=None):
         if self._footer_fit_job is None:
@@ -247,6 +269,11 @@ class AWP1921AWP1923Page(BasePage):
             refresh(page)
 
     def _build_state_actions(self, parent: tk.Misc) -> None:
+        for _ in self._build_state_actions_steps(parent):
+            pass
+
+    def _build_state_actions_steps(self, parent: tk.Misc) -> Iterator[None]:
+        yield
         for column, (key, value, style) in enumerate(self.STATE_COMMANDS):
             parent.columnconfigure(column, weight=1, uniform="chip_state_actions")
             button = ttk.Button(
@@ -258,6 +285,11 @@ class AWP1921AWP1923Page(BasePage):
             self.state_buttons[key] = button
 
     def _build_identity_bar(self, parent: tk.Misc) -> None:
+        for _ in self._build_identity_bar_steps(parent):
+            pass
+
+    def _build_identity_bar_steps(self, parent: tk.Misc) -> Iterator[None]:
+        yield
         serial_group = parent.add_group()
         self.make_serial_selector(serial_group, page_name=self.page_name, row=0, column=0)
         addr_group = parent.add_group()
@@ -270,10 +302,16 @@ class AWP1921AWP1923Page(BasePage):
             state="readonly",
             width=18,
         )
+        yield
         self.addr_combo.grid(row=0, column=1, sticky="w")
         self.addr_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_addr_changed())
 
     def _build_register_bar(self, parent: tk.Misc) -> None:
+        for _ in self._build_register_bar_steps(parent):
+            pass
+
+    def _build_register_bar_steps(self, parent: tk.Misc) -> Iterator[None]:
+        yield
         title_group = parent.add_group()
         self.reg_title_label = ttk.Label(title_group, style="Panel.TLabel")
         self.reg_title_label.grid(row=0, column=0, sticky="w")
@@ -281,6 +319,7 @@ class AWP1921AWP1923Page(BasePage):
         addr_group = parent.add_group()
         self.reg_addr_label = ttk.Label(addr_group, style="Panel.TLabel")
         self.reg_addr_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
+        yield
         ttk.Entry(addr_group, textvariable=self.reg_addr_var, width=8).grid(row=0, column=1, sticky="w")
 
         write_group = parent.add_group()
@@ -288,6 +327,7 @@ class AWP1921AWP1923Page(BasePage):
         self.write_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         self.write_value_entry = ttk.Entry(write_group, textvariable=self.write_value_var, width=10)
         self.write_value_entry.grid(row=0, column=1, sticky="w")
+        yield
         self.write_value_entry.bind("<Return>", lambda _event: self._commit_detail_shared_value(), add="+")
         self.write_value_entry.bind("<FocusOut>", lambda _event: self._commit_detail_shared_value(), add="+")
 
@@ -295,6 +335,7 @@ class AWP1921AWP1923Page(BasePage):
         self.read_value_label = ttk.Label(read_group, style="Panel.TLabel")
         self.read_value_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
         ttk.Entry(read_group, textvariable=self.read_value_var, width=12, state="readonly").grid(row=0, column=1, sticky="w")
+        yield
 
         button_group = parent.add_group()
         self.rr_btn = ttk.Button(button_group, style="Secondary.TButton", command=self.read_register)
@@ -303,6 +344,7 @@ class AWP1921AWP1923Page(BasePage):
         self.rw_btn.grid(row=0, column=1, sticky="w")
 
         self._detail_entry_group = parent.add_group()
+        yield
         self.detail_mode_check = ttk.Checkbutton(
             self._detail_entry_group,
             variable=self.detail_mode_var,
@@ -311,12 +353,18 @@ class AWP1921AWP1923Page(BasePage):
         self.detail_mode_check.grid(row=0, column=0, sticky="w")
 
     def _build_detail_host(self, footer: ttk.Frame) -> None:
+        for _ in self._build_detail_host_steps(footer):
+            pass
+
+    def _build_detail_host_steps(self, footer: ttk.Frame) -> Iterator[None]:
+        yield
         self._detail_host = ttk.Frame(footer, style="Panel.TFrame")
         self._detail_host.columnconfigure(0, weight=1)
         self._detail_host.rowconfigure(0, weight=1)
         self._detail_scroll, detail_inner = self.make_vertical_scroll_area(self._detail_host, horizontal=False)
         self._detail_scroll.grid(row=0, column=0, sticky="nsew")
         self.detail_frame = ttk.Frame(detail_inner, style="Panel.TFrame")
+        yield
         self.detail_frame.grid(row=0, column=0, sticky="ew")
         self.detail_frame.columnconfigure(1, weight=1)
         self.detail_frame.columnconfigure(3, weight=1)
@@ -331,6 +379,7 @@ class AWP1921AWP1923Page(BasePage):
             state="readonly",
             width=34,
         )
+        yield
         self.detail_register_combo.grid(row=0, column=1, sticky="ew", padx=(0, 12))
         self.detail_register_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_detail_register_selected())
 
@@ -344,6 +393,7 @@ class AWP1921AWP1923Page(BasePage):
 
         detail_fields_shell = ttk.Frame(self.detail_frame, style="Panel.TFrame")
         detail_fields_shell.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        yield
         detail_fields_shell.columnconfigure(0, weight=1)
 
         self.detail_fields_canvas = tk.Canvas(
@@ -362,6 +412,7 @@ class AWP1921AWP1923Page(BasePage):
         )
         detail_fields_scrollbar.grid(row=1, column=0, sticky="ew")
         self.detail_fields_canvas.configure(xscrollcommand=detail_fields_scrollbar.set)
+        yield
 
         self.detail_fields_frame = tk.Frame(self.detail_fields_canvas, bg=self.colors["panel"])
         self._detail_fields_window_id = self.detail_fields_canvas.create_window(
@@ -836,7 +887,16 @@ class AWP1921AWP1923Page(BasePage):
         if page is not None and hasattr(page, "on_show"):
             page.on_show()
 
-    def show_mode(self, mode: str) -> None:
+    def on_show(self) -> None:
+        super().on_show()
+        if getattr(self, "_prepared_activation_pending", False):
+            self._prepared_activation_pending = False
+            self._on_addr_changed()
+            page = dict.get(self.mode_pages, self.current_mode)
+            if page is not None and hasattr(page, "on_show"):
+                page.on_show()
+
+    def show_mode(self, mode: str, *, activate: bool = True) -> None:
         if mode not in self.mode_pages:
             return
         self.current_mode = mode
@@ -845,7 +905,7 @@ class AWP1921AWP1923Page(BasePage):
             page.grid_remove()
         page = self.mode_pages[mode]
         page.grid()
-        if hasattr(page, "on_show"):
+        if activate and hasattr(page, "on_show"):
             page.on_show()
         self._sync_detail_mode_state()
 
@@ -1463,10 +1523,11 @@ class ReservedModePage(BasePage):
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
+        header = self.make_title(self, self.title_key, show_logo=False)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        self.title_label = header.grid_slaves(row=0, column=0)[0]
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
-        panel.grid(row=0, column=0, sticky="nsew")
-        self.title_label = CanvasTitle(panel, style="Prominent.TLabel")
-        self.title_label.grid(row=0, column=0, sticky="w")
+        panel.grid(row=1, column=0, sticky="nsew")
         self.hint_label = ttk.Label(panel, style="Muted.TLabel", wraplength=620)
         self.hint_label.grid(row=1, column=0, sticky="w", pady=(10, 0))
         self.refresh_language()

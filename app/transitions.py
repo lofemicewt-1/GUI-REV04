@@ -63,6 +63,19 @@ def _client_rect(widget: tk.Misc) -> tuple[int, int, int, int] | None:
     except Exception:
         return None
 
+def _bounded_client_rect(area: tk.Misc, owner: tk.Misc) -> tuple[int, int, int, int] | None:
+    """Never let an owned cover extend beyond its owner's current client."""
+    source, bounds = _client_rect(area), _client_rect(owner)
+    if source is None or bounds is None:
+        return None
+    x, y = max(source[0], bounds[0]), max(source[1], bounds[1])
+    right = min(source[0]+source[2], bounds[0]+bounds[2])
+    bottom = min(source[1]+source[3], bounds[1]+bounds[3])
+    if right <= x or bottom <= y:
+        return None
+    return x, y, right-x, bottom-y
+
+
 def _blit_bitmap(hwnd: int, bmp: int, w: int, h: int,
                  source_size: tuple[int, int] | None = None) -> None:
     """Paint a GDI bitmap into a window right now (no waiting for WM_PAINT /
@@ -102,7 +115,7 @@ def _delete_bitmap(bmp: int) -> None:
     except Exception:
         pass
 
-def _grab_bitmap(hwnd: int, w: int, h: int) -> int | None:
+def _grab_bitmap(hwnd: int, w: int, h: int, *, source_x: int = 0, source_y: int = 0) -> int | None:
     """Capture only this application's window DC; release every GDI handle."""
     from ctypes import wintypes
     user32, gdi32 = _user32, _gdi32
@@ -122,7 +135,7 @@ def _grab_bitmap(hwnd: int, w: int, h: int) -> int | None:
             return None
         old = gdi32.SelectObject(wintypes.HDC(mem), wintypes.HGDIOBJ(bmp))
         success = bool(gdi32.BitBlt(wintypes.HDC(mem), 0, 0, w, h,
-                                  wintypes.HDC(dc), 0, 0, 0x00CC0020))
+                                  wintypes.HDC(dc), source_x, source_y, 0x00CC0020))
         return int(bmp) if success else None
     finally:
         if old and mem:
@@ -275,6 +288,7 @@ class SnapshotTransition:
         self._duration_ms = anim.DUR_SNAP
         self._ready: Callable[[], bool] | None = None
         self._paint_activity = time.perf_counter()
+        self._resize_offset: tuple[int, int] | None = None
         # Live logs/ADC updates may expose pixels continuously. Wait for
         # geometry to settle and visible native paint to finish, rather than
         # requiring the entire application to stop producing new content.
@@ -286,6 +300,7 @@ class SnapshotTransition:
         for sequence in ("<Configure>", "<Unmap>"):
             root.bind_class(self._tag, sequence, self._owner_changed)
         root.bind_class(self._tag, "<Destroy>", self._owner_destroyed)
+        self._focus_binding = root.bind("<FocusOut>", self._owner_focus_changed, add="+")
 
     def _paint_changed(self, event: tk.Event) -> None:
         if not self.active or self._area is None:
@@ -307,32 +322,62 @@ class SnapshotTransition:
         self.finish()
         cancel_pending_ui_jobs(self.root)
 
-    def _owner_changed(self, _event=None) -> None:
-        if not self.active:
-            return
-        if _event is not None and _event.type == tk.EventType.Unmap:
+    def _owner_is_foreground(self) -> bool:
+        if sys.platform != "win32":
+            return True
+        from ctypes import wintypes
+        _user32.GetForegroundWindow.restype = wintypes.HWND
+        foreground = _user32.GetForegroundWindow()
+        # Windows can report no foreground window during activation changes
+        # or on an isolated validation desktop. Do not guess an external app.
+        if not foreground:
+            return True
+        _user32.GetAncestor.restype = wintypes.HWND
+        owner = _frame_hwnd(self.root)
+        return int(_user32.GetAncestor(wintypes.HWND(foreground), 3) or foreground) == owner
+
+    def _owner_focus_changed(self, _event=None) -> None:
+        if self.active and not self._owner_is_foreground():
             self.finish()
-            return
-        # A resize must not drop the cover onto a half-laid-out page.
-        self._token += 1
-        self.animator.cancel(self._key)
-        if self._job is not None:
-            self.root.after_cancel(self._job)
-        token = self._token
-        def reposition() -> None:
-            self._job = None
-            if not self.active or token != self._token:
-                return
+
+    def _owner_changed(self, _event=None) -> None:
+        if self.active:
+            if self._resize_offset is not None and _event is not None and _event.type == tk.EventType.Configure:
+                with _physical_pixels():
+                    owner = _client_rect(self.root)
+                    if owner is not None:
+                        dx, dy = self._resize_offset
+                        width = min(self._bitmap_size[0], owner[2]-dx)
+                        height = min(self._bitmap_size[1], owner[3]-dy)
+                        if min(width, height) > 0:
+                            _move_window(self._frame, owner[0]+dx, owner[1]+dy, width, height, True)
+                            _blit_bitmap(self._client, self._bitmap, width, height)
+                            self._cover_owner_rect = owner
+                            return
+            if _event is not None and _event.type == tk.EventType.Configure:
+                with _physical_pixels():
+                    if _client_rect(self.root) == getattr(self, '_cover_owner_rect', None):
+                        return
+            # The bitmap describes the previous client area. Moving/resizing,
+            # maximizing or hiding the owner invalidates that presentation.
+            self.finish()
+
+    def follow_owner_resize(self) -> None:
+        """Crop this one frozen frame to the owner's live client; never stretch."""
+        if self.active and self._area is not None:
             with _physical_pixels():
-                rect = _client_rect(self._area or self.root)
-                if rect is None or min(rect[2:]) <= 1:
-                    self.finish()
-                    return
-                _set_alpha(self._frame, 255)
-                _move_window(self._frame, *rect, show=True)
-                _blit_bitmap(self._client, self._bitmap, *rect[2:], self._bitmap_size)
-            self.reveal(self._duration_ms, self._ready)
-        self._job = self.root.after(anim.FRAME_MS, reposition)
+                rect = _bounded_client_rect(self._area, self.root)
+                owner = _client_rect(self.root)
+            if rect is not None and owner is not None:
+                self._resize_offset = (rect[0]-owner[0], rect[1]-owner[1])
+
+    def stop_following_resize(self) -> None:
+        self._resize_offset = None
+
+    def prime(self, *, force: bool = False) -> None:
+        """Realize the native surface before page construction queues redraws."""
+        if sys.platform == 'win32' and (force or self.animator.enabled) and self._owner_is_foreground():
+            self._ensure_overlay()
 
     def _ensure_overlay(self) -> bool:
         if self._overlay is not None:
@@ -346,13 +391,19 @@ class SnapshotTransition:
         overlay.transient(self.root)
         overlay.geometry(f"1x1{_PARK}{_PARK}")
         overlay.deiconify()
+        # Windows must realize its wrapper once. Prime this surface before
+        # preparing a page; subsequent covers do not enter the idle loop.
         overlay.update_idletasks()
         self._client = int(overlay.winfo_id())
         self._frame = _frame_hwnd(overlay)
         self._capable = bool(self._frame and _make_layered(self._frame))
         return self._capable
 
-    def cover(self, area: tk.Misc) -> bool:
+    def cover(self, area: tk.Misc, *, force: bool = False, sync_present: bool = True,
+              pass_input: bool = False) -> bool:
+        if not self._owner_is_foreground():
+            self.finish()
+            return False
         if self.active and self._area is area:
             # Rapid navigation keeps the already visible, complete old page.
             self._token += 1
@@ -364,27 +415,38 @@ class SnapshotTransition:
             self._paint_activity = time.perf_counter()
             return True
         self.finish()
-        if sys.platform != "win32" or not self.animator.enabled or not self.root.winfo_viewable():
+        if sys.platform != "win32" or (not force and not self.animator.enabled) or not self.root.winfo_viewable():
             return False
         try:
             with _physical_pixels():
-                rect = _client_rect(area)
-                if rect is None or min(rect[2:]) <= 1:
+                rect = _bounded_client_rect(area, self.root)
+                source = _client_rect(area)
+                if rect is None or source is None or min(rect[2:]) <= 1:
                     return False
-                self._bitmap = _grab_bitmap(int(area.winfo_id()), *rect[2:]) or 0
+                self._bitmap = _grab_bitmap(int(area.winfo_id()), *rect[2:],
+                                            source_x=rect[0]-source[0], source_y=rect[1]-source[1]) or 0
                 self._bitmap_size = rect[2:]
             if not self._bitmap or not self._ensure_overlay():
                 self.finish()
                 return False
+            self._overlay.configure(cursor='' if pass_input else 'watch')
+            from ctypes import wintypes
+            ex = _user32.GetWindowLongW(wintypes.HWND(self._frame), -20)
+            flags = (ex | 0x20) if pass_input else (ex & ~0x20)
+            _user32.SetWindowLongW(wintypes.HWND(self._frame), -20, flags)
             with _physical_pixels():
                 _cloak(self._frame, True)
                 _set_alpha(self._frame, 255)
                 _move_window(self._frame, *rect, show=True)
                 _blit_bitmap(self._client, self._bitmap, *rect[2:])
-                _dwm_flush()
+                if sync_present:
+                    _dwm_flush()
                 _cloak(self._frame, False)
-                _dwm_flush()
+                if sync_present:
+                    _dwm_flush()
             self.active = True
+            with _physical_pixels():
+                self._cover_owner_rect = _client_rect(self.root)
             self._area = area
             self._paint_activity = time.perf_counter()
             return True
@@ -392,13 +454,16 @@ class SnapshotTransition:
             self.finish()
             return False
 
-    def reveal(self, duration_ms: int, ready: Callable[[], bool] | None = None) -> None:
+    def reveal(self, duration_ms: int, ready: Callable[[], bool] | None = None, *,
+               wait_s: float | None = None, on_ready: Callable[[], None] | None = None,
+               quiet_ms: int | None = None, stable_frames: int = 2) -> None:
         if not self.active:
             return
         token = self._token
         self._duration_ms = duration_ms
         self._ready = ready
         started = time.perf_counter()
+        wait_budget = COVER_PAINT_WAIT_S if wait_s is None else wait_s
         quiet_frames = 0
 
         def painted() -> None:
@@ -406,25 +471,38 @@ class SnapshotTransition:
             self._job = None
             if token != self._token or not self.active:
                 return
+            if not self._owner_is_foreground():
+                self.finish()
+                return
             layout_ready = ready is None or ready()
             now = time.perf_counter()
-            quiet = now-self._paint_activity >= 2*anim.FRAME_MS/1000
+            quiet = now-self._paint_activity >= (2*anim.FRAME_MS if quiet_ms is None else quiet_ms)/1000
             pending = _native_paint_pending(self._area or self.root)
             quiet_frames = quiet_frames + 1 if layout_ready and quiet and not pending else 0
-            if quiet_frames < 2:
+            if quiet_frames < stable_frames:
                 if layout_ready and quiet and pending:
                     _request_native_paint(self._area or self.root)
                 # Mapping, Expose and idle drawing run in the ordinary loop.
                 # A nested update_idletasks() repeatedly redraws the whole
                 # hierarchy and blocks input, especially on cross-chip visits.
-                if not self.root.winfo_viewable() or now-started > COVER_PAINT_WAIT_S:
+                if not self.root.winfo_viewable() or now-started > wait_budget:
                     self.finish()
                     return
                 self._job = self.root.after(anim.FRAME_MS, painted)
                 return
             _dwm_flush()
+            try:
+                if on_ready is not None:
+                    on_ready()
+            except BaseException:
+                self.finish()
+                raise
+            self._abort = None
             def step(p: float) -> None:
                 if token == self._token and self.active:
+                    if not self._owner_is_foreground():
+                        self.finish()
+                        return
                     _set_alpha(self._frame, round(255*(1-p)))
             self.animator.animate(self._key, duration_ms, step, done=self.finish)
 
@@ -432,17 +510,32 @@ class SnapshotTransition:
         self._job = self.root.after(anim.FRAME_MS, painted)
 
     def change(self, area: tk.Misc, duration_ms: int, action: Callable[[], None],
-               *, ready: Callable[[], bool] | None = None) -> None:
+               *, ready: Callable[[], bool] | None = None, wait_s: float | None = None,
+               on_ready: Callable[[], None] | None = None,
+               on_cancel: Callable[[], None] | None = None) -> None:
         covered = self.cover(area)
+        self._abort = on_cancel if covered else None
         try:
             action()
         except BaseException:
             self.finish()
             raise
         if covered:
-            self.reveal(duration_ms, ready)
+            self.reveal(duration_ms, ready, wait_s=wait_s, on_ready=on_ready)
+        elif on_ready is not None:
+            on_ready()
 
     def finish(self) -> None:
+        self._resize_offset = None
+        abort_error = None
+        abort, self._abort = getattr(self, '_abort', None), None
+        if abort is not None:
+            try:
+                abort()
+            except tk.TclError:
+                pass
+            except BaseException as error:
+                abort_error = error
         self._token += 1
         self.animator.cancel(self._key)
         if self._job is not None:
@@ -459,12 +552,17 @@ class SnapshotTransition:
         if self._bitmap:
             _delete_bitmap(self._bitmap)
             self._bitmap = 0
+        if abort_error is not None:
+            raise abort_error
 
     def close(self) -> None:
         self.finish()
         for sequence, funcid in self._paint_bindings:
             self.root.unbind(sequence, funcid)
         self._paint_bindings.clear()
+        if self._focus_binding is not None:
+            self.root.unbind("<FocusOut>", self._focus_binding)
+            self._focus_binding = None
         for sequence in ("<Configure>", "<Unmap>", "<Destroy>"):
             self.root.unbind_class(self._tag, sequence)
         if self._overlay is not None:

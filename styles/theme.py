@@ -8,9 +8,10 @@ from tkinter import ttk
 
 
 LIGHT_COLORS = {
-    "bg": "#F5F7FA",
+    "bg": "#FFFFFF",
     "panel": "#FFFFFF",
-    "panel_alt": "#F9FAFB",
+    "field": "#FFFFFF",
+    "panel_alt": "#FFFFFF",
     "text": "#111827",
     "muted": "#6B7280",
     "border": "#D1D5DB",
@@ -25,7 +26,8 @@ LIGHT_COLORS = {
 
 DARK_COLORS = {
     "bg": "#111827",
-    "panel": "#1F2937",
+    "panel": "#111827",
+    "field": "#1F2937",
     "panel_alt": "#172033",
     "text": "#F9FAFB",
     "muted": "#9CA3AF",
@@ -810,7 +812,7 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
     base_font_size = max(8, min(18, int(font_size)))
     body_size = max(8, min(24, _scaled(base_font_size, scale)))
     title_size = max(14, min(34, _scaled(base_font_size + 8, scale)))
-    prominent_size = min(36, title_size + 1)
+    prominent_size = min(36, title_size + 3)
     subtitle_size = max(8, min(22, _scaled(base_font_size, scale)))
     sidebar_title_size = max(12, min(28, _scaled(base_font_size + 6, scale)))
     small_size = max(7, min(20, _scaled(base_font_size - 1, scale)))
@@ -1055,7 +1057,7 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
 
     style.configure(
         "TEntry",
-        fieldbackground=colors["panel"],
+        fieldbackground=colors["field"],
         foreground=colors["text"],
         insertcolor=colors["text"],
         borderwidth=1,
@@ -1065,8 +1067,8 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
 
     style.configure(
         "TCombobox",
-        background=colors["panel"],
-        fieldbackground=colors["panel"],
+        background=colors["field"],
+        fieldbackground=colors["field"],
         foreground=colors["text"],
         arrowcolor=colors["text"],
         bordercolor=colors["border"],
@@ -1077,9 +1079,9 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
     )
     style.map(
         "TCombobox",
-        fieldbackground=[("readonly", colors["panel"])],
+        fieldbackground=[("readonly", colors["field"])],
         foreground=[("readonly", colors["text"])],
-        background=[("readonly", colors["panel"]), ("active", colors["panel"])],
+        background=[("readonly", colors["field"]), ("active", colors["field"])],
         arrowcolor=[("readonly", colors["text"]), ("active", colors["primary"])],
     )
 
@@ -1102,7 +1104,7 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
         foreground=[("selected", colors["text"]), ("active", colors["text"])],
     )
 
-    root.option_add("*TCombobox*Listbox.background", colors["panel"])
+    root.option_add("*TCombobox*Listbox.background", colors["field"])
     root.option_add("*TCombobox*Listbox.foreground", colors["text"])
     root.option_add("*TCombobox*Listbox.selectBackground", colors["primary"])
     root.option_add("*TCombobox*Listbox.selectForeground", "#FFFFFF")

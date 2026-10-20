@@ -1,6 +1,8 @@
 """AWP192x Button presentation; chip I/O remains in awp192x_modes."""
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import math
 import threading
 from core.ui_dispatch import post_to_ui
@@ -11,10 +13,13 @@ from tkinter import ttk
 from pages.base_page import fit_toplevel_to_screen
 from pages.awp192x_realtime import AWP192xADCVoltageWindow
 from pages.waveform_generator import WaveformGeneratorPage, WAVEFORM_WRITE_POINT_OPTIONS
+from pages.waveform_preview import compact_preview, draw_omissions
 
 
 def draw_timed_waveform(canvas, colors, tr, segments, point_us):
-    """Plot sample-and-hold time, with every segment's true end node."""
+    """Plot first/last repeat cycles while keeping the true time annotations."""
+    layout = compact_preview(segments)
+    segments = layout.segments
     canvas.delete("all")
     canvas.configure(bg=colors["canvas_bg"], highlightbackground=colors["border"])
     width, height = max(300, canvas.winfo_width()), max(220, canvas.winfo_height())
@@ -22,69 +27,92 @@ def draw_timed_waveform(canvas, colors, tr, segments, point_us):
     columns = 2 if width < 720 else 3
     columns = min(columns, max(1, len(segments)))
     rows = (len(segments) + columns - 1) // columns
-    desired_height = max(420, 260 + rows * 54)
-    if int(canvas.cget("height")) != desired_height:
-        canvas.configure(height=desired_height)
-    bottom = height - 60 - rows * 54
-    count = sum(len(values) for _, values in segments)
+    ends = layout.segment_ends
+    count = ends[-1]
     if not count:
         return
-    values = [v for _, data in segments for v in data]
+    # Measure the same wrapped items that will be displayed. Fixed 52px
+    # cards clip multi-line text when Windows/Tk font scaling is larger.
+    cell = (right-left)/columns
+    duration_items = []
+    card_height = 52
+    for i, segment in enumerate(segments):
+        item = canvas.create_text(0, 0, anchor="nw", fill=colors["primary"],
+            font=("Microsoft YaHei UI", 9), width=max(30, cell-10), tags="segment_duration",
+            text=tr("awp1221_segment_time").format(name=segment.label,
+                duration=f"{segment.cycle_duration*segment.repeats*point_us/1000:g}", end=f"{ends[i+1]*point_us/1000:g}"))
+        duration_items.append(item)
+        box = canvas.bbox(item)
+        if box:
+            card_height = max(card_height, box[3]-box[1]+4)
+    pitch = card_height+2
+    probe = canvas.create_text(0, 0, text="0 ms", anchor="nw")
+    box = canvas.bbox(probe)
+    line_height = box[3]-box[1] if box else 18
+    canvas.delete(probe)
+    axis_pitch = line_height+2
+    total_offset = 7+2*axis_pitch
+    cards_offset = total_offset+line_height+6
+    desired_height = max(420, 260+rows*pitch+max(0, cards_offset-55))
+    if int(canvas.cget("height")) != desired_height:
+        canvas.configure(height=desired_height)
+    bottom = height-cards_offset-5-rows*pitch
+    visible = [part for part in layout.parts if not part.omitted]
+    values = [v for part in visible for v in part.samples]
     low, high = min(0, min(values)), max(0, max(values))
     span = max(1, high - low)
     low, high = low - span * .18, high + span * .18
-    x_of = lambda n: left + (right - left) * n / count
+    x_of = lambda n: left + (right - left) * layout.position(n)
     y_of = lambda v: bottom - (v - low) / (high - low) * (bottom - top)
     y_zero = y_of(0)
     canvas.create_rectangle(left, top, right, bottom, outline=colors["border"])
     canvas.create_line(left, y_zero, right, y_zero, fill=colors["muted"], dash=(3, 3))
     canvas.create_text(left + 3, y_zero + 3, text="GND 0 V", anchor="nw", fill=colors["muted"])
-    coords = []
-    for index, value in enumerate(values):
-        coords.extend((x_of(index), y_of(value)))
-    coords.extend((right, y_of(values[-1])))
-    if len(coords) >= 4:
-        canvas.create_line(*coords, fill=colors["primary"], width=2, tags="wave_curve")
+    for part in visible:
+        coords = []
+        for index, value in enumerate(part.samples):
+            x = left + (right-left) * (part.start + (part.end-part.start)*index/len(part.samples)) / layout.display_total
+            coords.extend((x, y_of(value)))
+        coords.extend((left + (right-left)*part.end/layout.display_total, y_of(part.samples[-1])))
+        if len(coords) >= 4:
+            canvas.create_line(*coords, fill=colors["primary"], width=2, tags="wave_curve")
+    draw_omissions(canvas, layout, left, right-left, y_zero, colors)
     for value, key, color in ((max(values), "awp1221_preview_peak", "#F04444"),
                                (min(values), "awp1221_preview_trough", colors["primary"])):
-        index = values.index(value)
-        x, y = x_of(index), y_of(value)
+        part = next(part for part in visible if value in part.samples)
+        index = part.samples.index(value)
+        x = left + (right-left) * (part.start+(part.end-part.start)*index/len(part.samples)) / layout.display_total
+        y = y_of(value)
         canvas.create_line(x, y_zero, x, y, fill=color, arrow="last")
         canvas.create_text(x, y - 5 if value >= 0 else y + 5,
                            anchor="s" if value >= 0 else "n",
                            text=f"{tr(key)} {value:+.2f} V", fill=color, tags="extremum")
     previous_right = -1
-    ends = [0]
-    for _, data in segments:
-        ends.append(ends[-1] + len(data))
-    for i, end in enumerate(ends):
+    axis_ends = sorted({time for part in visible for time in (part.time_start, part.time_end)})
+    for i, end in enumerate(axis_ends):
         x = x_of(end)
         canvas.create_line(x, top, x, bottom, fill=colors["border"], dash=(2, 3))
         item = canvas.create_text(x, bottom + 7, text=f"{end * point_us / 1000:g} ms",
-                                  anchor="nw" if i == 0 else "ne" if i == len(ends)-1 else "n",
+                                  anchor="nw" if i == 0 else "ne" if i == len(axis_ends)-1 else "n",
                                   fill=colors["muted"], tags="time_axis")
         box = canvas.bbox(item)
         if box and box[0] <= previous_right + 3:
-            if i == len(ends)-1:
-                canvas.move(item, 0, 14)
+            if i == len(axis_ends)-1:
+                canvas.move(item, 0, axis_pitch)
             else:
                 canvas.itemconfigure(item, state="hidden")
         elif box:
             previous_right = box[2]
     total = count * point_us / 1000
-    canvas.create_text(left, bottom + 34, anchor="nw", fill=colors["text"], tags="wave_duration",
+    canvas.create_text(left, bottom + total_offset, anchor="nw", fill=colors["text"], tags="wave_duration",
                        text=tr("awp1221_preview_total_time").format(duration=f"{total:g}"))
-    for i, (name, data) in enumerate(segments):
+    for i, item in enumerate(duration_items):
         row, col = divmod(i, columns)
-        cell = (right - left) / columns
-        card_top = bottom + 55 + row * 54
-        canvas.create_rectangle(left + col * cell, card_top, left + (col+1) * cell - 4, card_top + 52,
+        card_top = bottom+cards_offset+row*pitch
+        canvas.create_rectangle(left + col * cell, card_top, left + (col+1) * cell - 4, card_top + card_height,
                                 outline="", tags="segment_card")
-        canvas.create_text(left + col * cell + 3, card_top + 2, anchor="nw",
-                           fill=colors["primary"], font=("Microsoft YaHei UI", 9),
-                           width=max(30, cell-10), tags="segment_duration",
-                           text=tr("awp1221_segment_time").format(name=name,
-                               duration=f"{len(data)*point_us/1000:g}", end=f"{ends[i+1]*point_us/1000:g}"))
+        canvas.coords(item, left+col*cell+3, card_top+2)
+        canvas.tag_raise(item)
     # Peak/trough labels must also stay inside narrow canvases.
     for item in canvas.find_withtag("extremum"):
         box = canvas.bbox(item)
@@ -107,8 +135,13 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         self.controls.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         for col in range(3):
             self.controls.columnconfigure(col, weight=1, uniform="wave_fields")
+        global_fields = ttk.Frame(self.controls, style="Panel.TFrame")
+        global_fields.grid(row=0, column=0, columnspan=3, sticky="ew")
+        self.owner._add_combo(global_fields, 0, "max_output_voltage", self.owner.max_voltage_var, [x[0] for x in self.owner.amp_options])
+        self.owner._add_entry(global_fields, 1, "single_point_duration", self.owner.duration_var, "us")
+        ttk.Label(global_fields, textvariable=self.owner.period_hint_var, style="Muted.TLabel").grid(row=0, column=4, rowspan=2, padx=20, sticky="w")
         tabs = ttk.Frame(self.controls, style="Panel.TFrame")
-        tabs.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+        tabs.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 8))
         self.source_buttons = {}
         for i, (source, text) in enumerate((("sinc", "SINC / SRAM"), ("rom", "ROM SIN"), ("ram", "RAM"))):
             tabs.columnconfigure(i, weight=1, uniform="wave_tabs")
@@ -116,7 +149,7 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             button.grid(row=0, column=i, sticky="ew", padx=(0, 4))
             self.source_buttons[source] = button
         self.fields = ttk.Frame(self.controls, style="Panel.TFrame")
-        self.fields.grid(row=1, column=0, columnspan=3, sticky="ew")
+        self.fields.grid(row=2, column=0, columnspan=3, sticky="ew")
         for col in range(3):
             self.fields.columnconfigure(col, weight=1, uniform="wave_cells")
         self.cells = {}
@@ -147,17 +180,17 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             self._field_widgets[key] = [label, widget]
             self.cells[key] = cell
         fill = ttk.Checkbutton(self.controls, variable=self.fill_zero_tail_var)
-        fill.grid(row=2, column=0, columnspan=3, sticky="w", pady=4)
+        fill.grid(row=3, column=0, columnspan=3, sticky="w", pady=4)
         self.bind_text(fill, "fill_zero_tail")
         self._field_widgets["fill_zero_tail"] = [fill]
         self.serial_editor = self._build_serial_editor(self.controls)
-        self.serial_editor.grid(row=3, column=0, columnspan=3, sticky="ew")
+        self.serial_editor.grid(row=4, column=0, columnspan=3, sticky="ew")
         self.serial_editor.grid_remove()
-        self.controls.rowconfigure(4, weight=1)
+        self.controls.rowconfigure(5, weight=1)
         self.source_hint = ttk.Label(self.controls, style="Muted.TLabel", wraplength=525)
-        self.source_hint.grid(row=4, column=0, columnspan=3, sticky="nw", pady=4)
+        self.source_hint.grid(row=5, column=0, columnspan=3, sticky="nw", pady=4)
         actions = ttk.Frame(self.controls, style="Panel.TFrame")
-        actions.grid(row=5, column=0, columnspan=3, sticky="ew")
+        actions.grid(row=6, column=0, columnspan=3, sticky="ew")
         for col in range(3):
             actions.columnconfigure(col, weight=1, uniform="wave_actions")
         for i, (key, command) in enumerate((("write_waveform", self.write_waveform),
@@ -313,31 +346,35 @@ class ButtonWaveformPage(WaveformGeneratorPage):
 
 class ButtonModeView:
     def _build_button_body(self):
+        for _ in self._build_button_body_steps():
+            pass
+
+    def _build_button_body_steps(self):
+        yield
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         waveform = ttk.LabelFrame(body, text=self.tr("awp1221_button_wave_settings"), padding=8)
         waveform.grid(row=0, column=0, sticky="ew")
         self.bind_text(waveform, "awp1221_button_wave_settings")
+        yield
         waveform.columnconfigure(0, weight=1)
-        global_fields = ttk.Frame(waveform, style="Panel.TFrame")
-        global_fields.grid(row=0, column=0, sticky="ew")
-        self._add_combo(global_fields, 0, "max_output_voltage", self.max_voltage_var, [x[0] for x in self.amp_options])
-        self._add_entry(global_fields, 1, "single_point_duration", self.duration_var, "us")
-        ttk.Label(global_fields, textvariable=self.period_hint_var, style="Muted.TLabel").grid(row=0, column=4, rowspan=2, padx=20, sticky="w")
+        yield
         self.waveform_page = ButtonWaveformPage(waveform, self.ctx, storage=self.storage, owner=self)
-        self.waveform_page.grid(row=1, column=0, sticky="nsew")
+        self.waveform_page.grid(row=0, column=0, sticky="nsew")
         self.waveform_page.metrics_revision_var.trace_add("write", lambda *_: self._on_button_runtime_waveform_changed())
         for variable in (self.duration_var, self.max_voltage_var):
             variable.trace_add("write", lambda *_: self.waveform_page._redraw_active_plot())
         middle = ttk.Frame(body, style="App.TFrame")
         middle.grid(row=1, column=0, sticky="ew", pady=10)
+        yield
         middle.columnconfigure(0, weight=2, uniform="adc_sections")
         middle.columnconfigure(1, weight=3, uniform="adc_sections")
         diagram = ttk.LabelFrame(middle, padding=8)
         diagram.grid(row=0, column=0, sticky="nsew", padx=(0,10))
         self.bind_text(diagram, "awp1221_adc_diagram")
         diagram.columnconfigure(0, weight=1)
+        yield
         diagram.rowconfigure(1, weight=1)
         selector = ttk.Frame(diagram, style="Panel.TFrame")
         selector.grid(row=0, column=0, sticky="ew", pady=(0, 6))
@@ -349,12 +386,14 @@ class ButtonModeView:
             button.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 4, 0))
             self.bind_text(button, f"awp1221_diagram_detect_{phase}")
             self._button_adc_phase_buttons[phase] = button
+        yield
         self.adc_diagram = tk.Canvas(diagram, height=200, width=280, highlightthickness=0)
         self.adc_diagram.grid(row=1, column=0, sticky="nsew")
         self.adc_diagram.bind("<Configure>", lambda _: self._draw_button_adc_diagram())
         params = ttk.LabelFrame(middle, padding=8)
         params.grid(row=0, column=1, sticky="nsew")
         self.bind_text(params, "awp1221_button_adc_settings")
+        yield
         for col in range(4):
             params.columnconfigure(col, weight=1)
         self._button_field(params, 0, 0, "press_threshold", self.press_threshold_var, value=self.press_threshold_hex_var)
@@ -362,6 +401,7 @@ class ButtonModeView:
         self._button_field(params, 0, 2, "adc_average_time", self.adc_average_time_var, [x[0] for x in self.ADC_AVERAGE_OPTIONS])
         self._button_field(params, 0, 3, "adc_ovv_time", self.adc_ovv_time_var, [x[0] for x in self.ADC_OVV_OPTIONS])
         self._button_field(params, 1, 0, "adc_pol", self.button_adc_pol_var, ["OUT+", "OUT-"])
+        yield
         self._button_field(params, 1, 1, "adc_gain", self.button_adc_gain_var, ["0-19V", "0-100V"])
         for i, (key, variable, wave) in enumerate((("press_repeat_count", self.press_repeat_count_var, self.press_waveform_var),
                 ("release_repeat_count", self.release_repeat_count_var, self.release_waveform_var),
@@ -381,6 +421,7 @@ class ButtonModeView:
         endless.grid(row=3, column=0, sticky="w")
         self._checks["endless_play"] = endless
         self.endless_hint_label = ttk.Label(params, style="Muted.TLabel", wraplength=430)
+        yield
         self.endless_hint_label.grid(row=3, column=1, columnspan=3, sticky="w")
         for variable in (self.press_threshold_var, self.release_threshold_var):
             variable.trace_add("write", lambda *_: self._draw_button_adc_diagram())
@@ -388,30 +429,35 @@ class ButtonModeView:
         lower.grid(row=2, column=0, sticky="ew")
         lower.columnconfigure(1, weight=3)
         lower.columnconfigure(2, weight=2)
+        yield
         status = ttk.LabelFrame(lower, padding=8)
         status.grid(row=0, column=0, sticky="nsew", padx=(0,10))
         self.bind_text(status, "sense_status_title")
         self._sense_status_block = tk.Frame(status, width=72, height=28, bg=self.STATUS_IDLE_COLOR)
         self._sense_status_block.grid(row=0, column=0, pady=10)
         status_hint = ttk.Label(status, style="Muted.TLabel", wraplength=110)
+        yield
         status_hint.grid(row=1, column=0)
         self.bind_text(status_hint, "sense_status_hint")
         readings = ttk.LabelFrame(lower, padding=8)
         readings.grid(row=0, column=1, sticky="nsew", padx=(0,10))
         self.bind_text(readings, "awp1221_adc_readings")
         readings.columnconfigure(0, weight=1)
+        yield
         top = ttk.Frame(readings, style="Panel.TFrame")
         top.grid(row=0, column=0, sticky="ew")
         top.columnconfigure(0, weight=1)
         title = ttk.Label(top, style="Panel.TLabel")
         title.grid(row=0, column=0, sticky="w")
         self._labels["button_adc_value"] = title
+        yield
         graph = ttk.Button(top, style="Secondary.TButton", command=self._open_button_adc_graph)
         graph.grid(row=0, column=1)
         self._buttons["awp1221_adc_graph"] = graph
         ttk.Entry(readings, textvariable=self.adc_value_var, state="readonly").grid(row=1, column=0, sticky="ew", pady=5)
         bits = ttk.Frame(readings, style="Panel.TFrame")
         bits.grid(row=2, column=0, sticky="w")
+        yield
         self._adc_nibbles = []
         self._last_button_adc_word = None
         for i in range(3):
@@ -426,6 +472,7 @@ class ButtonModeView:
             button = ttk.Button(row, command=command, style="Secondary.TButton")
             button.grid(row=0, column=i, sticky="ew", padx=(0,4))
             self._buttons[key] = button
+        yield
         switches = ttk.LabelFrame(lower, padding=8)
         switches.grid(row=0, column=2, sticky="nsew")
         self.bind_text(switches, "awp1221_control_buttons")
@@ -437,18 +484,21 @@ class ButtonModeView:
             button.grid(row=i//2, column=i%2, sticky="ew", padx=3, pady=3)
             self._buttons[key] = button
         close = ttk.Button(switches, command=self._stop_all_button_actions, style="Danger.TButton")
+        yield
         close.grid(row=2, column=0, columnspan=2, sticky="ew", padx=3, pady=3)
         self.bind_text(close, "awp192x_close_all")
         details = ttk.Frame(body, style="Panel.TFrame", padding=8)
         details.grid(row=3, column=0, sticky="ew", pady=(10,0))
         details.columnconfigure(0, weight=1)
         toggle = ttk.Button(details, command=self._toggle_button_log, style="Secondary.TButton")
+        yield
         toggle.grid(row=0, column=0, sticky="w")
         self.bind_text(toggle, "awp1221_communication_log")
         self._button_log = self.make_serial_log(details, height=4, subscribe=True)
         self._button_log.grid(row=1, column=0, sticky="ew", pady=(6,0))
         self._button_log.grid_remove()
         self._button_graph_window = None
+        yield
         self._button_graph_gpio_level = None
         self._refresh_button_view()
 

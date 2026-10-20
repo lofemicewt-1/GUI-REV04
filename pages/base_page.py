@@ -14,6 +14,7 @@ from core.ui_dispatch import post_to_ui
 from core import animation as anim
 from styles.fonts import sidebar_brand_font_spec, page_title_weight
 from styles.theme import get_colors
+from app.viewport_presentation import ViewportCanvas
 
 
 def fit_toplevel_to_screen(
@@ -125,8 +126,11 @@ class SimpleTooltip:
         self.widget = widget
         self.text_getter = text_getter
         self.tip: tk.Toplevel | None = None
+        self._position_job: str | None = None
+        self._generation = 0
         widget.bind("<Enter>", self._show)
         widget.bind("<Leave>", self._hide)
+        widget.bind("<Unmap>", self._hide, add="+")
         widget.bind("<Destroy>", self._on_widget_destroy, add="+")
         self._ensure_scroll_hook()
 
@@ -159,6 +163,7 @@ class SimpleTooltip:
         x = self.widget.winfo_rootx() + self.widget.winfo_width() + 8
         y = self.widget.winfo_rooty() + 4
         self.tip = tk.Toplevel(self.widget)
+        self.tip.withdraw()
         if self not in SimpleTooltip._open:
             SimpleTooltip._open.append(self)
         self.tip.wm_overrideredirect(True)
@@ -175,26 +180,47 @@ class SimpleTooltip:
             wraplength=320,
         )
         label.pack()
+        tip = self.tip
+        generation = self._generation
+        self._position_job = self.widget.after_idle(
+            lambda: self._position(tip, generation, x, y)
+        )
+
+    def _position(self, tip: tk.Toplevel, generation: int, x: int, y: int) -> None:
+        if generation != self._generation or self.tip is not tip:
+            return
+        self._position_job = None
         try:
-            self.tip.update_idletasks()
-            screen_width = self.tip.winfo_screenwidth()
-            screen_height = self.tip.winfo_screenheight()
-            tip_width = self.tip.winfo_reqwidth()
-            tip_height = self.tip.winfo_reqheight()
+            if not tip.winfo_exists() or not self.widget.winfo_ismapped():
+                self._hide()
+                return
+            screen_width = tip.winfo_screenwidth()
+            screen_height = tip.winfo_screenheight()
+            tip_width = tip.winfo_reqwidth()
+            tip_height = tip.winfo_reqheight()
             x = min(max(8, x), max(8, screen_width - tip_width - 8))
             if y + tip_height + 8 > screen_height:
                 y = max(8, self.widget.winfo_rooty() - tip_height - 8)
             y = min(max(8, y), max(8, screen_height - tip_height - 8))
+            tip.wm_geometry(f"+{x}+{y}")
+            animator = anim.animator_for(self.widget)
+            if animator is not None and animator.enabled:
+                tip.attributes('-alpha', 0)
+            tip.deiconify()
+            if animator is not None and animator.enabled:
+                animator.animate(("tooltip", id(self)), anim.GRAPHEME_MS,
+                                 lambda p: tip.attributes("-alpha", p), ease=anim.EASE_GRAPHEME)
         except tk.TclError:
-            pass
-        self.tip.wm_geometry(f"+{x}+{y}")
-        animator = anim.animator_for(self.widget)
-        if animator is not None and animator.enabled:
-            tip = self.tip
-            animator.animate(("tooltip", id(self)), anim.GRAPHEME_MS,
-                             lambda p: tip.attributes("-alpha", p), ease=anim.EASE_GRAPHEME)
+            self._hide()
 
     def _hide(self, _event: tk.Event | None = None) -> None:
+        self._generation += 1
+        if self._position_job is not None:
+            try:
+                self.widget.after_cancel(self._position_job)
+            except tk.TclError:
+                pass
+            self._position_job = None
         try:
             SimpleTooltip._open.remove(self)
         except ValueError:
@@ -257,6 +283,7 @@ class VerticalScrollArea(ttk.Frame):
         propagate_width: bool = False,
         propagate_height: bool = False,
         clamp_width: bool = False,
+        reserve_vertical_gutter: bool = False,
     ) -> None:
         super().__init__(parent, style="App.TFrame")
         self.ctx = ctx
@@ -265,27 +292,34 @@ class VerticalScrollArea(ttk.Frame):
         self.propagate_width = bool(propagate_width)
         self.propagate_height = bool(propagate_height)
         self.clamp_width = bool(clamp_width)
+        self.reserve_vertical_gutter = bool(reserve_vertical_gutter)
         self._scrollbar_visible = False
         self._horizontal_scrollbar_visible = False
         self._layout_job: str | None = None
         self._yview_key: tuple[str, str] | None = None
+        self._xview_key: tuple[str, str] | None = None
 
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
 
-        self.canvas = tk.Canvas(
+        self.canvas = ViewportCanvas(
             self,
             highlightthickness=0,
             borderwidth=0,
-            yscrollincrement=self._y_increment(),
+            yscrollincrement=1,
         )
         self.canvas.grid(row=0, column=0, sticky="nsew")
 
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        if self.reserve_vertical_gutter:
+            # Wrapping footers also resize their viewport to the content height.
+            # Keep the content width fixed when the scrollbar appears/disappears,
+            # otherwise delayed wrapping and height fitting can oscillate forever.
+            self.columnconfigure(1, minsize=self.scrollbar.winfo_reqwidth())
         self.horizontal_scrollbar = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
         self.canvas.configure(
             yscrollcommand=self._on_yview,
-            xscrollcommand=self.horizontal_scrollbar.set,
+            xscrollcommand=self._on_xview,
         )
 
         self.content = ttk.Frame(self.canvas, style="App.TFrame")
@@ -303,6 +337,9 @@ class VerticalScrollArea(ttk.Frame):
         try:
             widget = self.winfo_containing(int(event.x_root), int(event.y_root))
             if widget is not None:
+                presentation = getattr(self._root(), '_piezo_viewport_presentation', None)
+                if presentation is not None:
+                    widget = presentation.pointer_target(widget)
                 return widget
         except (tk.TclError, AttributeError, TypeError, ValueError):
             pass
@@ -324,7 +361,12 @@ class VerticalScrollArea(ttk.Frame):
         # One content resize also configures its canvas and scrollbars. Read
         # their final dimensions once instead of repainting at every boundary.
         if self._layout_job is None:
-            self._layout_job = self.after(anim.FRAME_MS, self._run_scroll_layout)
+            owner = self._root()
+            pending = getattr(owner, "_piezo_pending_scroll_layouts", None)
+            if pending is None:
+                pending = owner._piezo_pending_scroll_layouts = set()
+            pending.add(self)
+            self._layout_job = self.after(0, self._run_scroll_layout)
 
     def _run_scroll_layout(self) -> None:
         self._layout_job = None
@@ -336,6 +378,7 @@ class VerticalScrollArea(ttk.Frame):
         if self._layout_job is not None:
             self.after_cancel(self._layout_job)
             self._layout_job = None
+        getattr(self._root(), "_piezo_pending_scroll_layouts", set()).discard(self)
 
     def _sync_scroll_region(self, _event: tk.Event | None = None) -> None:
         self._cancel_scroll_layout()
@@ -407,12 +450,15 @@ class VerticalScrollArea(ttk.Frame):
     def _on_yview(self, first: str, last: str) -> None:
         self._yview_key = relay_vertical_scroll(self.scrollbar, self._yview_key, first, last)
 
+    def _on_xview(self, first: str, last: str) -> None:
+        self._xview_key = relay_vertical_scroll(self.horizontal_scrollbar, self._xview_key, first, last)
+
     def _on_mousewheel(self, event: tk.Event) -> None:
         try:
             if not self.winfo_ismapped() or self._nearest_scroll_area(self._pointer_widget(event)) is not self:
                 return
             delta = -1 if event.delta > 0 else 1
-            self.canvas.yview_scroll(delta, "units")
+            self.canvas.yview_scroll(delta * self._y_increment(), "units")
         except tk.TclError:
             pass
 
@@ -438,7 +484,7 @@ class VerticalScrollArea(ttk.Frame):
         return None
 
     def refresh_theme(self) -> None:
-        self.canvas.configure(bg=self.ctx.colors["bg"], yscrollincrement=self._y_increment())
+        self.canvas.configure(bg=self.ctx.colors["bg"], yscrollincrement=1)
 
 
 class WrappingGroupBar(ttk.Frame):
@@ -576,7 +622,7 @@ class FooterSplit(ttk.Frame):
         self.reflow(int(event.width))
 
 
-_CHIP_TITLE_KEYS = {"awp1921_1923", "awp1921", "awp1923", "awp1922", "awp1018", "awp1221"}
+_CHIP_TITLE_KEYS = {"awp1921_1923", "awp1921", "awp1923", "awp1922", "awp1018", "awp1221", "awp1744_awp1766"}
 
 
 def _font_probe(root: tk.Misc, family: str, weight: str) -> tkfont.Font:
@@ -673,11 +719,21 @@ def _prominent_title(title_key: str) -> bool:
 
 
 _TITLE_TEXT_PAD = 2
-_TITLE_FONTS: dict[tuple[Any, ...], tkfont.Font] = {}
-_TITLE_METRICS: dict[tuple[Any, ...], tuple[int, int]] = {}
-_TITLE_WIDTHS: dict[tuple[Any, ...], int] = {}
-_TITLE_REALIZED: set[tuple[Any, ...]] = set()
 _TITLE_FONT_SEQ = 0
+
+
+def _title_cache(widget: tk.Misc) -> dict[str, Any]:
+    owner = widget._root()
+    cache = getattr(owner, '_piezo_title_cache', None)
+    if cache is None:
+        cache = {'fonts': {}, 'metrics': {}, 'widths': {}, 'realized': set()}
+        owner._piezo_title_cache = cache
+        def clear(event: tk.Event) -> None:
+            if event.widget is owner:
+                for entries in cache.values():
+                    entries.clear()
+        owner.bind('<Destroy>', clear, add='+')
+    return cache
 
 
 def _title_scaling(widget: tk.Misc) -> str:
@@ -719,8 +775,9 @@ def _title_font_attrs(font: tuple[Any, ...]) -> tuple[Any, ...]:
 def _title_font(widget: tk.Misc, font: tuple[Any, ...]) -> tkfont.Font:
     global _TITLE_FONT_SEQ
     attrs = _title_font_attrs(font)
-    key = (id(widget.tk), attrs)
-    cached = _TITLE_FONTS.get(key)
+    key = attrs
+    fonts = _title_cache(widget)['fonts']
+    cached = fonts.get(key)
     if cached is not None:
         return cached
     family, size, weight, slant, underline, overstrike = attrs
@@ -735,26 +792,28 @@ def _title_font(widget: tk.Misc, font: tuple[Any, ...]) -> tkfont.Font:
         underline=bool(underline),
         overstrike=bool(overstrike),
     )
-    _TITLE_FONTS[key] = cached
+    fonts[key] = cached
     return cached
 
 
 def _title_metrics(widget: tk.Misc, font: tuple[Any, ...]) -> tuple[int, int]:
     key = (_title_font_attrs(font), _title_scaling(widget))
-    hit = _TITLE_METRICS.get(key)
+    metrics = _title_cache(widget)['metrics']
+    hit = metrics.get(key)
     if hit is None:
         info = _title_font(widget, font).metrics()
         hit = (int(info["linespace"]), int(info["ascent"]))
-        _TITLE_METRICS[key] = hit
+        metrics[key] = hit
     return hit
 
 
 def _title_text_width(widget: tk.Misc, font: tuple[Any, ...], text: str) -> int:
     key = (_title_font_attrs(font), _title_scaling(widget), text)
-    hit = _TITLE_WIDTHS.get(key)
+    widths = _title_cache(widget)['widths']
+    hit = widths.get(key)
     if hit is None:
         hit = int(_title_font(widget, font).measure(text))
-        _TITLE_WIDTHS[key] = hit
+        widths[key] = hit
     return hit
 
 
@@ -769,8 +828,9 @@ def _title_font_holder(widget: tk.Misc) -> tk.Label:
 
 def _ensure_title_font(widget: tk.Misc, font: tuple[Any, ...]) -> None:
     attrs = _title_font_attrs(font)
-    key = (id(widget.tk), attrs)
-    if key in _TITLE_REALIZED:
+    key = attrs
+    realized = _title_cache(widget)['realized']
+    if key in realized:
         return
     probe = _title_font(widget, font)
     try:
@@ -778,7 +838,7 @@ def _ensure_title_font(widget: tk.Misc, font: tuple[Any, ...]) -> None:
     except tk.TclError:
         return
     _title_metrics(widget, font)
-    _TITLE_REALIZED.add(key)
+    realized.add(key)
 
 
 def _warm_title_fonts(widget: tk.Misc) -> None:
@@ -1066,6 +1126,7 @@ class BasePage(ttk.Frame):
         self._canvas_titles: list[CanvasTitle] = []
         self._logo_images: list[tk.PhotoImage] = []
         self._chrome_headers: list[ttk.Frame] = []
+        self._mode_headers: list[ttk.Frame] = []
         self._serial_log_text: tk.Text | None = None
         self._serial_log_listener: Any = None
         self._serial_log_clear_listener: Any = None
@@ -1100,6 +1161,7 @@ class BasePage(ttk.Frame):
             except Exception:
                 pass
         self._refresh_serial_selectors()
+        self._sync_mode_headers()
 
     def _sync_mode_button_styles(self) -> None:
         current = getattr(self, "current_mode", None)
@@ -1121,6 +1183,7 @@ class BasePage(ttk.Frame):
         self._refresh_header_logos()
         self._refresh_canvas_titles()
         self._sync_header_chrome()
+        self._sync_mode_headers()
         self._refresh_serial_log_theme()
         for area in self._vertical_scroll_areas:
             area.refresh_theme()
@@ -1232,6 +1295,7 @@ class BasePage(ttk.Frame):
         propagate_width: bool = False,
         propagate_height: bool = False,
         clamp_width: bool = False,
+        reserve_vertical_gutter: bool = False,
     ) -> tuple[VerticalScrollArea, ttk.Frame]:
         area = VerticalScrollArea(
             parent,
@@ -1241,6 +1305,7 @@ class BasePage(ttk.Frame):
             propagate_width=propagate_width,
             propagate_height=propagate_height,
             clamp_width=clamp_width,
+            reserve_vertical_gutter=reserve_vertical_gutter,
         )
         self._vertical_scroll_areas.append(area)
         return area, area.content
@@ -1262,7 +1327,7 @@ class BasePage(ttk.Frame):
         )
         if title_key == "awp1921_1923":
             title_group = ttk.Frame(header, style="App.TFrame")
-            title_group.grid(row=0, column=0, sticky="w")
+            title_group.grid(row=0, column=0, sticky="nw", padx=(8, 0))
             self._make_linked_title_part(title_group, "AWP1921", "awp1921", 0, title_style)
             slash = CanvasTitle(title_group, text="/", style=title_style)
             slash.grid(row=0, column=1, sticky="w")
@@ -1271,7 +1336,7 @@ class BasePage(ttk.Frame):
             self._make_linked_title_part(title_group, "AWP1923", "awp1923", 2, title_style)
         else:
             title = CanvasTitle(header, style=title_style)
-            title.grid(row=0, column=0, sticky="w")
+            title.grid(row=0, column=0, sticky="nw", padx=(8, 0) if show_logo else 0)
             self.bind_text(title, title_key)
             self._configure_title_link(title, title_key)
             if title_style == "ChipTitle.TLabel":
@@ -1279,7 +1344,7 @@ class BasePage(ttk.Frame):
 
         if subtitle:
             sub = ttk.Label(header, style="Subtitle.TLabel")
-            sub.grid(row=1, column=0, sticky="w", pady=(3, 0))
+            sub.grid(row=1, column=0, sticky="w", padx=(8, 0) if show_logo else 0, pady=(3, 0))
             if subtitle.startswith("@"):
                 self.bind_text(sub, subtitle[1:])
             else:
@@ -1291,8 +1356,71 @@ class BasePage(ttk.Frame):
             header.bind("<Configure>", lambda _event, label=logo: self._configure_header_logo(label), add="+")
             self._chrome_headers.append(header)
             self._sync_header_chrome_widget(header)
+        else:
+            self._mode_headers.append(header)
+            self._sync_mode_header(header)
 
         return header
+
+    def make_preset_frame(self, header: ttk.Frame) -> ttk.Frame:
+        """Keep the five action columns aligned and reachable on small windows."""
+        area, content = self.make_vertical_scroll_area(header)
+        area.grid(row=0, column=1, sticky="new", padx=(24, 0))
+        frame = ttk.Frame(content, style="App.TFrame")
+        frame.grid(row=0, column=0, sticky="nw")
+        header._preset_area = area
+        header._preset_frame = frame
+        self._sync_mode_header(header)
+        return frame
+
+    def _sync_mode_headers(self) -> None:
+        for header in self._mode_headers:
+            self._sync_mode_header(header)
+
+    def _sync_mode_header(self, header: ttk.Frame) -> None:
+        # Unmapped probes follow ttk font/theme changes without visible controls.
+        root = self._root()
+        probes = getattr(root, "_piezo_header_probes", None)
+        if probes is None:
+            probes = (ttk.Button(root, style="Bg.TButton"),
+                      ttk.Combobox(root, width=4),
+                      ttk.Scrollbar(root, orient="horizontal"),
+                      ttk.Label(root, style="App.TLabel"))
+            root._piezo_header_probes = probes
+        button, combo, scrollbar, slot_label = probes
+        combo.configure(font=("Microsoft YaHei UI", int(getattr(root, "_piezo_body_font_size", 10))))
+        size = int(getattr(root, "_piezo_prominent_title_font_size", 19))
+        font = ("Microsoft YaHei UI", size, page_title_weight(self))
+        title_keys = ("button_mode", "full_mode", "awp1018_normal_mode", "awp1018_diff_mode")
+        title_width = max(_title_text_width(self, font, t(lang, key))
+                          for lang in ("zh", "en") for key in title_keys) + 4
+        header.columnconfigure(0, weight=0, minsize=title_width)
+        header.columnconfigure(1, weight=1)
+        # Reserve both action rows and scrollbar space even on pages without
+        # presets. CanvasTitle uses sticky=nw so action height cannot move it.
+        row_height = max(button.winfo_reqheight(), combo.winfo_reqheight())
+        canvas_height = row_height * 2 + 8 + 16
+        header.rowconfigure(0, minsize=canvas_height + scrollbar.winfo_reqheight())
+        area = getattr(header, "_preset_area", None)
+        if area is not None:
+            area.canvas.configure(height=canvas_height)
+            keys = ("button_mode_preset_1", "button_mode_import_user_preset",
+                    "button_mode_export_user_preset", "save_to_board", "set_active",
+                    "apply_slot", "read_slot", "awp1221_type4_active",
+                    "awp1221_type4_apply", "awp1221_type4_read",
+                    "awp1221_preset_1_reserved", "awp1221_import_reserved",
+                    "awp1221_export_reserved")
+            widths = []
+            for key in keys:
+                button.configure(text=self.tr(key))
+                widths.append(button.winfo_reqwidth())
+            body_font = ("Microsoft YaHei UI", int(getattr(root, "_piezo_body_font_size", 10)))
+            slot_label.configure(text=self.tr("board_slot"), font=body_font)
+            slot_width = slot_label.winfo_reqwidth() + combo.winfo_reqwidth() + 6
+            width = max(118, slot_width, *widths) + 6
+            for column in range(5):
+                header._preset_frame.columnconfigure(column, weight=1,
+                    uniform="page_preset_columns", minsize=width)
 
     def _sync_header_chrome(self) -> None:
         for header in self._chrome_headers:

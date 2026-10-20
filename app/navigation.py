@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 import tkinter as tk
 import webbrowser
 from tkinter import font as tkfont
@@ -14,7 +15,7 @@ from app.sidebar_motion import SidebarMotion
 from config.app_info import APP_VERSION, USER_GUIDE_URL
 from config.languages import t
 from styles.fonts import sidebar_brand_font_spec
-from pages.base_page import relay_vertical_scroll, scaled_scroll_px
+from pages.base_page import hide_scroll_chrome, relay_vertical_scroll, scaled_scroll_px
 from styles.theme import BRAND_ENLARGE, logo_asset, photoimage_scale_token, scale_photoimage
 
 
@@ -52,6 +53,7 @@ class Navigation:
         self.sidebar_shell.columnconfigure(0, weight=1)
         self._sidebar_yview_key: tuple[str, str] | None = None
         self._content_yview_key: tuple[str, str] | None = None
+        self._content_xview_key: tuple[str, str] | None = None
         self.sidebar_canvas = tk.Canvas(
             self.sidebar_shell,
             width=1,
@@ -59,7 +61,7 @@ class Navigation:
             highlightthickness=0,
             borderwidth=0,
             relief="flat",
-            yscrollincrement=scaled_scroll_px(self._scale()),
+            yscrollincrement=1,
         )
         self.sidebar_canvas.grid(row=0, column=0, sticky="nsew")
         self.sidebar_shell.bind("<Map>", self._on_sidebar_shell_map, add="+")
@@ -93,13 +95,13 @@ class Navigation:
             self.content_shell,
             highlightthickness=0,
             borderwidth=0,
-            yscrollincrement=scaled_scroll_px(self._scale()),
+            yscrollincrement=1,
         )
         self.content_canvas.grid(row=0, column=0, sticky="nsew")
 
         self.v_scrollbar = ttk.Scrollbar(self.content_shell, orient="vertical", command=self.content_canvas.yview)
         self.h_scrollbar = ttk.Scrollbar(self.content_shell, orient="horizontal", command=self.content_canvas.xview)
-        self.content_canvas.configure(yscrollcommand=self._on_content_yview, xscrollcommand=self.h_scrollbar.set)
+        self.content_canvas.configure(yscrollcommand=self._on_content_yview, xscrollcommand=self._on_content_xview)
 
         self.content = ttk.Frame(self.content_canvas, style="App.TFrame", padding=self._pad(16, 8))
         self.content_window = self.content_canvas.create_window((0, 0), window=self.content, anchor="nw")
@@ -130,7 +132,12 @@ class Navigation:
         self.mode_host: Any | None = None
         self.mode_buttons: dict[str, ttk.Button] = {}
         self._pending_page: str | None = None
+        self._preparation = None
+        self._prepare_commit = None
+        self._pending_mode: str | None = None
+        self._transition_pending = False
         self._pending_navigation: str | None = None
+        self._pending_navigation_fallback: str | None = None
 
         # width=1：画布自身不撑宽侧栏，侧栏宽度由导航按钮自然宽度决定，
         # 避免默认 Canvas 请求宽度（约378px）把按钮列撑得过大。
@@ -184,6 +191,7 @@ class Navigation:
         self._settings_button.grid(row=0, column=0, sticky="ew")
         self._refresh_settings_button()
         self._refresh_version_label()
+        self._escape_binding = root.bind('<Escape>', self._cancel_preparation, add='+')
         self.refresh_layout()
 
     def _scale(self) -> float:
@@ -244,8 +252,8 @@ class Navigation:
             refresh(page)
         self._sync_content_window()
 
-    def register_page(self, name: str, label_key: str, factory: Callable[[], ttk.Frame], *, sidebar_button: bool = True) -> None:
-        self.pages.register(name, factory)
+    def register_page(self, name: str, label_key: str, factory: Callable[..., ttk.Frame], *, sidebar_button: bool = True, staged: bool = False) -> None:
+        self.pages.register(name, factory, staged=staged)
         if sidebar_button:
             row = len(self.buttons) + 1
             btn = ttk.Button(
@@ -265,6 +273,7 @@ class Navigation:
         """Immediate navigation for application/configuration callers."""
         if name not in self.pages:
             return
+        self._finish_waiting_transition()
         self.cancel_pending_navigation()
         self._transition_to(name)
 
@@ -272,6 +281,7 @@ class Navigation:
         """Acknowledge clicks before construction; keep only the newest request."""
         if name not in self.pages or name == self._pending_page:
             return
+        self._finish_waiting_transition()
         self.cancel_pending_navigation()
         if name == self.ctx.state.current_page:
             return
@@ -281,32 +291,105 @@ class Navigation:
         self._pending_navigation = self.root.after(0, self._commit_navigation)
 
     def _commit_navigation(self) -> None:
-        self._pending_navigation = None
+        # Existing sidebar widgets have already queued their redraw. Let
+        # that idle batch paint the selection before a cold constructor can
+        # occupy the main thread. New input can still cancel this idle job.
+        self._pending_navigation = self.root.after_idle(self._build_pending_navigation)
+        # A continuous stream of timers must not starve an idle-only request.
+        self._pending_navigation_fallback = self.root.after(anim.DUR_FAST, self._build_pending_navigation)
+
+    def _build_pending_navigation(self) -> None:
+        self._cancel_navigation_jobs()
         name = self._pending_page
+        if name is not None and self.pages.can_prepare(name):
+            self._start_preparation(self.pages, name, lambda: self._transition_to(name, defer_activation=True))
+            return
         try:
             if name is not None:
-                self._transition_to(name)
+                self._transition_to(name, defer_activation=True)
         finally:
             self._pending_page = None
             self._refresh_button_styles()
             self.motion.refresh()
 
-    def cancel_pending_navigation(self) -> None:
+    def _start_preparation(self, pages: LazyPages, name: str, commit: Callable[[], None]) -> None:
+        transition = getattr(self.ctx.app, 'transitions', None)
+        if transition is not None:
+            transition.prime()
+        self._preparation = pages.prepare(name)
+        self._prepare_commit = commit
+        self._last_preparation_steps_ms = []
+        self._refresh_version_label()
+        self._run_preparation()
+
+    def _run_preparation(self) -> None:
+        self._pending_navigation = None
+        job = self._preparation
+        if job is None:
+            return
+        started = time.perf_counter()
+        try:
+            # A factory opts in only when its individual builders can yield.
+            # All Tk work remains on this thread; input runs between batches.
+            while True:
+                step_start = time.perf_counter()
+                next(job)
+                self._last_preparation_steps_ms.append((time.perf_counter()-step_start)*1000)
+                if time.perf_counter()-started >= .006:
+                    break
+        except StopIteration:
+            self._preparation = None
+            commit, self._prepare_commit = self._prepare_commit, None
+            try:
+                if commit is not None:
+                    commit()
+            finally:
+                self.cancel_pending_navigation()
+            return
+        except BaseException:
+            self.cancel_pending_navigation()
+            raise
+        self._pending_navigation = self.root.after(1, self._run_preparation)
+
+    def _cancel_navigation_jobs(self) -> None:
         if self._pending_navigation is not None:
             self.root.after_cancel(self._pending_navigation)
             self._pending_navigation = None
+        if self._pending_navigation_fallback is not None:
+            self.root.after_cancel(self._pending_navigation_fallback)
+            self._pending_navigation_fallback = None
+
+    def cancel_pending_navigation(self) -> None:
+        self._cancel_navigation_jobs()
+        job, self._preparation = self._preparation, None
+        self._prepare_commit = None
+        self._pending_mode = None
+        if job is not None:
+            job.close()
         if self._pending_page is not None:
             self._pending_page = None
             self._refresh_button_styles()
             self.motion.refresh()
+        self._refresh_mode_button_styles()
+        self._refresh_version_label()
+
+    def _finish_waiting_transition(self) -> None:
+        if self._transition_pending:
+            self.ctx.app.transitions.finish()
+
+    def _cancel_preparation(self, _event=None) -> None:
+        self.cancel_pending_navigation()
+        self._finish_waiting_transition()
 
     def close(self) -> None:
         self.cancel_pending_navigation()
         self.motion.close()
+        self.root.unbind('<Escape>', self._escape_binding)
         for sequence in ("<Map>", "<Unmap>"):
             self.root.unbind_class(self._owner_tag, sequence)
 
-    def _transition_to(self, name: str) -> None:
+    def _transition_to(self, name: str, *, defer_activation: bool = False) -> None:
+        hide_scroll_chrome()
         if name not in self.pages:
             return
 
@@ -314,12 +397,32 @@ class Navigation:
         changed = name != self.ctx.state.current_page
         transition = getattr(self.ctx.app, "transitions", None)
         if changed and transition is not None and self.root.winfo_viewable():
-            transition.change(self.content_canvas, anim.DUR_SNAP, lambda: self._show_page(name),
-                              ready=self._page_layout_ready)
+            if defer_activation:
+                previous = self.ctx.state.current_page
+                self._transition_pending = True
+                self._refresh_version_label()
+                def activate():
+                    self._transition_pending = False
+                    self._refresh_version_label()
+                    page = dict.get(self.pages, name)
+                    if page is not None and hasattr(page, 'on_show'):
+                        page.on_show()
+                def restore():
+                    self._transition_pending = False
+                    self._refresh_version_label()
+                    if not getattr(self.ctx.app, '_closing', False):
+                        self._show_page(previous)
+                transition.change(self.content_canvas, anim.DUR_SNAP,
+                                  lambda: self._show_page(name, activate=False),
+                                  ready=self._page_layout_ready, wait_s=2.0,
+                                  on_ready=activate, on_cancel=restore)
+            else:
+                transition.change(self.content_canvas, anim.DUR_SNAP, lambda: self._show_page(name),
+                                  ready=self._page_layout_ready)
         else:
             self._show_page(name)
 
-    def _show_page(self, name: str) -> None:
+    def _show_page(self, name: str, *, activate: bool = True) -> None:
         page = self.pages[name]
         current_name = self.ctx.state.current_page
         if current_name == name and page.winfo_ismapped():
@@ -342,7 +445,7 @@ class Navigation:
             self.buttons.get(name, self._settings_button).focus_set()
         self._refresh_button_styles()
 
-        if hasattr(page, "on_show"):
+        if activate and hasattr(page, "on_show"):
             page.on_show()
         self._sync_mode_buttons(page)
         self._sync_content_window()
@@ -357,11 +460,18 @@ class Navigation:
             or self.content.winfo_height() != self.content_canvas.winfo_height()
         ):
             return False
+        # A coalesced scroll layout is not yet reflected in native update
+        # regions. It must complete before a snapshot is allowed to fade.
+        prefix = str(page) + "."
+        for area in tuple(getattr(self.root, "_piezo_pending_scroll_layouts", ())):
+            if str(area).startswith(prefix) and area.winfo_ismapped():
+                return False
         # Headers, the active mode viewport and the footer must all be laid out.
         return all(child.winfo_ismapped() and child.winfo_height() > 1
                    for row in (0, 1, 2) for child in page.grid_slaves(row=row))
 
     def refresh_language(self) -> None:
+        self.cancel_pending_navigation()
         lang = self.ctx.state.language
         self._redraw_sidebar_brand()
         self._refresh_version_label()
@@ -378,6 +488,7 @@ class Navigation:
                 page.refresh_language()
 
     def refresh_theme(self) -> None:
+        self.cancel_pending_navigation()
         self.motion.reset()
         self.refresh_layout()
         self._settings_images.clear()
@@ -391,11 +502,10 @@ class Navigation:
         self.sidebar.configure(padding=self._pad(10, 8))
         if getattr(self, "_settings_bar", None) is not None:
             self._settings_bar.configure(padding=self._pad(10, 8))
-        scroll_px = scaled_scroll_px(self._scale())
-        self.sidebar_canvas.configure(bg=self.ctx.colors["panel_alt"], yscrollincrement=scroll_px)
+        self.sidebar_canvas.configure(bg=self.ctx.colors["panel_alt"], yscrollincrement=1)
         self.content.configure(padding=self._pad(16, 8))
         self._title_canvas.grid_configure(pady=(0, self._scaled(8)))
-        self.content_canvas.configure(bg=self.ctx.colors["bg"], yscrollincrement=scroll_px)
+        self.content_canvas.configure(bg=self.ctx.colors["bg"], yscrollincrement=1)
         self._relayout_sidebar()
         self._brand_state = None
         if not self._suspend_brand_configure:
@@ -668,6 +778,11 @@ class Navigation:
             self.v_scrollbar, self._content_yview_key, first, last
         )
 
+    def _on_content_xview(self, first: str, last: str) -> None:
+        self._content_xview_key = relay_vertical_scroll(
+            self.h_scrollbar, self._content_xview_key, first, last
+        )
+
     def _on_sidebar_mousewheel(self, event: tk.Event) -> None:
         try:
             widget = self.root.winfo_containing(int(event.x_root), int(event.y_root))
@@ -681,7 +796,7 @@ class Navigation:
             if not inside or not self.sidebar_canvas.winfo_ismapped():
                 return
             delta = -1 if event.delta > 0 else 1
-            self.sidebar_canvas.yview_scroll(delta, "units")
+            self.sidebar_canvas.yview_scroll(delta * scaled_scroll_px(self._scale()), "units")
         except (tk.TclError, AttributeError, TypeError, ValueError):
             pass
 
@@ -726,14 +841,37 @@ class Navigation:
             self._animate_modes(self.mode_frame.winfo_reqheight())
 
     def _on_mode_clicked(self, key: str) -> None:
+        hide_scroll_chrome()
+        self._finish_waiting_transition()
         self.cancel_pending_navigation()
         page = self.mode_host
         if page is None or not hasattr(page, "show_mode"):
             return
+        pages = getattr(page, 'mode_pages', None)
+        if isinstance(pages, LazyPages) and pages.can_prepare(key):
+            self._pending_mode = key
+            self._refresh_mode_button_styles()
+            self._start_preparation(pages, key, lambda: self._commit_mode(page, key))
+            return
+        self._commit_mode(page, key)
+
+    def _commit_mode(self, page: Any, key: str) -> None:
         transition = getattr(self.ctx.app, "transitions", None)
         if transition is not None and key != getattr(page, "current_mode", None):
+            previous = page.current_mode
+            self._transition_pending = True
+            self._refresh_version_label()
+            def ready():
+                self._transition_pending = False
+                self._refresh_version_label()
+            def restore():
+                ready()
+                if not getattr(self.ctx.app, '_closing', False):
+                    page.show_mode(previous)
+                    self._refresh_mode_button_styles()
             transition.change(self.content_canvas, anim.DUR_SNAP, lambda: page.show_mode(key),
-                              ready=self._page_layout_ready)
+                              ready=self._page_layout_ready, wait_s=2.0,
+                              on_ready=ready, on_cancel=restore)
         else:
             page.show_mode(key)
         self.motion.refresh(animate=True)
@@ -744,11 +882,15 @@ class Navigation:
             self._refresh_mode_button_styles()
 
     def _refresh_mode_button_styles(self) -> None:
-        current = getattr(self.mode_host, "current_mode", None)
+        current = self._pending_mode or getattr(self.mode_host, "current_mode", None)
         for key, btn in self.mode_buttons.items():
             btn.configure(style="SidebarModeSelected.TButton" if key == current else "SidebarMode.TButton")
 
     def _refresh_version_label(self) -> None:
+        if self._preparation is not None or self._transition_pending:
+            text = '正在准备… Esc 取消' if self.ctx.state.language == 'zh' else 'Preparing… Esc to cancel'
+            self._version_label.configure(text=text)
+            return
         if self.ctx.state.language == "zh":
             text = f"\u7248\u672c\uff1a{APP_VERSION}"
         else:
@@ -872,7 +1014,7 @@ class Navigation:
             ):
                 return
             delta = -1 if event.delta > 0 else 1
-            self.content_canvas.yview_scroll(delta, "units")
+            self.content_canvas.yview_scroll(delta * scaled_scroll_px(self._scale()), "units")
         except tk.TclError:
             pass
 

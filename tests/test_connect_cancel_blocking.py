@@ -53,6 +53,19 @@ class _FakeCH340:
 
 
 class BlockingCancelTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from app.application import LocalI2cBridge
+        # A real asynchronous port scan must not replace this test's fake
+        # selection before the simulated click. No live bridge/port probing.
+        for patcher in (
+            mock.patch.object(sm.SerialManager, "list_port_info", return_value=[sm.SerialPortInfo("COM14", "Fake CH340")]),
+            mock.patch("app.application.is_known_bluetooth_port", return_value=False),
+            mock.patch.object(LocalI2cBridge, "start", lambda _self: None),
+            mock.patch.object(LocalI2cBridge, "close", lambda _self: None),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def _run(self, open_s: float) -> None:
         # Collect Tk objects (e.g. PhotoImage) left by earlier tests' apps now,
         # on the main thread; otherwise a GC pass inside the connect worker
@@ -79,6 +92,7 @@ class BlockingCancelTests(unittest.TestCase):
             root.after(10, beat)
 
         def step_connect() -> None:
+            home.port_var.set("COM14")
             t0 = time.perf_counter()
             home.toggle_connection()
             out["connect_s"] = time.perf_counter() - t0

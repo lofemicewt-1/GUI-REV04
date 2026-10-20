@@ -1599,6 +1599,11 @@ class HomePage(BasePage):
             return False
         self._status_errors_by_port.pop(port, None)
         self._refresh_status_rows()
+        navigation = getattr(getattr(getattr(self, "ctx", None), "app", None), "navigation", None)
+        host = dict.get(getattr(navigation, "pages", {}), "awp1221")
+        if host is not None:
+            for page in dict.values(host.mode_pages):
+                page._apply_pressure_status_cache(port, state)
         return True
 
     def _set_status_error(self, port: str, error: str) -> None:
@@ -4009,6 +4014,8 @@ class PiezoApplication:
         self.navigation = Navigation(self.root, self.ctx)
         self.micro_anim = MicroAnimations(self.root, self.animator, lambda: self.colors,
                                          lambda w: str(w.cget("style")).startswith("Sidebar"))
+        from app.viewport_presentation import ViewportPresentation
+        self.viewport_presentation = ViewportPresentation(self.root, self.navigation, self.transitions)
 
         self._register_pages()
         self._refresh_widget_fonts()
@@ -4039,8 +4046,13 @@ class PiezoApplication:
             ("awp1221", AWP1221Page, True),
             ("settings", SettingsPage, False),
         ):
-            self.navigation.register_page(name, name, lambda cls=cls: cls(content, self.ctx),
-                                          sidebar_button=sidebar)
+            if cls in (AWP1221Page, AWP1018Page, AWP1921AWP1923Page):
+                self.navigation.register_page(name, name,
+                    lambda cls=cls, defer_build=False: cls(content, self.ctx, defer_build=defer_build),
+                    sidebar_button=sidebar, staged=True)
+            else:
+                self.navigation.register_page(name, name, lambda cls=cls: cls(content, self.ctx),
+                                              sidebar_button=sidebar)
 
     def set_animations(self, enabled: bool) -> None:
         self.state.extra["animations_enabled"] = bool(enabled)
@@ -4173,6 +4185,9 @@ class PiezoApplication:
         if size == self._last_root_size:
             return
         self._last_root_size = size
+        nav = getattr(self, 'navigation', None)
+        if nav is not None and nav._preparation is not None:
+            nav.cancel_pending_navigation()
         if self._resize_after is not None:
             try:
                 self.root.after_cancel(self._resize_after)
@@ -4320,6 +4335,8 @@ class PiezoApplication:
 
     def close(self) -> None:
         self.ui_dispatcher.close()
+        self._closing = True
+        self.viewport_presentation.close()
         self.root.unbind_class(self._resize_tag, "<Configure>")
         self.transitions.close()
         self.micro_anim.close()

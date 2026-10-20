@@ -19,8 +19,26 @@ def pump(root, until, timeout=5.0):
     return until()
 
 
+def isolate_gui_ports(test, port=None):
+    from app.application import LocalI2cBridge
+    import core.serial_manager as sm
+    patchers = [
+        mock.patch.object(LocalI2cBridge, "start", lambda _self: None),
+        mock.patch.object(LocalI2cBridge, "close", lambda _self: None),
+    ]
+    if port:
+        patchers.append(mock.patch.object(sm.SerialManager, "list_port_info", return_value=[sm.SerialPortInfo(port, "Fake USB")]))
+        patchers.append(mock.patch("app.application.is_known_bluetooth_port", return_value=False))
+    else:
+        patchers.append(mock.patch.object(sm.serial.tools.list_ports, "comports", return_value=[]))
+    for patcher in patchers:
+        patcher.start()
+        test.addCleanup(patcher.stop)
+
+
 class MaximizeRegressionTests(unittest.TestCase):
     def setUp(self) -> None:
+        isolate_gui_ports(self, "COM4")
         import gc
         gc.collect()
         self.app = PiezoApplication()
@@ -66,6 +84,9 @@ class MaximizeRegressionTests(unittest.TestCase):
 
 
 class BluetoothPortTests(unittest.TestCase):
+    def setUp(self) -> None:
+        isolate_gui_ports(self)
+
     def test_detection(self) -> None:
         from core.serial_manager import is_bluetooth_port_info as bt
 
@@ -119,6 +140,7 @@ class BluetoothPortTests(unittest.TestCase):
 
 class CancelConnectTests(unittest.TestCase):
     def setUp(self) -> None:
+        isolate_gui_ports(self, "COM9")
         import gc
         gc.collect()
         self.app = PiezoApplication()

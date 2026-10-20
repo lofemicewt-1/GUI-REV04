@@ -12,6 +12,7 @@ from typing import Any, Callable
 from core import base_tool
 from core import chip_status_cache
 from core.base_tool import SerialResponse
+from core.register_settings_queue import RegisterSetting, RegisterSettingsQueue
 
 
 _LOOSE_RUNTIME_EVENT_RE = re.compile(
@@ -208,6 +209,16 @@ class SerialManager:
                 if self._transaction_depth == 0:
                     self._transaction_owner = None
             self._command_lock.release()
+
+    @contextmanager
+    def connection_guard(self):
+        """Worker-only guard for a session check immediately followed by I/O."""
+        with self._lock:
+            yield
+
+    def owns_snapshot_transaction(self) -> bool:
+        with self._transaction_state_lock:
+            return self._transaction_depth > 0 and self._transaction_owner == threading.get_ident()
 
     def _transaction_allows_current_thread(self) -> bool:
         owner = threading.get_ident()
@@ -1380,6 +1391,10 @@ class SerialRouter:
         self.timeout = timeout
         self._manager_factory = manager_factory
         self._scanner = self._make_manager()
+        self._register_settings_queue: RegisterSettingsQueue | None = None
+        self._register_intent_lock = threading.Lock()
+        self._register_setting_epochs: dict[int, int] = {}
+        self._register_write_epochs: dict[tuple[int, int, int], int] = {}
         self._managers: dict[str, SerialManager] = {}
         # Keep a router-side generation as a second source of truth for
         # SerialManager-compatible test/extension managers that do not expose
@@ -1458,6 +1473,86 @@ class SerialRouter:
             return None
         manager = self._managers.get(str(port).strip())
         return manager if manager is not None and manager.is_connected else None
+
+    def _register_setting_stamp(self, manager: Any, address: int, register: int) -> tuple[int, int]:
+        with self._register_intent_lock:
+            return (self._register_setting_epochs.get(id(manager), 0),
+                    self._register_write_epochs.get((id(manager), address, register), 0))
+
+    def cancel_register_settings(self, page_name: str) -> None:
+        """A page's explicit preset/readback supersedes older display settings."""
+        manager = self.manager_for_port(self.selected_port_for_page(page_name))
+        if manager is not None:
+            with self._register_intent_lock:
+                key = id(manager)
+                self._register_setting_epochs[key] = self._register_setting_epochs.get(key, 0)+1
+
+    def _invalidate_queued_registers(self, manager: Any, address: int, registers) -> None:
+        with self._register_intent_lock:
+            for register in registers:
+                key = (id(manager), int(address) & 0xFF, int(register))
+                self._register_write_epochs[key] = self._register_write_epochs.get(key, 0)+1
+
+    def _queued_settings_busy(self, manager: Any, address: int) -> bool:
+        tasks = self._register_settings_queue
+        owns = getattr(manager, "owns_snapshot_transaction", None)
+        return bool(tasks is not None and not (callable(owns) and owns())
+                    and tasks.busy_for(manager, int(address) & 0xFF))
+
+    def write_register_value(self, device_addr: int, reg_addr: int, value: int, *, bits: int) -> SerialResponse:
+        manager = self._current_manager()
+        if manager is None:
+            return self._not_connected_response()
+        self._invalidate_queued_registers(manager, device_addr, (reg_addr,))
+        if self._queued_settings_busy(manager, device_addr):
+            return SerialResponse(False, error="Serial transaction busy")
+        return manager.write_register_value(device_addr, reg_addr, value, bits=bits)
+
+    def write_register_values(self, device_addr: int, reg_addr: int, values: list[int] | tuple[int, ...], *, bits: int = 16) -> SerialResponse:
+        manager = self._current_manager()
+        if manager is None:
+            return self._not_connected_response()
+        self._invalidate_queued_registers(manager, device_addr, range(reg_addr, reg_addr+len(values)))
+        if self._queued_settings_busy(manager, device_addr):
+            return SerialResponse(False, error="Serial transaction busy")
+        return manager.write_register_values(device_addr, reg_addr, values, bits=bits)
+
+    def queue_register_setting(
+        self, page_name: str, address: int, register: int, value: int, *,
+        clear_mask: int | None = None, address_state_key: str | None = None,
+    ) -> None:
+        """Capture a page's board/session on the UI thread, then queue pure I/O.
+
+        No selected board means no write. Page changes never retarget queued
+        work; changing that page's port/address or reconnecting cancels it.
+        """
+        port = self.selected_port_for_page(page_name)
+        manager = self.manager_for_port(port)
+        identity = self.connection_identity(port)
+        if manager is None or identity is None:
+            return
+        address = int(address) & 0xFF
+        manager_generation = getattr(manager, "connection_generation", None)
+        stamp = self._register_setting_stamp(manager, address, int(register))
+        def valid():
+            if (self._register_setting_stamp(manager, address, int(register)) != stamp
+                    or self.connection_identity(port) != identity
+                    or getattr(manager, "connection_generation", None) != manager_generation
+                    or self.selected_port_for_page(page_name) != port):
+                return False
+            if address_state_key is not None:
+                try:
+                    return int(self.state.extra.get(address_state_key, address)) & 0xFF == address
+                except (ValueError, TypeError):
+                    return False
+            return True
+        tasks = self._register_settings_queue
+        if tasks is None or tasks.closed:
+            tasks = self._register_settings_queue = RegisterSettingsQueue()
+        key = (identity, page_name, address, int(register), clear_mask)
+        setting = RegisterSetting(manager, address, int(register), int(value), clear_mask, valid)
+        if not tasks.submit(key, setting):
+            manager.emit_log("ERROR Register settings queue is full or closed")
 
     def connection_identity(self, port: str | None) -> tuple[str, int, int] | None:
         """Return the active board-session identity for one routed port.
@@ -1587,6 +1682,8 @@ class SerialRouter:
             self.state.extra.pop(key, None)
 
     def disconnect_all(self) -> None:
+        if self._register_settings_queue is not None:
+            self._register_settings_queue.close()
         for manager in list(self._managers.values()):
             manager.disconnect()
         self.state.selected_port = None

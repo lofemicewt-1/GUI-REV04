@@ -9,6 +9,16 @@ from tests.validate_responsive_layout import mocked_application
 
 
 class NavigationPaintTests(unittest.TestCase):
+    def setUp(self):
+        # Exercise full native presentation even on background CI desktops.
+        # The production 300 ms fallback is covered separately.
+        foreground = patch("app.transitions.SnapshotTransition._owner_is_foreground", return_value=True)
+        foreground.start()
+        self.addCleanup(foreground.stop)
+        budget = patch("app.transitions.COVER_PAINT_WAIT_S", 3.0)
+        budget.start()
+        self.addCleanup(budget.stop)
+
     def test_cold_chip_switch_reveals_only_after_page_and_footer_are_mapped(self):
         with mocked_application() as app:
             app.root.geometry("1700x980+0+0")

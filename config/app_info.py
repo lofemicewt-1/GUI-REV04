@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-APP_VERSION = "0.43"
+APP_VERSION = "0.44"
 USER_GUIDE_URL = "https://example.com/gui-user-guide.pdf"
 
 CHIP_WEBSITE_URLS = {

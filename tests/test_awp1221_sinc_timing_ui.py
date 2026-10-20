@@ -11,6 +11,18 @@ from styles.theme import get_colors
 
 
 class SincTimingTests(unittest.TestCase):
+    def test_rom_axis_keeps_endpoints_without_overlapping_in_narrow_preview(self):
+        self.root.geometry('360x240')
+        self.root.update()
+        page = SimpleNamespace(rom_canvas=self.canvas, colors=get_colors('light'),
+                               tr=lambda key, **kwargs: t('zh', key, **kwargs))
+        AWP1221ModePage._draw_button_time_axis(page, 512, 25, 290, 150, total=False)
+        boxes = [self.canvas.bbox(item) for item in self.canvas.find_withtag('time_axis')]
+        for i, first in enumerate(boxes):
+            for second in boxes[i+1:]:
+                self.assertFalse(first[0] < second[2] and first[2] > second[0]
+                                 and first[1] < second[3] and first[3] > second[1])
+
     def setUp(self):
         self.root = tk.Tk()
         self.canvas = tk.Canvas(self.root, highlightthickness=0)

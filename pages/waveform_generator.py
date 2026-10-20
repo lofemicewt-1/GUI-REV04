@@ -25,6 +25,7 @@ from core.awp192x_button_runtime import (
     generate_awp192x_waveform_points,
 )
 from pages.base_page import BasePage
+from pages.waveform_preview import PreviewSegment, compact_preview, draw_omissions
 
 
 ARDUINO_I2C_TRANSACTION_BYTES = 31
@@ -988,8 +989,9 @@ class WaveformGeneratorPage(BasePage):
             return
         self._draw_serial_plot(self._serial_preview_segments())
 
-    def _serial_preview_segments(self) -> list[tuple[str, list[float]]]:
-        segments: list[tuple[str, list[float]]] = []
+    def _serial_preview_segments(self) -> list[PreviewSegment]:
+        segments: list[PreviewSegment] = []
+        cycles: dict[int, list[float]] = {}
         for serial_index, (slice_var, repeat_var) in enumerate(
             zip(self.serial_slice_vars, self.serial_repeat_vars)
         ):
@@ -1001,11 +1003,13 @@ class WaveformGeneratorPage(BasePage):
             if slice_code >= 0x1E:
                 break
 
-            voltages = self._serial_slice_voltages(slice_code)
+            if slice_code not in cycles:
+                cycles[slice_code] = self._serial_slice_voltages(slice_code)
+            voltages = cycles[slice_code]
             if not voltages:
                 continue
-            repeated = voltages * max(1, min(8, repeat_count))
-            segments.append((f"serial{serial_index}: slice{slice_code} x{repeat_count}", repeated))
+            segments.append(PreviewSegment(f"serial{serial_index}: slice{slice_code} x{repeat_count}",
+                                           voltages, max(1, min(8, repeat_count))))
         return segments
 
     def _serial_slice_voltages(self, slice_index: int) -> list[float]:
@@ -1026,7 +1030,7 @@ class WaveformGeneratorPage(BasePage):
             ]
         return []
 
-    def _draw_serial_plot(self, segments: list[tuple[str, list[float]]]) -> None:
+    def _draw_serial_plot(self, segments) -> None:
         canvas = self.canvas
         canvas.delete("all")
 
@@ -1058,7 +1062,8 @@ class WaveformGeneratorPage(BasePage):
             fill=colors["text"],
         )
 
-        total_points = sum(len(voltages) for _label, voltages in segments)
+        layout = compact_preview(segments)
+        total_points = layout.total
         if total_points <= 0:
             canvas.create_text(
                 pad_l + plot_w / 2,
@@ -1069,13 +1074,11 @@ class WaveformGeneratorPage(BasePage):
             self._plot_drawn_size = (width, height)
             return
 
-        point_offset = 0
-        line_points: list[float] = []
-        denominator = max(1, total_points - 1)
-        for segment_index, (label, voltages) in enumerate(segments):
-            segment_start = point_offset
-            if segment_index:
-                boundary_x = pad_l + plot_w * segment_start / denominator
+        for part in layout.parts:
+            if part.omitted:
+                continue
+            if part.start:
+                boundary_x = pad_l + plot_w * part.start / layout.display_total
                 canvas.create_line(
                     boundary_x,
                     pad_t,
@@ -1084,25 +1087,25 @@ class WaveformGeneratorPage(BasePage):
                     fill=colors["border"],
                     dash=(2, 3),
                 )
-            for voltage in voltages:
-                x = pad_l + plot_w * point_offset / denominator
+            line_points: list[float] = []
+            for index, voltage in enumerate(part.samples):
+                position = part.start + (part.end - part.start) * index / max(1, len(part.samples) - 1)
+                x = pad_l + plot_w * position / layout.display_total
                 normalized = max(-1.0, min(1.0, voltage / self.engine.voltage_range))
                 y = y_zero - normalized * (plot_h / 2)
                 line_points.extend((x, y))
-                point_offset += 1
-
-            segment_end = point_offset - 1
-            label_x = pad_l + plot_w * ((segment_start + segment_end) / 2) / denominator
+            if len(line_points) >= 4:
+                canvas.create_line(*line_points, fill=colors["primary"], width=2, smooth=False, tags="wave_curve")
+            label_x = pad_l + plot_w * (part.start + part.end) / (2 * layout.display_total)
             canvas.create_text(
                 label_x,
                 pad_t + plot_h + 18,
-                text=label,
+                text=part.label,
                 fill=colors["muted"],
                 anchor="center",
             )
 
-        if len(line_points) >= 4:
-            canvas.create_line(*line_points, fill=colors["primary"], width=2, smooth=False)
+        draw_omissions(canvas, layout, pad_l, plot_w, y_zero, colors)
         self._plot_drawn_size = (width, height)
 
     def _safe_start_addr(self) -> int:

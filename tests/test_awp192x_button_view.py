@@ -186,6 +186,33 @@ class TimingCanvasTests(unittest.TestCase):
             page._draw_button_adc_diagram()
             self.assertEqual(len(canvas.find_withtag("adc_phase_band")),3)
 
+    def test_duration_cards_fit_wrapped_text_at_large_scaling(self):
+        import tkinter as tk
+        from config.languages import t
+        from styles.theme import get_colors
+        from pages.awp192x_button_view import draw_timed_waveform
+        root=tk.Tk()
+        self.addCleanup(root.destroy)
+        scale=float(root.tk.call("tk", "scaling"))
+        self.addCleanup(lambda: root.tk.call("tk", "scaling", scale))
+        canvas=tk.Canvas(root,highlightthickness=0)
+        canvas.pack(fill="both",expand=True)
+        for scaling in (2.0,3.0):
+            root.tk.call("tk","scaling",scaling)
+            for width in (360,820):
+                root.geometry(f"{width}x600")
+                root.update()
+                segments=[(f"serial{i}: slice{i} x8",[0,10,0,-2]*i+[0]) for i in range(8)]
+                draw_timed_waveform(canvas,get_colors("light"),lambda key:t("en",key),segments,10)
+                root.update()
+                for text,card in zip(canvas.find_withtag("segment_duration"),canvas.find_withtag("segment_card")):
+                    box,bounds=canvas.bbox(text),canvas.coords(card)
+                    self.assertGreaterEqual(box[0],bounds[0])
+                    self.assertLessEqual(box[2],bounds[2])
+                    self.assertGreaterEqual(box[1],bounds[1])
+                    self.assertLessEqual(box[3],bounds[3])
+                    self.assertLessEqual(box[3],canvas.winfo_height())
+
     def test_three_four_and_eight_segments_fit_wide_and_narrow_views(self):
         import tkinter as tk
         from config.languages import t

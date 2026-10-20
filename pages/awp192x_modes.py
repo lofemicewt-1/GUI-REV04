@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import math
 import re
 import threading
@@ -413,7 +415,7 @@ class ButtonModePage(ButtonModeView, BasePage):
     DETECT_STATUS_PRESS = 0x0800
     DETECT_STATUS_RELEASE = 0x0200
 
-    def __init__(self, parent: tk.Misc, ctx: Any) -> None:
+    def __init__(self, parent: tk.Misc, ctx: Any, *, defer_build: bool = False) -> None:
         super().__init__(parent, ctx)
 
         self.amp_options = build_awp192x_amp_options()
@@ -470,9 +472,18 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._detect_poll_job: str | None = None
         self._tooltips: list[SimpleTooltip] = []
 
-        self._build_ui()
-        self._update_period_hint()
+        self._preparing = defer_build
+        self._prepared_registers_pending = defer_build
+        self._build_steps = self._initialize_steps()
+        if not defer_build:
+            for _ in self._build_steps:
+                pass
+
+    def _initialize_steps(self) -> Iterator[None]:
+        yield from self._build_ui_steps()
+        self._update_period_hint(write_register=not self._preparing)
         self.ctx.serial.add_log_listener(self._handle_sense_status_log)
+        self._preparing = False
 
     def _adc_average_label(self, code: int) -> str:
         return next((label for label, value in self.ADC_AVERAGE_OPTIONS if value == code), self.ADC_AVERAGE_OPTIONS[-1][0])
@@ -481,6 +492,11 @@ class ButtonModePage(ButtonModeView, BasePage):
         return next((label for label, value in self.ADC_OVV_OPTIONS if value == code), self.ADC_OVV_OPTIONS[-1][0])
 
     def _build_ui(self) -> None:
+        for _ in self._build_ui_steps():
+            pass
+
+    def _build_ui_steps(self) -> Iterator[None]:
+        yield
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
@@ -488,11 +504,9 @@ class ButtonModePage(ButtonModeView, BasePage):
         header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         header.columnconfigure(0, weight=0)
         header.columnconfigure(1, weight=1)
+        yield
 
-        preset_frame = ttk.Frame(header, style="App.TFrame")
-        preset_frame.grid(row=0, column=1, sticky="ew", padx=(24, 0))
-        for column in range(5):
-            preset_frame.columnconfigure(column, weight=1, uniform="button_mode_preset_cols", minsize=118)
+        preset_frame = self.make_preset_frame(header)
 
         for index in range(3):
             key = f"button_mode_preset_{index + 1}"
@@ -513,6 +527,7 @@ class ButtonModePage(ButtonModeView, BasePage):
             command=self.import_user_preset_script,
         )
         import_button.grid(row=0, column=3, sticky="ew", padx=(6, 0))
+        yield
         self._buttons["button_mode_import_user_preset"] = import_button
         self._bind_action_tooltip(import_button, "button_mode_import_user_preset")
 
@@ -524,6 +539,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         export_button.grid(row=0, column=4, sticky="ew", padx=(6, 0))
         self._buttons["button_mode_export_user_preset"] = export_button
         self._bind_action_tooltip(export_button, "button_mode_export_user_preset")
+        yield
 
         slot_cell = ttk.Frame(preset_frame, style="App.TFrame")
         slot_cell.grid(row=1, column=0, sticky="ew", pady=(8, 0), padx=(0, 0))
@@ -533,6 +549,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._labels["board_slot"] = board_slot_label
 
         slot_combo = ttk.Combobox(slot_cell, textvariable=self.board_slot_var, values=["0", "1", "2"], state="readonly", width=4)
+        yield
         slot_combo.grid(row=0, column=1, sticky="w")
 
         save_board_button = ttk.Button(
@@ -549,6 +566,7 @@ class ButtonModePage(ButtonModeView, BasePage):
             style="Bg.TButton",
             command=self.set_board_preset_active,
         )
+        yield
         set_active_button.grid(row=1, column=2, sticky="ew", pady=(8, 0), padx=(6, 0))
         self._buttons["set_active"] = set_active_button
         self._bind_action_tooltip(set_active_button, "set_active")
@@ -560,6 +578,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         )
         apply_board_button.grid(row=1, column=3, sticky="ew", pady=(8, 0), padx=(6, 0))
         self._buttons["apply_slot"] = apply_board_button
+        yield
         self._bind_action_tooltip(apply_board_button, "apply_slot")
 
         read_board_button = ttk.Button(
@@ -571,7 +590,8 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._buttons["read_slot"] = read_board_button
         self._bind_action_tooltip(read_board_button, "read_slot")
 
-        self._build_button_body()
+        yield from self._build_button_body_steps()
+        yield
 
         self.duration_var.trace_add("write", lambda *_: self._on_button_runtime_duration_changed())
         for variable in (
@@ -587,6 +607,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         self.press_threshold_var.trace_add("write", lambda *_: self._on_button_runtime_threshold_changed())
         self.release_threshold_var.trace_add("write", lambda *_: self._on_button_runtime_threshold_changed())
         self.button_adc_pol_var.trace_add("write", lambda *_: self._on_button_adc_pol_changed())
+        yield
         self.button_adc_gain_var.trace_add("write", lambda *_: self._on_button_adc_gain_changed())
         self.endless_play_var.trace_add("write", lambda *_: self._on_endless_play_changed())
 
@@ -1249,6 +1270,8 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._mark_button_runtime_dirty()
 
     def write_reg(self, reg: int, value: int, show_error: bool = True) -> bool:
+        if getattr(self, '_preparing', False):
+            return False
         if not self.ctx.serial.is_connected:
             if show_error:
                 messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
@@ -1265,6 +1288,8 @@ class ButtonModePage(ButtonModeView, BasePage):
         return resp.ok
 
     def write_reg_async(self, reg: int, value: int, *, on_success: Any = None) -> None:
+        if getattr(self, '_preparing', False):
+            return
         if not self.ctx.serial.is_connected:
             messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
             return
@@ -1288,6 +1313,8 @@ class ButtonModePage(ButtonModeView, BasePage):
         threading.Thread(target=worker, daemon=True).start()
 
     def read_reg(self, reg: int, show_error: bool = True) -> int | None:
+        if getattr(self, '_preparing', False):
+            return None
         if not self.ctx.serial.is_connected:
             if show_error:
                 messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
@@ -2374,7 +2401,8 @@ class ButtonModePage(ButtonModeView, BasePage):
     def on_show(self) -> None:
         if self.page_name == "button_mode":
             self._mark_button_runtime_dirty()
-            self._update_period_hint(write_register=False)
+            self._update_period_hint(write_register=bool(getattr(self, '_prepared_registers_pending', False)))
+            self._prepared_registers_pending = False
             if not self._sense_status_active:
                 self._set_sense_status_color(self.STATUS_IDLE_COLOR)
             return
@@ -3020,6 +3048,11 @@ class FullModePage(ButtonModePage):
         self._adc_detect_min_v: float | None = None
 
     def _build_ui(self) -> None:
+        for _ in self._build_ui_steps():
+            pass
+
+    def _build_ui_steps(self) -> Iterator[None]:
+        yield
         self._init_full_mode_vars()
 
         self.columnconfigure(0, weight=1)
@@ -3029,6 +3062,7 @@ class FullModePage(ButtonModePage):
         header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
 
         body = ttk.Frame(self, style="App.TFrame")
+        yield
         body.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=3, uniform="full_mode_cols")
         body.columnconfigure(1, weight=4, uniform="full_mode_cols")
@@ -3036,6 +3070,7 @@ class FullModePage(ButtonModePage):
         body.rowconfigure(0, weight=1)
 
         left_panel = ttk.Frame(body, style="Panel.TFrame", padding=0)
+        yield
         left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         left_panel.rowconfigure(0, weight=1)
         left_panel.columnconfigure(0, weight=1)
@@ -3043,6 +3078,7 @@ class FullModePage(ButtonModePage):
         left_canvas = tk.Canvas(left_panel, highlightthickness=0, bd=0)
         self._full_left_canvas = left_canvas
         left_canvas.grid(row=0, column=0, sticky="nsew")
+        yield
         left_scrollbar = ttk.Scrollbar(left_panel, orient="vertical", command=left_canvas.yview)
         left_scrollbar.grid(row=0, column=1, sticky="ns")
         left_canvas.configure(yscrollcommand=left_scrollbar.set)
@@ -3050,6 +3086,7 @@ class FullModePage(ButtonModePage):
         left = ttk.Frame(left_canvas, style="Panel.TFrame", padding=14)
         left_window = left_canvas.create_window((0, 0), window=left, anchor="nw")
         left_canvas.configure(background=self.colors["panel"])
+        yield
 
         def _sync_left_scroll_region(_event: tk.Event) -> None:
             bbox = left_canvas.bbox("all")
@@ -3075,6 +3112,7 @@ class FullModePage(ButtonModePage):
         left.bind("<Configure>", _sync_left_scroll_region)
         left_canvas.bind("<Configure>", _sync_left_width)
         left_canvas.bind("<MouseWheel>", _on_left_mousewheel)
+        yield
         left.bind("<MouseWheel>", _on_left_mousewheel)
         left.columnconfigure(1, weight=1)
         left.columnconfigure(4, weight=1)
@@ -3082,6 +3120,7 @@ class FullModePage(ButtonModePage):
         middle = ttk.Frame(body, style="Panel.TFrame", padding=14)
         middle.grid(row=0, column=1, sticky="nsew", padx=(0, 12))
         middle.columnconfigure(1, weight=1)
+        yield
         middle.columnconfigure(4, weight=1)
 
         right = ttk.Frame(body, style="Panel.TFrame", padding=14)
@@ -3089,6 +3128,7 @@ class FullModePage(ButtonModePage):
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=3)
         right.rowconfigure(1, weight=2)
+        yield
 
         right_settings_panel = ttk.Frame(right, style="Panel.TFrame", padding=0)
         right_settings_panel.grid(row=0, column=0, sticky="nsew")
@@ -3097,6 +3137,7 @@ class FullModePage(ButtonModePage):
 
         right_canvas = tk.Canvas(right_settings_panel, highlightthickness=0, bd=0)
         self._full_right_canvas = right_canvas
+        yield
         right_canvas.grid(row=0, column=0, sticky="nsew")
         right_scrollbar = ttk.Scrollbar(right_settings_panel, orient="vertical", command=right_canvas.yview)
         right_scrollbar.grid(row=0, column=1, sticky="ns")
@@ -3104,6 +3145,7 @@ class FullModePage(ButtonModePage):
 
         right_controls = ttk.Frame(right_canvas, style="Panel.TFrame")
         right_window = right_canvas.create_window((0, 0), window=right_controls, anchor="nw")
+        yield
         right_canvas.configure(background=self.colors["panel"])
 
         def _sync_right_scroll_region(_event: tk.Event) -> None:
@@ -3129,6 +3171,7 @@ class FullModePage(ButtonModePage):
 
         right_controls.bind("<Configure>", _sync_right_scroll_region)
         right_canvas.bind("<Configure>", _sync_right_width)
+        yield
         right_canvas.bind("<MouseWheel>", _on_right_mousewheel)
         right_controls.bind("<MouseWheel>", _on_right_mousewheel)
         right_controls.columnconfigure(1, weight=1)
@@ -3136,6 +3179,7 @@ class FullModePage(ButtonModePage):
 
         row = 0
         row = self._add_section_title(left, row, "full_mode_adc")
+        yield
         self._add_full_single_entry(
             left,
             row,
@@ -3156,6 +3200,7 @@ class FullModePage(ButtonModePage):
         row += 1
         self._add_full_single_combo(left, row, "adc_ovv_time", self.adc_ovv_time_var, [x[0] for x in self.ADC_OVV_OPTIONS])
         row += 1
+        yield
         self._add_full_single_combo(left, row, "adc_gain", self.adc_gain_var, ["0-100V", "0-19V"])
         row += 1
         self._add_full_single_combo(
@@ -3168,6 +3213,7 @@ class FullModePage(ButtonModePage):
         row += 1
         self._add_full_single_combo(left, row, "adc_pol", self.adc_pol_var, ["OUT+", "OUT-"])
         row += 1
+        yield
         self._add_full_single_combo(left, row, "adc_mode", self.adc_mode_var, ["Direct", "INPT", "AUTO"])
         row += 1
         row = self._add_adc_trigger_grid(left, row)
@@ -3175,6 +3221,7 @@ class FullModePage(ButtonModePage):
 
         adc_value_frame = ttk.Frame(left, style="Panel.TFrame")
         adc_value_frame.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(6, 0))
+        yield
         adc_value_frame.columnconfigure(1, weight=1)
 
         adc_value_label = ttk.Label(adc_value_frame, style="Panel.TLabel")
@@ -3187,6 +3234,7 @@ class FullModePage(ButtonModePage):
             sticky="ew",
         )
         row += 1
+        yield
 
         adc_btn_frame = ttk.Frame(left, style="Panel.TFrame")
         adc_btn_frame.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(10, 0))
@@ -3196,6 +3244,7 @@ class FullModePage(ButtonModePage):
         adc_start_btn = ttk.Button(adc_btn_frame, style="Primary.TButton", command=self.start_detection)
         adc_start_btn.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self._buttons["adc_start"] = adc_start_btn
+        yield
 
         adc_stop_btn = ttk.Button(adc_btn_frame, style="Secondary.TButton", command=self.stop_detection)
         adc_stop_btn.grid(row=0, column=1, sticky="ew", padx=(0, 6))
@@ -3204,6 +3253,7 @@ class FullModePage(ButtonModePage):
         adc_read_btn = ttk.Button(adc_btn_frame, style="Secondary.TButton", command=self.read_button_adc_value)
         adc_read_btn.grid(row=0, column=2, sticky="ew")
         self._buttons["adc_read_value"] = adc_read_btn
+        yield
 
         row += 1
 
@@ -3213,6 +3263,7 @@ class FullModePage(ButtonModePage):
         adc_aux_frame.columnconfigure(1, weight=1)
 
         adc_calibe_btn = ttk.Button(adc_aux_frame, style="Secondary.TButton", command=self.adc_calibrate)
+        yield
         adc_calibe_btn.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self._buttons["adc_calibe"] = adc_calibe_btn
 
@@ -3220,6 +3271,7 @@ class FullModePage(ButtonModePage):
         adc_detect_btn.grid(row=0, column=1, sticky="ew", padx=(6, 0))
         self._buttons["adc_detect_value"] = adc_detect_btn
         row += 1
+        yield
 
         row = self._add_section_title(left, row, "full_mode_sense_events")
         row = self._add_full_sense_event_table(left, row)
@@ -3228,6 +3280,7 @@ class FullModePage(ButtonModePage):
         row = self._add_section_title(middle, row, "full_mode_basic")
         self._add_combo(middle, row, "max_output_voltage", self.max_voltage_var, [x[0] for x in self.amp_options])
         row += 1
+        yield
         self._add_entry(middle, row, "single_point_duration", self.duration_var, unit="us")
         row += 1
 
@@ -3245,6 +3298,7 @@ class FullModePage(ButtonModePage):
             self.full_data_depth_var,
             [x[0] for x in self.DATA_DEPTH_OPTIONS],
         )
+        yield
         row += 1
         self._add_paired_combos(
             middle,
@@ -3261,6 +3315,7 @@ class FullModePage(ButtonModePage):
         row += 1
 
         row = self._add_section_title(middle, row, "full_mode_playback")
+        yield
         self._add_full_play_row(middle, row)
         row += 1
 
@@ -3269,6 +3324,7 @@ class FullModePage(ButtonModePage):
         row += 1
 
         play_frame = ttk.Frame(middle, style="Panel.TFrame")
+        yield
         play_frame.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(8, 0))
         play_frame.columnconfigure(0, weight=1)
         play_frame.columnconfigure(1, weight=1)
@@ -3276,6 +3332,7 @@ class FullModePage(ButtonModePage):
         start_play = ttk.Button(play_frame, style="Primary.TButton", command=self.start_play)
         start_play.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self._buttons["start_play"] = start_play
+        yield
 
         stop_play = ttk.Button(play_frame, style="Secondary.TButton", command=self.stop_play)
         stop_play.grid(row=0, column=1, sticky="ew", padx=(6, 0))
@@ -3284,6 +3341,7 @@ class FullModePage(ButtonModePage):
 
         waveform_btn = ttk.Button(middle, style="Secondary.TButton", command=self.open_waveform_generator)
         waveform_btn.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(0, 8))
+        yield
         self._buttons["waveform_generator"] = waveform_btn
         row += 1
 
@@ -3292,12 +3350,14 @@ class FullModePage(ButtonModePage):
 
         right_row = 0
         right_row = self._add_section_title(right_controls, right_row, "full_mode_system")
+        yield
         right_row = self._add_full_system_controls(right_controls, right_row)
         right_row = self._add_section_title(right_controls, right_row, "full_mode_interrupt")
         right_row = self._add_full_interrupt_controls(right_controls, right_row)
         right_row = self._add_section_title(right_controls, right_row, "full_mode_global")
         right_row = self._add_full_global_controls(right_controls, right_row)
         right_row = self._add_section_title(right_controls, right_row, "full_mode_memory")
+        yield
         right_row = self._add_full_memory_controls(right_controls, right_row)
 
         log_frame = self.make_serial_log(right, height=18, subscribe=True)
@@ -3306,18 +3366,21 @@ class FullModePage(ButtonModePage):
         self.duration_var.trace_add("write", lambda *_: self._update_period_hint())
         self.max_voltage_var.trace_add("write", lambda *_: self._on_voltage_changed())
         self.endless_play_var.trace_add("write", lambda *_: self._on_endless_play_changed())
+        yield
         self.adc_average_time_var.trace_add("write", lambda *_: self._on_button_adc_filter_changed())
         self.adc_ovv_time_var.trace_add("write", lambda *_: self._on_button_adc_filter_changed())
         self.play_repeat_count_var.trace_add("write", lambda *_: self._on_full_manual_play_changed())
         self.play_waveform_var.trace_add("write", lambda *_: self._on_full_manual_play_changed())
         self.adc_threshold_h_var.trace_add("write", lambda *_: self._on_adc_threshold_changed())
         self.adc_threshold_l_var.trace_add("write", lambda *_: self._on_adc_threshold_changed())
+        yield
         self.adc_average_time_var.trace_add("write", lambda *_: self._on_adc_average_changed())
         self.adc_ovv_time_var.trace_add("write", lambda *_: self._on_adc_ovv_changed())
         self.adc_gain_var.trace_add("write", lambda *_: self._on_adc_gain_pol_changed())
         self.adc_pol_var.trace_add("write", lambda *_: self._on_adc_gain_pol_changed())
         self.adc_mode_var.trace_add("write", lambda *_: self._on_adc_mode_changed())
         self.full_dac_mode_var.trace_add("write", lambda *_: self._on_voltage_changed())
+        yield
         self.full_slow_up_var.trace_add("write", lambda *_: self._on_voltage_changed())
         self.full_slow_down_var.trace_add("write", lambda *_: self._on_voltage_changed())
         self.full_half_cycle_var.trace_add("write", lambda *_: self._on_voltage_changed())
@@ -3340,6 +3403,7 @@ class FullModePage(ButtonModePage):
                 "write",
                 lambda *_args, key=event_key: self._on_full_sense_event_changed(key),
             )
+        yield
         for trigger_var in self.adc_trigger_vars.values():
             trigger_var.trace_add("write", lambda *_: self._on_adc_inpt_source_changed())
 
@@ -4584,7 +4648,7 @@ class PumpModePage(BasePage):
         ("128", 0x3, 128),
     )
 
-    def __init__(self, parent: tk.Misc, ctx: Any) -> None:
+    def __init__(self, parent: tk.Misc, ctx: Any, *, defer_build: bool = False) -> None:
         super().__init__(parent, ctx)
 
         self.amp_options = build_awp192x_amp_options()
@@ -4605,9 +4669,22 @@ class PumpModePage(BasePage):
         self._tooltips: list[SimpleTooltip] = []
         self.freq_combo: ttk.Combobox | None = None
 
-        self._build_ui()
+        self._preparing = defer_build
+        self._build_steps = self._initialize_steps()
+        if not defer_build:
+            for _ in self._build_steps:
+                pass
+
+    def _initialize_steps(self) -> Iterator[None]:
+        yield from self._build_ui_steps()
+        self._preparing = False
 
     def _build_ui(self) -> None:
+        for _ in self._build_ui_steps():
+            pass
+
+    def _build_ui_steps(self) -> Iterator[None]:
+        yield
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
@@ -4616,6 +4693,7 @@ class PumpModePage(BasePage):
 
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
         panel.grid(row=1, column=0, sticky="nsew")
+        yield
         panel.columnconfigure(1, weight=1)
 
         row = 0
@@ -4623,6 +4701,7 @@ class PumpModePage(BasePage):
         row += 1
         self._add_frequency_row(panel, row)
         row += 1
+        yield
         self._add_combo(panel, row, "slow_up_time", self.slow_up_var, [x[0] for x in self.PUMP_SLOW_TIME_OPTIONS])
         row += 1
         self._add_combo(panel, row, "slow_down_time", self.slow_down_var, [x[0] for x in self.PUMP_SLOW_TIME_OPTIONS])
@@ -4630,6 +4709,7 @@ class PumpModePage(BasePage):
 
         self.hint_label = ttk.Label(panel, style="Muted.TLabel")
         self.hint_label.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 14))
+        yield
         row += 1
 
         btn_frame = ttk.Frame(panel, style="Panel.TFrame")
@@ -4638,6 +4718,7 @@ class PumpModePage(BasePage):
         btn_frame.columnconfigure(1, weight=1)
 
         start = ttk.Button(btn_frame, style="Primary.TButton", command=self.start_play)
+        yield
         start.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self._buttons["start_play"] = start
 
@@ -4645,6 +4726,7 @@ class PumpModePage(BasePage):
         stop.grid(row=0, column=1, sticky="ew", padx=(6, 0))
         self._buttons["stop_play"] = stop
         row += 1
+        yield
 
         log_frame = self.make_serial_log(panel, height=10, subscribe=True)
         log_frame.grid(row=row, column=0, columnspan=2, sticky="nsew", pady=(16, 0))
@@ -4653,6 +4735,7 @@ class PumpModePage(BasePage):
         self.amp_var.trace_add("write", lambda *_: self._on_amp_changed())
         self.freq_var.trace_add("write", lambda *_: self._on_freq_changed())
         self.slow_up_var.trace_add("write", lambda *_: self._on_amp_changed())
+        yield
         self.slow_down_var.trace_add("write", lambda *_: self._on_amp_changed())
 
         self._refresh_frequency_options()
@@ -4660,10 +4743,11 @@ class PumpModePage(BasePage):
 
     def _make_pump_title(self) -> ttk.Frame:
         header = ttk.Frame(self, style="App.TFrame")
-        header.columnconfigure(0, weight=1)
+        self._mode_headers.append(header)
+        self._sync_mode_header(header)
 
         title_group = ttk.Frame(header, style="App.TFrame")
-        title_group.grid(row=0, column=0, sticky="w")
+        title_group.grid(row=0, column=0, columnspan=2, sticky="nw")
 
         title = CanvasTitle(title_group, style="Prominent.TLabel")
         title.grid(row=0, column=0, sticky="w")
@@ -4829,6 +4913,8 @@ class PumpModePage(BasePage):
         return option[3] if option is not None else "1024"
 
     def write_reg(self, reg: int, value: int, show_error: bool = True) -> bool:
+        if getattr(self, '_preparing', False):
+            return False
         if not self.ctx.serial.is_connected:
             if show_error:
                 messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
@@ -4845,6 +4931,8 @@ class PumpModePage(BasePage):
         return resp.ok
 
     def write_reg_async(self, reg: int, value: int, *, on_success: Any = None) -> None:
+        if getattr(self, '_preparing', False):
+            return
         if not self.ctx.serial.is_connected:
             messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
             return

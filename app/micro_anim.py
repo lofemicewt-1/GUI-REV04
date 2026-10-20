@@ -10,8 +10,8 @@ Everything is cheap by construction:
 Items:
   combobox value change  -> 120 ms accent sweep under the field (snap), then
                             120 ms fade back (ease-out)
-  combobox list open     -> full height immediately (no grow); first-open
-                            view is corrected so the selection is visible
+  combobox list open     -> 200 ms whole-list fade at full height (no grow);
+                            first-open view keeps the selection visible
   toggles (check/radio)  -> 60 ms accent pulse on state change
   auxiliary panel        -> 300 ms opacity entrance (ordinary Toplevel only)
   theme switch           -> 450 ms cross-fade of a snapshot of the old theme
@@ -60,6 +60,7 @@ class MicroAnimations:
         self._toggle_bar = self._bar()
         self._bindings = []
         self._panels: dict[str, tk.Misc] = {}
+        self._popdowns: set[str] = set()
         self._closed = False
         self._hover_widget: tk.Misc | None = None
         self._hover_color: str | None = None
@@ -70,6 +71,8 @@ class MicroAnimations:
             self._bind(cls, "<ButtonRelease-1>", self._on_btn_release, add="+")
         self._bind("TCombobox", "<<ComboboxSelected>>", self._on_combo_selected, add="+")
         self._bind("ComboboxPopdown", "<Map>", self._on_popdown_map, add="+")
+        self._bind("ComboboxPopdown", "<Unmap>", self._on_popdown_unmap, add="+")
+        self._bind("ComboboxPopdown", "<Destroy>", self._on_popdown_unmap, add="+")
         self._bind("Toplevel", "<Map>", self._on_panel_map, add="+")
         self._bind("Toplevel", "<Unmap>", self._on_panel_unmap, add="+")
         self._bind("Toplevel", "<Destroy>", self._on_panel_unmap, add="+")
@@ -95,6 +98,8 @@ class MicroAnimations:
         self._hide_all()
         for path in list(self._panels):
             self.animator.cancel(("panel", path), finish=True)
+        for path in list(self._popdowns):
+            self.animator.cancel(("popdown", path), finish=True)
 
     def _on_panel_map(self, event: tk.Event) -> None:
         window = self._widget(event)
@@ -310,14 +315,36 @@ class MicroAnimations:
             pass
 
     def _on_popdown_map(self, event: tk.Event) -> None:
+        if self._closed:
+            return
         path = str(event.widget)
         call = self.root.tk.call
         try:
-            if call("winfo", "toplevel", path) != path:
+            if call("winfo", "toplevel", path) != path or not int(call("winfo", "ismapped", path)):
                 return
         except tk.TclError:
             return
         self._fix_popdown_view(call, path)
+        if not self.animator.enabled:
+            return
+        try:
+            # Keep native placement, dimensions, selection and input handling.
+            # Fade the full list instead of clipping rows during expansion.
+            call("wm", "attributes", path, "-alpha", 1)
+        except tk.TclError:
+            return
+        self._popdowns.add(path)
+        stats["popdown"] += 1
+        self.animator.animate(("popdown", path), anim.DUR_BASE,
+                              _timed(lambda p: call("wm", "attributes", path, "-alpha", p)),
+                              ease=anim.EASE_OUT,
+                              done=lambda: self._popdowns.discard(path))
+
+    def _on_popdown_unmap(self, event: tk.Event) -> None:
+        path = str(event.widget)
+        if path in self._popdowns:
+            self.animator.cancel(("popdown", path), finish=True)
+            self._popdowns.discard(path)
 
     # -- toggles ------------------------------------------------------------
     def _on_toggle_release(self, event: tk.Event) -> None:

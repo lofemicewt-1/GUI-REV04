@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import sys
 import unittest
 from tkinter import ttk
 from unittest.mock import patch
@@ -8,6 +9,27 @@ from tests.validate_responsive_layout import mocked_application
 
 
 class NavigationRequestTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "native sidebar paint")
+    def test_selection_is_painted_before_an_expensive_factory_starts(self):
+        from tests.test_motion import pump
+        from tests.validate_navigation_paint import _selection_pixel_ready
+        with mocked_application() as app:
+            app.set_animations(False)
+            app.apply_settings("zh", "light", 10)
+            root, nav = app.root, app.navigation
+            root.geometry("1200x800+0+0")
+            seen = []
+            def factory():
+                seen.append(_selection_pixel_ready(nav.buttons["paint_target"], app.colors["primary_hover"]))
+                time.sleep(.08)
+                return ttk.Frame(nav.content, style="App.TFrame")
+            nav.register_page("paint_target", "home", factory)
+            pump(root, .2)
+            nav.buttons["paint_target"].invoke()
+            root.after(450, root.quit)
+            root.mainloop()
+            self.assertEqual(seen, [True], "cold page construction started before the selected button was painted")
+
     def test_sidebar_clicks_paint_selection_before_building_only_latest_target(self):
         with mocked_application() as app:
             app.set_animations(False)
@@ -28,9 +50,32 @@ class NavigationRequestTests(unittest.TestCase):
             root.after(0, lambda: events.append("paint-opportunity"))
             root.after(450, root.quit)
             root.mainloop()
-            self.assertEqual(events, ["build:target", "paint-opportunity"])
+            self.assertEqual(events, ["paint-opportunity", "build:target"])
             self.assertEqual(app.state.current_page, "target")
             self.assertFalse(errors, errors)
+
+    def test_navigation_is_not_starved_by_a_continuous_timer_stream(self):
+        with mocked_application() as app:
+            app.set_animations(False)
+            root, nav = app.root, app.navigation
+            root.update()
+            busy, seen = [True], []
+            def factory():
+                seen.append(busy[0])
+                return ttk.Frame(nav.content)
+            def timer_stream():
+                if busy[0]:
+                    root.after(0, timer_stream)
+            nav.register_page("busy_target", "home", factory)
+            nav.buttons["busy_target"].invoke()
+            root.after(0, timer_stream)
+            root.after(180, lambda: busy.__setitem__(0, False))
+            root.after(450, root.quit)
+            root.mainloop()
+            self.assertEqual(seen, [True], "navigation waited for the timer stream to stop")
+            self.assertEqual(app.state.current_page, "busy_target")
+            self.assertIsNone(nav._pending_navigation)
+            self.assertIsNone(nav._pending_navigation_fallback)
 
     def test_clicking_current_page_cancels_pending_expensive_navigation(self):
         with mocked_application() as app:
@@ -63,8 +108,10 @@ class NavigationRequestTests(unittest.TestCase):
             root.update()
             nav.buttons["awp1922"].invoke()
             nav._on_mode_clicked("full_mode")
-            root.after(180, root.quit)
-            root.mainloop()
+            deadline = time.perf_counter()+4
+            while nav._preparation is not None and time.perf_counter() < deadline:
+                root.update()
+                time.sleep(.001)
             self.assertEqual(app.state.current_page, "awp1221")
             self.assertEqual(nav.pages["awp1221"].current_mode, "full_mode")
             self.assertFalse(dict.__contains__(nav.pages, "awp1922"))

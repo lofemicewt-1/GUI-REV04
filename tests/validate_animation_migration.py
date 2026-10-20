@@ -22,12 +22,15 @@ def settle(app, timeout: float = 12) -> None:
         pump(app.root, .02)
         if (not app.transitions.active and not app.animator._tweens
                 and app.navigation._pending_page is None
+                and app.navigation._pending_mode is None
+                and app.navigation._preparation is None
                 and app.navigation._page_layout_ready()):
             return
     nav = app.navigation
     page = dict.get(nav.pages, app.state.current_page)
     detail = {"page": app.state.current_page, "geometry": app.root.geometry(),
               "transition": app.transitions.active, "tweens": list(app.animator._tweens),
+              "pending_mode": nav._pending_mode, "preparing": nav._preparation is not None,
               "content": (nav.content.winfo_width(), nav.content.winfo_height()),
               "canvas": (nav.content_canvas.winfo_width(), nav.content_canvas.winfo_height()),
               "rows": [(str(child), child.winfo_ismapped(), child.winfo_height())

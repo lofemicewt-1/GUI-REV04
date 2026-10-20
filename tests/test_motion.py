@@ -152,6 +152,10 @@ def pump(root, seconds):
 class TkMotionTests(unittest.TestCase):
     def setUp(self):
         from app.micro_anim import MicroAnimations
+        # These tests exercise native surfaces rather than desktop activation.
+        foreground = patch("app.transitions.SnapshotTransition._owner_is_foreground", return_value=True)
+        foreground.start()
+        self.addCleanup(foreground.stop)
         from styles.theme import get_colors
         self.root = tk.Tk()
         self.root.geometry("480x320+20+20")
@@ -186,7 +190,9 @@ class TkMotionTests(unittest.TestCase):
         self.root.bind_class("ComboboxPopdown", "<Configure>", on_configure, add="+")
 
         def assert_full(expect_top):
-            self.root.update_idletasks()
+            # Deliver native Configure messages before checking the first one;
+            # an idle-only drain does not dispatch Windows events.
+            self.root.update()
             full_h = int(call("winfo", "reqheight", path))
             shown = int(call("winfo", "height", path))
             lb_h = int(call("winfo", "reqheight", lb))
@@ -194,8 +200,9 @@ class TkMotionTests(unittest.TestCase):
             self.assertGreaterEqual(full_h, lb_h)
             self.assertLessEqual(full_h - lb_h, 8)
             self.assertEqual(shown, full_h)
-            self.assertFalse(self.animator.is_running(("popdown", path)))
-            self.assertEqual(float(call("wm", "attributes", path, "-alpha")), 1)
+            opacity = float(call("wm", "attributes", path, "-alpha"))
+            self.assertGreaterEqual(opacity, 0)
+            self.assertLessEqual(opacity, 1)
             self.assertEqual(str(call("winfo", "manager", path+".f")), "grid")
             n = int(call(lb, "size"))
             top = round(float(call(lb, "yview")[0]) * n)
@@ -211,6 +218,8 @@ class TkMotionTests(unittest.TestCase):
         pump(self.root, 0.25)
         self.assertEqual(int(call("winfo", "height", path)), full)
         self.assertEqual(set(heights), {full})
+        self.assertFalse(self.animator.is_running(("popdown", path)))
+        self.assertEqual(float(call("wm", "attributes", path, "-alpha")), 1)
         self.animator.set_enabled(False)
         self.micro.reset()
         self.assertEqual(int(call("winfo", "height", path)), full)
@@ -223,7 +232,7 @@ class TkMotionTests(unittest.TestCase):
         before = list(heights)
         call("ttk::combobox::Post", str(combo))
         self.assertEqual(assert_full(0), full)
-        self.assertEqual(heights, before)
+        self.assertTrue(all(height == full for height in heights[len(before):]))
         call("ttk::combobox::Unpost", str(combo))
         self.root.update()
 
@@ -236,6 +245,79 @@ class TkMotionTests(unittest.TestCase):
         self.assertTrue(call(lb, "bbox", 17))
         self.assertEqual(set(heights), {full})
         call("ttk::combobox::Unpost", str(combo))
+
+    def test_popdown_fades_as_one_surface_and_cancels_on_unpost(self):
+        combo = ttk.Combobox(self.root, values=[f"v{i}" for i in range(20)], state="readonly", height=5)
+        combo.pack()
+        combo.current(0)
+        self.root.update()
+        call = self.root.tk.call
+        path = str(combo)+".popdown"
+        key = ("popdown", path)
+        alpha = lambda: float(call("wm", "attributes", path, "-alpha"))
+        for _ in range(2):
+            call("ttk::combobox::Post", str(combo))
+            self.root.update()
+            self.assertTrue(self.animator.is_running(key), "dropdown entrance animation is missing")
+            self.assertLess(alpha(), 1)
+            full = int(call("winfo", "reqheight", path))
+            self.assertEqual(int(call("winfo", "height", path)), full)
+            pump(self.root, .05)
+            self.assertGreater(alpha(), 0)
+            self.assertLess(alpha(), 1)
+            self.assertEqual(int(call("winfo", "height", path)), full)
+            call("ttk::combobox::Unpost", str(combo))
+            self.root.update()
+            self.assertFalse(self.animator.is_running(key))
+            self.assertEqual(alpha(), 1)
+        call("ttk::combobox::Post", str(combo))
+        pump(self.root, .26)
+        self.assertFalse(self.animator.is_running(key))
+        self.assertEqual(alpha(), 1)
+        call("ttk::combobox::Unpost", str(combo))
+        self.animator.set_enabled(False)
+        self.micro.reset()
+        call("ttk::combobox::Post", str(combo))
+        self.root.update()
+        self.assertFalse(self.animator.is_running(key))
+        self.assertEqual(alpha(), 1)
+        call("ttk::combobox::Unpost", str(combo))
+
+    def test_popdown_reset_and_destroy_release_animation(self):
+        combo = ttk.Combobox(self.root, values=['one', 'two'], state="readonly")
+        combo.pack()
+        self.root.update()
+        call = self.root.tk.call
+        path = str(combo)+".popdown"
+        key = ("popdown", path)
+        call("ttk::combobox::Post", str(combo))
+        pump(self.root, .03)
+        self.assertTrue(self.animator.is_running(key))
+        self.micro.reset()
+        self.assertFalse(self.animator.is_running(key))
+        self.assertEqual(float(call("wm", "attributes", path, "-alpha")), 1)
+        self.assertEqual(self.micro._popdowns, set())
+        call("ttk::combobox::Unpost", str(combo))
+        call("ttk::combobox::Post", str(combo))
+        pump(self.root, .03)
+        self.assertTrue(self.animator.is_running(key))
+        combo.destroy()
+        pump(self.root, .05)
+        self.assertFalse(self.animator.is_running(key))
+        self.assertEqual(self.micro._popdowns, set())
+
+    def test_popdown_withdrawn_before_map_delivery_does_not_animate_hidden_window(self):
+        combo = ttk.Combobox(self.root, values=['one', 'two'], state="readonly")
+        combo.pack()
+        self.root.update()
+        call = self.root.tk.call
+        path = str(combo)+".popdown"
+        call("ttk::combobox::Post", str(combo))
+        call("ttk::combobox::Unpost", str(combo))
+        self.root.update()
+        self.assertFalse(int(call("winfo", "ismapped", path)))
+        self.assertFalse(self.animator.is_running(("popdown", path)))
+        self.assertEqual(float(call("wm", "attributes", path, "-alpha")), 1)
 
     def test_worker_callback_is_on_main_thread_and_late_post_is_dropped(self):
         import threading

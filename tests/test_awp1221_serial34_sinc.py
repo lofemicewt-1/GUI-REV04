@@ -60,7 +60,8 @@ def _draw_canvas_data(plan):
         tr=lambda key, **kwargs: key.format(**kwargs),
     )
     AWP1221ModePage._draw_sinc_preview(page)
-    waveform = [call for call in page.rom_canvas.calls if call[0] == "line"][-1][1]
+    waveform = tuple(value for kind, coords, options in page.rom_canvas.calls
+                     if kind == "line" and options.get("tags") == "wave_curve" for value in coords)
     points = list(zip(waveform[::2], waveform[1::2]))
     return points
 
@@ -81,7 +82,7 @@ class Awp1221Serial34SincTests(unittest.TestCase):
                     _params((4, 7, 8, 9), repeat=str(repeat)), serial="serial3"
                 )
                 points = _draw_canvas_data(plan)
-                sine_samples = {1: 54, 2: 108, 256: 2048}[repeat]
+                sine_samples = {1: 54, 2: 108, 256: 108}[repeat]
                 segment_starts = (0, sine_samples, sine_samples + 54, sine_samples + 108)
                 segment_ends = tuple(index + count - 1 for index, count in zip(segment_starts, (sine_samples, 54, 54, 54)))
                 middle = 200.0

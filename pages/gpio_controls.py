@@ -82,6 +82,10 @@ class GpioControlGroup:
 
     def add(self, panel: GpioControlPanel) -> GpioControlPanel:
         self.panels.append(panel)
+        def remove(event: tk.Event) -> None:
+            if event.widget is panel and panel in self.panels:
+                self.panels.remove(panel)
+        panel.bind('<Destroy>', remove, add='+')
         return panel
 
     def invalidate_modes(self) -> None:

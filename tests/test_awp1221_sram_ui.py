@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import os
 import struct
 import threading
 import unittest
@@ -606,7 +607,7 @@ def _assert_axis_labels_do_not_overlap(test: unittest.TestCase, canvas: tk.Canva
 
 class Awp1221SegmentRatioLayoutTests(unittest.TestCase):
     def test_ratio_controls_stay_reachable_at_default_min_and_zoom(self) -> None:
-        evidence = Path("docs/specs/awp1221_segment_ratio_evidence/review")
+        evidence = Path(os.environ.get("PIEZO_TEST_SEGMENT_RATIO_ARTIFACTS", "docs/specs/awp1221_segment_ratio_evidence/review"))
         evidence.mkdir(parents=True, exist_ok=True)
         records = []
         cases = (
@@ -670,7 +671,7 @@ class Awp1221SegmentRatioLayoutTests(unittest.TestCase):
         (evidence / "geometry.json").write_text(json.dumps(records, indent=2), encoding="utf-8")
 
     def test_button_and_full_pages_scroll_each_ratio_row_into_view(self) -> None:
-        evidence = Path("docs/specs/awp1221_segment_ratio_evidence/review")
+        evidence = Path(os.environ.get("PIEZO_TEST_SEGMENT_RATIO_ARTIFACTS", "docs/specs/awp1221_segment_ratio_evidence/review"))
         evidence.mkdir(parents=True, exist_ok=True)
         records = []
         cases = (
