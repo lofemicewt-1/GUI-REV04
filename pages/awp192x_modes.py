@@ -4690,6 +4690,7 @@ class PumpModePage(BasePage):
 
         header = self._make_pump_title()
         header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
+        self._register_title_spacing_widget(header)
 
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
         panel.grid(row=1, column=0, sticky="nsew")
