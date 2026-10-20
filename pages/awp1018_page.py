@@ -48,7 +48,13 @@ from core.base_tool import (
     SerialResponse,
     execute_register_script_operations,
 )
-from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
+from pages.base_page import (
+    BasePage,
+    SimpleTooltip,
+    VerticalScrollArea,
+    attach_glossary_tooltips,
+    fit_toplevel_to_screen,
+)
 from pages.button_mode_chrome import ResponsiveCardGrid
 from pages.chip_settings_model import ChipSettingsStore
 from pages.preset_toolbar import PresetToolbar
@@ -6375,6 +6381,7 @@ class AWP1018NormalModePage(BasePage):
         if hasattr(self, "diff_serial4_segment_combos"):
             self._refresh_diff_waveform_controls()
         self._update_rom_metrics()
+        attach_glossary_tooltips(self, self.tr, self._tooltips)
 
     def refresh_theme(self) -> None:
         super().refresh_theme()

@@ -51,7 +51,7 @@ from core.base_tool import (
     parse_register_script,
     run_async_write,
 )
-from pages.base_page import BasePage, SimpleTooltip
+from pages.base_page import BasePage, SimpleTooltip, attach_glossary_tooltips
 from pages.waveform_preview import PreviewSegment, compact_preview, draw_omissions
 from pages.awp1221_board_presets import AWP1221BoardPresetMixin
 from pages.chip_settings_model import ChipSettingsModel, ChipSettingsStore
@@ -2595,6 +2595,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 "apply_slot": self.apply_board_preset,
                 "read_and_apply": self.read_board_preset,
             },
+            capabilities={"apply_slot": False},
+            hidden_capabilities={"apply_slot"},
+            label_keys={"read_and_apply": "awp1221_type4_apply"},
             selected_slot=selected_slot,
             on_slot_selected=self._on_preset_slot_selected,
             tooltip_keys={
@@ -2616,7 +2619,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             ("button_mode_export_user_preset", "export_page_settings"),
             ("save_to_board", "save_slot"),
             ("set_active", "set_active_slot"),
-            ("apply_slot", "apply_slot"),
+            ("apply_slot", "read_and_apply"),
             ("read_slot", "read_and_apply"),
         ):
             self._buttons[legacy_name] = self.preset_toolbar.buttons[action]
@@ -2627,7 +2630,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             ))
         self._tooltips.append(SimpleTooltip(
             self.preset_toolbar.buttons["read_and_apply"],
-            lambda: f"{self.tr('awp1221_type4_read_slot_tip')}\n{self.tr('awp1221_type4_apply_slot_tip')}",
+            lambda: self.tr("awp1221_type4_apply_slot_tip"),
         ))
         self.board_slot_var.set(str(self.preset_toolbar.selected_slot or 0))
         current_model = self._current_settings_model()
@@ -2888,11 +2891,11 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
         active_reg = press_reg if button["mode"] == "press" else release_reg
         active_value = press if active_reg == press_reg else release
-        if changed["use_high_12_bits"]:
+        if changed["use_high_12_bits"] or changed["mode"]:
             active_value = (active_value & ~AWP1221_ADC_THRESHOLD_PRECISION_MASK) | (
                 int(bool(button["use_high_12_bits"])) * AWP1221_ADC_THRESHOLD_PRECISION_MASK
             )
-        if changed["threshold"]:
+        if changed["threshold"] or changed["mode"]:
             active_value = (active_value & ~0x0FFF) | (int(button["threshold"]) & 0x0FFF)
         if active_reg == press_reg:
             press = active_value
@@ -7459,8 +7462,11 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self._refresh_pressure_status()
             for widget, key in self._translated_widgets:
                 widget.configure(text=self.tr(key))
-            board_keys = {"set_active": "awp1221_type4_active", "apply_slot": "awp1221_type4_apply",
-                          "read_slot": "awp1221_type4_read"}
+            board_keys = {
+                "set_active": "awp1221_type4_active",
+                "apply_slot": "awp1221_type4_apply",
+                "read_slot": "awp1221_type4_apply",
+            }
             for key, button in self._buttons.items():
                 button.configure(text=self.tr(board_keys.get(key, key)))
             self._refresh_adc_read_buttons()
@@ -7474,6 +7480,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             if sram_editor is not None:
                 sram_editor.refresh_language()
             self._sync_sram_editor_visibility()
+            attach_glossary_tooltips(self, self.tr, self._tooltips)
             return
         sram_editor = self._sram_editor
         if sram_editor is not None:
@@ -7486,6 +7493,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             button.configure(text=self.tr(key))
         self._refresh_adc_read_buttons()
         self._refresh_sinc_slice_time_labels()
+        attach_glossary_tooltips(self, self.tr, self._tooltips)
 
 
     def refresh_theme(self) -> None:

@@ -42,7 +42,14 @@ from core.awp192x_settings import (
 )
 from pages.chip_settings_model import SYNC_FIELDS_192X, can_save_slot
 from pages.awp192x_button_view import ButtonModeView
-from pages.base_page import BasePage, CanvasTitle, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
+from pages.base_page import (
+    BasePage,
+    CanvasTitle,
+    SimpleTooltip,
+    VerticalScrollArea,
+    attach_glossary_tooltips,
+    fit_toplevel_to_screen,
+)
 from pages.preset_toolbar import PresetToolbar
 from pages.waveform_generator import WAVEFORM_DEFAULT_POINTS_PER_WRITE, WaveformGeneratorPage
 
@@ -1447,6 +1454,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._update_period_hint()
         self._refresh_adc_read_buttons()
         self._refresh_button_view()
+        attach_glossary_tooltips(self, self.tr, self._tooltips)
 
     def refresh_theme(self) -> None:
         super().refresh_theme()
@@ -5122,6 +5130,7 @@ class FullModePage(ButtonModePage):
                 label.configure(text=self.tr(tr_key))
         for label, key in getattr(self, "_full_direct_labels", []):
             label.configure(text=self.tr(key))
+        attach_glossary_tooltips(self, self.tr, self._tooltips)
 
     def _style_only_action(self) -> None:
         pass

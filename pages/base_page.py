@@ -125,6 +125,7 @@ class SimpleTooltip:
     def __init__(self, widget: tk.Widget, text_getter: Any) -> None:
         self.widget = widget
         self.text_getter = text_getter
+        widget._piezo_simple_tooltip = self
         self.tip: tk.Toplevel | None = None
         self._position_job: str | None = None
         self._generation = 0
@@ -239,6 +240,95 @@ class SimpleTooltip:
                 tip.destroy()
             except tk.TclError:
                 pass
+
+
+_GLOSSARY_LABEL_MATCHERS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
+    ("EN", "glossary_en", re.compile(r"(?<![A-Za-z0-9])EN(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("ADC", "glossary_adc", re.compile(r"(?<![A-Za-z0-9])ADC(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("SINC", "glossary_sinc", re.compile(r"(?<![A-Za-z0-9])SINC(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("SINE / SIN", "glossary_sine_sin", re.compile(r"(?<![A-Za-z0-9])(?:SINE|SIN)(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("ROM", "glossary_rom", re.compile(r"(?<![A-Za-z0-9])ROM(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("RAM / SRAM", "glossary_sram", re.compile(r"(?<![A-Za-z0-9])(?:SRAM|RAM)(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("VPK", "glossary_vpk", re.compile(r"(?<![A-Za-z0-9])VPK(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("Vpp", "glossary_vpp", re.compile(r"(?<![A-Za-z0-9])Vpp(?![A-Za-z0-9])")),
+    ("OVV (ADC)", "glossary_ovv_adc", re.compile(r"(?<![A-Za-z0-9])OVV(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("Debounce", "glossary_debounce", re.compile(r"(?<![A-Za-z0-9])Debounce(?![A-Za-z0-9])|防抖", re.IGNORECASE)),
+    ("Slice", "glossary_slice", re.compile(r"(?<![A-Za-z0-9])Slice(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("Serial", "glossary_serial", re.compile(r"(?<![A-Za-z0-9])Serial(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("Stage", "glossary_stage", re.compile(r"(?<![A-Za-z0-9])Stage(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("OUT+ / OUT-", "glossary_out_polarity", re.compile(r"(?<![A-Za-z0-9])OUT[+-](?![A-Za-z0-9])", re.IGNORECASE)),
+    ("nINT", "glossary_nint", re.compile(r"(?<![A-Za-z0-9])nINT(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("EEPROM", "glossary_eeprom", re.compile(r"(?<![A-Za-z0-9])EEPROM(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("Type-4", "glossary_type4", re.compile(r"(?<![A-Za-z0-9])Type-4(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("GPIO", "glossary_gpio", re.compile(r"(?<![A-Za-z0-9])GPIO(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("自动串联 / Auto Serial", "glossary_auto_serial", re.compile(r"自动串联|Auto\s+Serial", re.IGNORECASE)),
+)
+
+
+def _glossary_keys_for_label(text: str) -> tuple[tuple[str, str], ...]:
+    skip_ovv_status = bool(
+        re.search(r"\bOVV\b", text, re.IGNORECASE)
+        and re.search(r"status|bit|状态位|状态寄存器|位", text, re.IGNORECASE)
+    )
+    return tuple(
+        (label, key)
+        for label, key, pattern in _GLOSSARY_LABEL_MATCHERS
+        if not (key == "glossary_ovv_adc" and skip_ovv_status)
+        and pattern.search(text)
+    )
+
+
+def attach_glossary_tooltips(
+    root: tk.Misc,
+    translate: Any,
+    tooltips: list[SimpleTooltip] | None = None,
+) -> None:
+    """Add glossary hover help to translated labels that contain a term."""
+
+    def tooltip_text(widget: tk.Widget) -> str:
+        try:
+            text = str(widget.cget("text"))
+        except tk.TclError:
+            return ""
+        matches = _glossary_keys_for_label(text)
+        return "\n".join(f"{label}: {translate(key)}" for label, key in matches)
+
+    def visit(parent: tk.Misc) -> None:
+        try:
+            children = parent.winfo_children()
+        except tk.TclError:
+            return
+        for widget in children:
+            if isinstance(widget, (ttk.Label, ttk.Checkbutton)):
+                try:
+                    if _glossary_keys_for_label(str(widget.cget("text"))):
+                        tooltip = getattr(widget, "_piezo_glossary_tooltip", None)
+                        if tooltip is None:
+                            tooltip = getattr(widget, "_piezo_simple_tooltip", None)
+                            if tooltip is not None:
+                                original_getter = tooltip.text_getter
+
+                                def combined_text(
+                                    target: tk.Widget = widget,
+                                    previous: Any = original_getter,
+                                ) -> str:
+                                    previous_text = previous() if callable(previous) else str(previous or "")
+                                    glossary_text = tooltip_text(target)
+                                    return "\n\n".join(
+                                        item for item in (str(previous_text).strip(), glossary_text) if item
+                                    )
+
+                                tooltip.text_getter = combined_text
+                            else:
+                                tooltip = SimpleTooltip(widget, lambda target=widget: tooltip_text(target))
+                            widget._piezo_glossary_tooltip = tooltip
+                            if tooltips is not None:
+                                tooltips.append(tooltip)
+                except tk.TclError:
+                    pass
+            visit(widget)
+
+    visit(root)
 
 
 class PinnedModuleHelp:
@@ -1501,6 +1591,16 @@ class BasePage(ttk.Frame):
         self._refresh_serial_selectors()
         self._sync_mode_headers()
         self._queue_header_layout()
+        try:
+            self.after_idle(
+                lambda page=self: attach_glossary_tooltips(
+                    page,
+                    page.tr,
+                    getattr(page, "_tooltips", None),
+                )
+            )
+        except tk.TclError:
+            pass
 
     def _sync_mode_button_styles(self) -> None:
         current = getattr(self, "current_mode", None)

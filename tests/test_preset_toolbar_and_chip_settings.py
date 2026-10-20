@@ -59,13 +59,13 @@ class PresetToolbarTests(unittest.TestCase):
             callbacks={"software_preset_1": lambda: None},
         )
 
-        self.assertEqual(toolbar.buttons["software_preset_1"].cget("text"), "Software Preset 1")
-        self.assertEqual(toolbar.slot_label.cget("text"), "Without GUI Settings")
+        self.assertEqual(toolbar.buttons["software_preset_1"].cget("text"), "Built-in Example 1 (writes chip)")
+        self.assertEqual(toolbar.slot_label.cget("text"), "Offline slot")
         language[0] = "zh"
         toolbar.refresh_language()
-        self.assertEqual(toolbar.buttons["software_preset_1"].cget("text"), "软件预设 1")
-        self.assertEqual(toolbar.slot_label.cget("text"), "无界面设置")
-        self.assertEqual(toolbar.buttons["set_active_slot"].cget("text"), "设为活动槽")
+        self.assertEqual(toolbar.buttons["software_preset_1"].cget("text"), "内置示例 1（写入芯片）")
+        self.assertEqual(toolbar.slot_label.cget("text"), "脱机槽位")
+        self.assertEqual(toolbar.buttons["set_active_slot"].cget("text"), "设为板上按键用的槽位")
 
 
 class ChipSettingsModelTests(unittest.TestCase):

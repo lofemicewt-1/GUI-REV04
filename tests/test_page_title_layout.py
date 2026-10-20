@@ -170,7 +170,7 @@ class PageTitleLayoutTests(unittest.TestCase):
         self.assertGreater(int(header.winfo_width()), int(viewport.canvas.winfo_width()))
         self.assertEqual(int(header._preset_area.grid_info()["row"]), 1)
 
-        self.root.geometry("1500x600")
+        self.root.geometry("1700x600")
         self._settle()
 
         self.assertEqual(int(header._preset_area.grid_info()["row"]), 0)

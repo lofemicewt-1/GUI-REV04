@@ -170,9 +170,22 @@ class Awp1221SharedSettingsUiTests(unittest.TestCase):
         self.assertIsNotNone(toolbar)
         self.assertEqual(len(toolbar.buttons), 9)
         for action, button in toolbar.buttons.items():
+            if action == "apply_slot" and button.winfo_manager() == "":
+                continue  # merged into read_and_apply (round-2 decision 7)
             with self.subTest(action=action):
                 self.assertNotEqual(str(button.cget("state")), "disabled")
         self.assertNotIn("awp1221_preset_1_reserved", self.full._buttons)
+
+    def test_button_mode_merges_slot_load_and_apply_controls(self) -> None:
+        toolbar = self.button.preset_toolbar
+        self.assertIsNotNone(toolbar)
+        self.assertEqual(toolbar.buttons["apply_slot"].winfo_manager(), "")
+        self.assertEqual(toolbar.buttons["read_and_apply"].grid_info()["columnspan"], 2)
+        self.assertEqual(
+            toolbar.buttons["read_and_apply"].cget("text"),
+            self.button.tr("awp1221_type4_apply"),
+        )
+        self.assertIs(self.button._buttons["apply_slot"], self.button._buttons["read_slot"])
 
     def test_shared_model_updates_both_views_and_full_adapter_stands_alone(self) -> None:
         model = self.host._settings_model

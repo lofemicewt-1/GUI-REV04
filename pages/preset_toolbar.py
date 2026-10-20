@@ -112,8 +112,22 @@ class PresetToolbar(ttk.Frame):
             )
 
         second_row = PRESET_ACTIONS[5:]
-        for column, action in enumerate(second_row, start=1):
-            self._make_action_button(action, row=1, column=column)
+        column = 1
+        for action in second_row:
+            is_hidden = (
+                not self.capabilities.get(action, True)
+                and action in self.hidden_capabilities
+            )
+            columnspan = (
+                2
+                if action == "read_and_apply"
+                and "apply_slot" in self.hidden_capabilities
+                and not self.capabilities.get("apply_slot", True)
+                else 1
+            )
+            self._make_action_button(action, row=1, column=column, columnspan=columnspan)
+            if not is_hidden:
+                column += columnspan
 
         self._apply_slot_capability()
         self.refresh_language()
@@ -129,13 +143,27 @@ class PresetToolbar(ttk.Frame):
             self._set_text(button, self.label_keys[action])
         self._set_text(self.slot_label, self.label_keys["slot_selection"])
 
-    def _make_action_button(self, action: str, *, row: int, column: int) -> None:
+    def _make_action_button(
+        self,
+        action: str,
+        *,
+        row: int,
+        column: int,
+        columnspan: int = 1,
+    ) -> None:
         button = ttk.Button(
             self,
             style="Bg.TButton",
             command=lambda name=action: self._invoke(name),
         )
-        button.grid(row=row, column=column, sticky="ew", padx=2, pady=(0, 0) if row == 0 else (4, 0))
+        button.grid(
+            row=row,
+            column=column,
+            columnspan=columnspan,
+            sticky="ew",
+            padx=2,
+            pady=(0, 0) if row == 0 else (4, 0),
+        )
         self.buttons[action] = button
         supported = self.capabilities.get(action, True)
         if not supported or not callable(self.callbacks.get(action)):

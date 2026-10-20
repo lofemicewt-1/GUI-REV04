@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 import time
 import tkinter as tk
-import webbrowser
 from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Any, Callable
@@ -12,10 +11,11 @@ from core import animation as anim
 from core.lazy_pages import LazyPages
 from app.sidebar_motion import SidebarMotion
 
-from config.app_info import APP_VERSION, USER_GUIDE_URL
+from config.app_info import APP_VERSION
 from config.languages import t
 from styles.fonts import sidebar_brand_font_spec
 from pages.base_page import hide_scroll_chrome, relay_vertical_scroll, scaled_scroll_px
+from pages.user_guide import UserGuideWindow
 from styles.theme import BRAND_ENLARGE, logo_asset, photoimage_scale_token, scale_photoimage
 
 
@@ -34,6 +34,7 @@ class Navigation:
     def __init__(self, root: tk.Misc, ctx: Any) -> None:
         self.root = root
         self.ctx = ctx
+        self._user_guide_window: UserGuideWindow | None = None
 
         self.container = ttk.Frame(root, style="App.TFrame")
         self.container.grid(row=0, column=0, sticky="nsew")
@@ -476,6 +477,8 @@ class Navigation:
         self._redraw_sidebar_brand()
         self._refresh_version_label()
         self._guide_button.configure(text=t(lang, "user_guide"))
+        if self._user_guide_window is not None:
+            self._user_guide_window.refresh_language()
 
         for name, btn in self.buttons.items():
             key = self.label_keys.get(name, name)
@@ -926,8 +929,21 @@ class Navigation:
         button.image = image
 
     def _open_user_guide(self) -> None:
-        if USER_GUIDE_URL:
-            webbrowser.open(USER_GUIDE_URL)
+        guide = self._user_guide_window
+        if guide is not None:
+            try:
+                if guide.window.winfo_exists():
+                    guide.refresh_language()
+                    guide.window.deiconify()
+                    guide.window.lift()
+                    return
+            except tk.TclError:
+                self._user_guide_window = None
+        self._user_guide_window = UserGuideWindow(
+            self.root,
+            translate=lambda key: t(self.ctx.state.language, key),
+            colors=getattr(self.ctx, "colors", None),
+        )
 
     def _sync_content_window(self) -> None:
         if self._sync_after is not None:
