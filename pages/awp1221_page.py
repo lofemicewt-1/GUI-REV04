@@ -51,7 +51,8 @@ from core.base_tool import (
     parse_register_script,
     run_async_write,
 )
-from pages.base_page import BasePage, SimpleTooltip, attach_glossary_tooltips
+from pages.base_page import BasePage, SimpleTooltip, WrappingGroupBar, attach_glossary_tooltips
+from pages.step_progress import ProgressContext, StepSpec
 from pages.waveform_preview import PreviewSegment, compact_preview, draw_omissions
 from pages.awp1221_board_presets import AWP1221BoardPresetMixin
 from pages.chip_settings_model import ChipSettingsModel, ChipSettingsStore
@@ -1098,6 +1099,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         self._settings_sync_depth = 0
         self._settings_trace_ids: list[tuple[tk.Variable, str]] = []
+        self._adc_progress_token: Any | None = None
         self.preset_toolbar: PresetToolbar | None = None
         self._sram_editor: AWP1221SramEditor | None = None
         self._labels: dict[str, ttk.Label] = {}
@@ -1500,6 +1502,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         log_frame.grid(row=0, column=0, sticky="ew", pady=(8, 0))
         self._hide_serial_log_hscroll(log_frame)
         yield
+        self._mount_button_step_progress()
         self.refresh_language()
         self._schedule_button_rom_preview()
 
@@ -2527,9 +2530,13 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
     def apply_button_adc_stage(self, stage_index: int) -> None:
         if not self._ensure_connected():
             return
+        progress_token = self._begin_adc_progress()
+        part_key = f"stage{int(stage_index)}"
         try:
             self._write_button_adc_stage(stage_index)
+            self._mark_adc_progress_part(progress_token, part_key, "done")
         except Exception as exc:
+            self._mark_adc_progress_part(progress_token, part_key, "error")
             messagebox.showerror(self.tr("error"), str(exc))
 
     def read_button_adc_stage(self, stage_index: int) -> None:
@@ -2718,6 +2725,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             return
         if self.host is not None and self.host.mode_pages.get(self.host.current_mode) is not self:
             return
+        self._update_step_progress_params()
         model = self._current_settings_model()
         if model is None:
             return
@@ -2728,6 +2736,187 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             return
         if self.host is not None:
             self.host._settings_model_changed(self, model)
+
+    @staticmethod
+    def _freeze_step_fingerprint(value: Any) -> Any:
+        if isinstance(value, tk.Variable):
+            return AWP1221ModePage._freeze_step_fingerprint(value.get())
+        if isinstance(value, dict):
+            return tuple(
+                (str(key), AWP1221ModePage._freeze_step_fingerprint(item))
+                for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            )
+        if isinstance(value, (tuple, list)):
+            return tuple(AWP1221ModePage._freeze_step_fingerprint(item) for item in value)
+        if isinstance(value, set):
+            return tuple(sorted(AWP1221ModePage._freeze_step_fingerprint(item) for item in value))
+        return value
+
+    def _button_adc_raw_fingerprints(self) -> dict[str, Any]:
+        settings_variables = (
+            self.debounce_time_var,
+            self.adc_sample_update_var,
+            self.adc_ldo_var,
+            self.zero_time_var,
+            self.press_return_bit_time_var,
+            self.release_return_bit_time_var,
+            self.zps_enabled_var,
+            self.zps_detect_var,
+            self.sleep_sensitivity_var,
+            self.auto_serial_var,
+        )
+        settings = tuple(variable.get() for variable in settings_variables)
+        return {
+            "settings": ("invalid", self._freeze_step_fingerprint(settings)),
+            "stage0": ("invalid", self._freeze_step_fingerprint(self._button_stage_vars[0])),
+            "stage1": ("invalid", self._freeze_step_fingerprint(self._button_stage_vars[1])),
+        }
+
+    def _waveform_progress_fingerprint(self) -> Any:
+        rom_variables = (
+            self.auto_serial_var,
+            self.rom_slice_var,
+            self.rom_source_var,
+            self.rom_waveform_var,
+            self.rom_depth_var,
+            self.rom_half_cycle_var,
+            self.rom_phase_var,
+            self.rom_offset_var,
+            self.rom_vpk_var,
+            self.rom_micro_bias_var,
+            self.rom_point_time_var,
+            self.rom_repeat_var,
+            self.rom_infinite_loop_var,
+        )
+        sinc_variables = (
+            self.sinc_serial_var,
+            self.sinc_depth_var,
+            self.sinc_max_voltage_var,
+            self.sinc_min_voltage_var,
+            self.sinc_sin_repeat_var,
+            self.sinc_window_var,
+            *self._sinc_time_variables(),
+        )
+        groups = tuple(
+            (str(key), tuple(value))
+            for key, value in sorted(getattr(self, "_sinc_group_values", {}).items())
+        )
+        return self._freeze_step_fingerprint((
+            tuple(variable.get() for variable in rom_variables),
+            tuple(variable.get() for variable in sinc_variables),
+            groups,
+            getattr(self, "_sinc_active_group", None),
+        ))
+
+    def _update_step_progress_params(self) -> None:
+        progress = getattr(self, "step_progress", None)
+        if progress is None or self.mode_key != "button_mode":
+            return
+        try:
+            waveform = self._waveform_progress_fingerprint()
+            progress.update_params("waveform", {"input": waveform})
+        except (AttributeError, IndexError, tk.TclError, TypeError, ValueError):
+            pass
+        try:
+            adc = {
+                "settings": self._freeze_step_fingerprint(self._adc_settings_config()),
+                "stage0": self._freeze_step_fingerprint(self._button_stage_config(0)),
+                "stage1": self._freeze_step_fingerprint(self._button_stage_config(1)),
+            }
+        except (AttributeError, IndexError, tk.TclError, TypeError, ValueError):
+            try:
+                adc = self._button_adc_raw_fingerprints()
+            except (AttributeError, IndexError, tk.TclError, TypeError, ValueError):
+                return
+        progress.update_params("adc", adc)
+
+    def _step_progress_context(self) -> ProgressContext:
+        identity = active_serial_identity(self.ctx, self.host.page_name)
+        return ProgressContext(identity, int(self.device_addr()), self.mode_key)
+
+    def _mount_button_step_progress(self) -> None:
+        if self.host is None or self.mode_key != "button_mode":
+            return
+        self.mount_step_progress(
+            host=self.host,
+            steps=(
+                StepSpec("en", 1, "step_done_1221_en"),
+                StepSpec("waveform", 2, "step_done_1221_waveform"),
+                StepSpec("adc", 3, "step_done_1221_adc", ("settings", "stage0", "stage1")),
+                StepSpec("detection", 4, "step_done_1221_detection"),
+            ),
+            context=self._step_progress_context,
+        )
+        self._update_step_progress_params()
+
+    def _begin_step_progress(self, step_key: str) -> Any | None:
+        progress = getattr(self, "step_progress", None)
+        if progress is None:
+            return None
+        self._update_step_progress_params()
+        return progress.begin(step_key)
+
+    def _capture_step_progress_token(self, step_key: str) -> Any | None:
+        progress = getattr(self, "step_progress", None)
+        if progress is None:
+            return None
+        self._update_step_progress_params()
+        previous = progress.snapshot().get(step_key, {})
+        token = progress.begin(step_key)
+        previous_state = previous.get("state", "idle")
+        progress.mark(step_key, previous_state, token, detail=previous.get("detail", ""))
+        note_key = previous.get("note_key")
+        if note_key:
+            progress.note(step_key, note_key, token)
+        return token
+
+    def _capture_adc_progress_token(self, *, force_new: bool = False) -> Any | None:
+        progress = getattr(self, "step_progress", None)
+        if progress is None:
+            return None
+        self._update_step_progress_params()
+        token = getattr(self, "_adc_progress_token", None)
+        if not force_new and token is not None and progress.accepts(token):
+            return token
+        token = self._capture_step_progress_token("adc")
+        self._adc_progress_token = token
+        return token
+
+    def _begin_adc_progress(self) -> Any | None:
+        progress = getattr(self, "step_progress", None)
+        if progress is None:
+            return None
+        self._update_step_progress_params()
+        token = getattr(self, "_adc_progress_token", None)
+        if token is None or not progress.accepts(token):
+            token = progress.begin("adc")
+            self._adc_progress_token = token
+        else:
+            progress.mark("adc", "running", token)
+        return token
+
+    def _mark_step_progress(self, token: Any | None, state: str, *, detail: str = "") -> None:
+        if token is None:
+            return
+        progress = getattr(self, "step_progress", None)
+        if progress is not None:
+            progress.mark(token.step_key, state, token, detail=detail)
+
+    def _mark_adc_progress_part(self, token: Any | None, part_key: str, state: str) -> None:
+        if token is None:
+            return
+        progress = getattr(self, "step_progress", None)
+        if progress is not None:
+            progress.mark_part("adc", part_key, state, token)
+
+    def _invalidate_step_progress(self, step_key: str | None = None) -> None:
+        progress = getattr(self, "step_progress", None)
+        if progress is None:
+            return
+        if step_key is None:
+            progress.reset_all()
+        else:
+            progress.invalidate_from(step_key)
 
     def _capture_settings_model(self, model: ChipSettingsModel | None = None) -> ChipSettingsModel | None:
         target = model or self._current_settings_model()
@@ -3621,6 +3810,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             return False
         device_addr = self.device_addr()
         extra_writes = tuple(preset.get("extra_register_writes", ()))
+        if self._sinc_write_will_stop_detection(device_addr):
+            self._invalidate_step_progress("detection")
+        progress_token = self._begin_step_progress("waveform")
         shared_state, revision = self._begin_sinc_write(device_addr)
         self._set_waveform_write_busy(True)
         _run_ui_background_task(
@@ -3638,6 +3830,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 device_addr,
                 shared_state=shared_state,
                 revision=revision,
+                progress_token=progress_token,
             ),
             on_error=lambda error: self._finish_sinc_write(
                 str(error),
@@ -3645,6 +3838,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 device_addr,
                 shared_state=shared_state,
                 revision=revision,
+                progress_token=progress_token,
             ),
         )
         return True
@@ -4056,6 +4250,13 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if state is None:
             return None, None
         return state, owner.invalidate_state(state)
+
+    def _sinc_write_will_stop_detection(self, device_addr: int) -> bool:
+        state = self._shared_state_for(device_addr)
+        return bool(
+            getattr(state, "detection_active", False)
+            or getattr(self, "_adc_detection_active", False)
+        )
 
     def _set_detection_state(self, active: bool, device_addr: int | None = None) -> None:
         address = device_addr
@@ -4850,11 +5051,13 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if button is not None:
             button.configure(state="disabled" if busy else "normal")
 
-    def _finish_waveform_selection(self, error: str | None) -> None:
+    def _finish_waveform_selection(self, error: str | None, progress_token: Any | None = None) -> None:
         self._set_waveform_write_busy(False)
         if error:
+            self._mark_step_progress(progress_token, "error", detail=error)
             messagebox.showerror(self.tr("error"), error)
             return
+        self._mark_step_progress(progress_token, "done")
         messagebox.showinfo(self.tr("info"), self.tr("write_success"))
 
     def _apply_sinc_waveform_selection(self) -> bool:
@@ -4869,6 +5072,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if not self._ensure_connected():
             return False
         device_addr = self.device_addr()
+        if self._sinc_write_will_stop_detection(device_addr):
+            self._invalidate_step_progress("detection")
+        progress_token = self._begin_step_progress("waveform")
         shared_state, revision = self._begin_sinc_write(device_addr)
         self._set_waveform_write_busy(True)
         _run_ui_background_task(
@@ -4880,6 +5086,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 device_addr,
                 shared_state=shared_state,
                 revision=revision,
+                progress_token=progress_token,
             ),
             on_error=lambda error: self._finish_sinc_write(
                 str(error),
@@ -4887,6 +5094,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 device_addr,
                 shared_state=shared_state,
                 revision=revision,
+                progress_token=progress_token,
             ),
         )
         return True
@@ -4899,6 +5107,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         *,
         shared_state: AWP1221SharedDeviceState | None = None,
         revision: int | None = None,
+        progress_token: Any | None = None,
     ) -> None:
         owner = getattr(self, "_shared_state_owner", None)
         if (
@@ -4918,6 +5127,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._set_waveform_write_busy(False)
         if error:
             self._sinc_verified_key = None
+            self._mark_step_progress(progress_token, "error", detail=error)
             messagebox.showerror(self.tr("error"), error)
             return
         key = awp1221_sinc_plan_key(plan, device_addr)
@@ -4927,6 +5137,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         model = self._current_settings_model()
         if model is not None:
             model.mark_applied()
+        self._mark_step_progress(progress_token, "done")
         messagebox.showinfo(self.tr("info"), self.tr("write_success"))
 
     def _sinc_play_allowed(self) -> bool:
@@ -4974,6 +5185,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         device_addr = self.device_addr()
         auto_serial_enabled = self._auto_serial_enabled()
         self._invalidate_sinc_verified()
+        progress_token = self._begin_step_progress("waveform")
 
         self._set_waveform_write_busy(True)
         _run_ui_background_task(
@@ -4986,8 +5198,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 offset_code,
                 vpk_code,
             ),
-            on_done=lambda _result: self._finish_waveform_selection(None),
-            on_error=lambda error: self._finish_waveform_selection(str(error)),
+            on_done=lambda _result: self._finish_waveform_selection(None, progress_token),
+            on_error=lambda error: self._finish_waveform_selection(str(error), progress_token),
         )
         return True
 
@@ -6773,6 +6985,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
     def _ensure_connected(self) -> bool:
         if self.ctx.serial.is_connected:
             return True
+        self._invalidate_step_progress()
         owner = getattr(self, "_shared_state_owner", None)
         if owner is not None:
             owner.invalidate_all(clear_active=True)
@@ -6889,10 +7102,13 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
     def apply_adc_settings(self) -> None:
         if not self._ensure_connected():
             return
+        progress_token = self._begin_adc_progress()
         try:
             self._write_adc_settings()
             self._sync_realtime_adc_load()
+            self._mark_adc_progress_part(progress_token, "settings", "done")
         except Exception as exc:
+            self._mark_adc_progress_part(progress_token, "settings", "error")
             messagebox.showerror(self.tr("error"), str(exc))
 
     def _sync_realtime_adc_load(self, load: str | None = None) -> None:
@@ -6983,21 +7199,28 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
     def _commit_live_settings(self) -> None:
         if not self._live_write_allowed():
             return
+        progress_token = self._begin_adc_progress()
         try:
             self._write_adc_settings()
             self._sync_realtime_adc_load()
+            self._mark_adc_progress_part(progress_token, "settings", "done")
         except Exception as exc:
+            self._mark_adc_progress_part(progress_token, "settings", "error")
             self._show_live_write_error(exc)
 
     def _commit_live_stage(self, stage_index: int) -> None:
         if not self._live_write_allowed():
             return
+        part_key = f"stage{int(stage_index)}"
+        progress_token = self._begin_adc_progress()
         try:
             if self.mode_key == "button_mode":
                 self._write_button_adc_stage(stage_index)
             else:
                 self._write_adc_stage(stage_index)
+            self._mark_adc_progress_part(progress_token, part_key, "done")
         except Exception as exc:
+            self._mark_adc_progress_part(progress_token, part_key, "error")
             self._show_live_write_error(exc)
 
     def _bind_live_choice(self, widget: tk.Widget, callback: Callable[[], None]) -> None:
@@ -7062,22 +7285,38 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self._owned_compare_groups(snapshot["mode"]),
         )
 
-    def _write_mismatched_groups(self, snapshot: dict[str, Any], mismatches: tuple[str, ...]) -> None:
+    def _write_mismatched_groups(
+        self,
+        snapshot: dict[str, Any],
+        mismatches: tuple[str, ...],
+        progress_token: Any | None = None,
+    ) -> None:
         address = snapshot["device_addr"]
         if "settings" in mismatches:
-            self._write_adc_settings(snapshot["settings"], address)
+            try:
+                self._write_adc_settings(snapshot["settings"], address)
+            except Exception:
+                self._mark_adc_progress_part(progress_token, "settings", "error")
+                raise
+            self._mark_adc_progress_part(progress_token, "settings", "done")
         for index, config in enumerate(snapshot["stages"]):
-            if f"stage{index}" not in mismatches:
+            part_key = f"stage{index}"
+            if part_key not in mismatches:
                 continue
-            if snapshot["mode"] == "button_mode":
-                self._write_button_adc_stage(index, config, address)
-            else:
-                self._write_adc_stage(
-                    index,
-                    config,
-                    address,
-                    event_mode=snapshot["event_modes"][index],
-                )
+            try:
+                if snapshot["mode"] == "button_mode":
+                    self._write_button_adc_stage(index, config, address)
+                else:
+                    self._write_adc_stage(
+                        index,
+                        config,
+                        address,
+                        event_mode=snapshot["event_modes"][index],
+                    )
+            except Exception:
+                self._mark_adc_progress_part(progress_token, part_key, "error")
+                raise
+            self._mark_adc_progress_part(progress_token, part_key, "done")
 
     def _apply_verified_start(
         self,
@@ -7085,13 +7324,14 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         snapshot: dict[str, Any],
         mismatches: tuple[str, ...],
         choice: str | None,
+        progress_token: Any | None = None,
     ) -> None:
         plan = awp1221_verified_start_plan(mismatches, choice)
         if plan == "abort":
             return
         with _serial_batch(self.ctx.serial):
             if plan == "rewrite-then-command":
-                self._write_mismatched_groups(snapshot, mismatches)
+                self._write_mismatched_groups(snapshot, mismatches, progress_token)
             self._write_control_command(command_key, snapshot["device_addr"])
 
     def _mismatch_group_label(self, group: str) -> str:
@@ -7143,6 +7383,15 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._verified_start_busy = True
         device_addr = snapshot["device_addr"]
         generation = getattr(self, "_adc_lifecycle_generation", 0)
+        progress_tokens: dict[str, Any] = {}
+        for step_key in ("adc", "detection"):
+            token = (
+                self._capture_adc_progress_token(force_new=True)
+                if step_key == "adc"
+                else self._capture_step_progress_token(step_key)
+            )
+            if token is not None:
+                progress_tokens[step_key] = token
         if command_key == "start_detection":
             self._set_start_detection_busy(True)
         _run_ui_background_task(
@@ -7153,6 +7402,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 snapshot,
                 tuple(mismatches),
                 generation,
+                progress_tokens,
             ),
             on_error=lambda error: self._finish_verified_command(
                 command_key,
@@ -7160,6 +7410,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 started=False,
                 device_addr=device_addr,
                 generation=generation,
+                progress_tokens=progress_tokens,
             ),
         )
 
@@ -7169,7 +7420,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         snapshot: dict[str, Any],
         mismatches: tuple[str, ...],
         generation: int,
+        progress_tokens: dict[str, Any] | None = None,
     ) -> None:
+        progress_tokens = progress_tokens or {}
         if generation != getattr(self, "_adc_lifecycle_generation", 0):
             self._finish_verified_command(
                 command_key,
@@ -7177,10 +7430,16 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 started=False,
                 device_addr=snapshot["device_addr"],
                 generation=generation,
+                progress_tokens=progress_tokens,
             )
             return
         choice = None if not mismatches else self._ask_register_mismatch(mismatches)
         plan = awp1221_verified_start_plan(mismatches, choice)
+        if plan != "rewrite-then-command" and mismatches:
+            adc_token = progress_tokens.get("adc")
+            for group in mismatches:
+                if group == "settings" or group in {"stage0", "stage1"}:
+                    self._mark_adc_progress_part(adc_token, group, "error")
         if plan == "abort":
             self._finish_verified_command(
                 command_key,
@@ -7188,18 +7447,27 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 started=False,
                 device_addr=snapshot["device_addr"],
                 generation=generation,
+                progress_tokens=progress_tokens,
             )
             return
+        adc_token = progress_tokens.get("adc")
         device_addr = snapshot["device_addr"]
         _run_ui_background_task(
             self,
-            lambda: self._apply_verified_start(command_key, snapshot, mismatches, choice),
+            lambda: self._apply_verified_start(
+                command_key,
+                snapshot,
+                mismatches,
+                choice,
+                adc_token,
+            ),
             on_done=lambda _result: self._finish_verified_command(
                 command_key,
                 None,
                 started=True,
                 device_addr=device_addr,
                 generation=generation,
+                progress_tokens=progress_tokens,
             ),
             on_error=lambda error: self._finish_verified_command(
                 command_key,
@@ -7207,6 +7475,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 started=False,
                 device_addr=device_addr,
                 generation=generation,
+                progress_tokens=progress_tokens,
             ),
         )
 
@@ -7218,22 +7487,35 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         started: bool,
         device_addr: int,
         generation: int,
+        progress_tokens: dict[str, Any] | None = None,
     ) -> None:
+        progress_tokens = progress_tokens or {}
         self._verified_start_busy = False
         self._set_start_detection_busy(False)
         if generation != getattr(self, "_adc_lifecycle_generation", 0):
             return
         if error:
             self._set_pressure_status("error")
+            if command_key == "start_detection":
+                self._mark_step_progress(
+                    progress_tokens.get("detection"),
+                    "error",
+                    detail=error,
+                )
             messagebox.showerror(self.tr("error"), error)
             return
         if not started:
             return
         if command_key == "start_detection":
             self._set_detection_state(True, device_addr)
+            self._mark_step_progress(progress_tokens.get("detection"), "done")
             self._sync_realtime_adc_load()
         elif command_key == "start_play":
             self._set_waveform_play_state(True, device_addr)
+            token = progress_tokens.get("detection")
+            progress = getattr(self, "step_progress", None)
+            if token is not None and progress is not None:
+                progress.note("detection", "step_trial_played", token)
 
     def start_detection(self) -> None:
         if not self._ensure_connected():
@@ -7259,6 +7541,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
     def stop_detection(self) -> None:
         if self._send_control_command("stop_detection"):
             self._set_detection_state(False)
+            self._invalidate_step_progress("detection")
 
     def start_play(self) -> None:
         if self._sinc_selected() and not self._sinc_play_allowed():
@@ -7281,6 +7564,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if self._send_control_command("awp1221_stop_all"):
             self._set_detection_state(False)
             self._set_waveform_play_state(False)
+            self._invalidate_step_progress("detection")
 
     def read_adc_settings(self) -> None:
         if not self._ensure_connected():
@@ -7369,9 +7653,13 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
     def apply_adc_stage(self, stage_index: int) -> None:
         if not self._ensure_connected():
             return
+        progress_token = self._begin_adc_progress()
+        part_key = f"stage{int(stage_index)}"
         try:
             self._write_adc_stage(stage_index)
+            self._mark_adc_progress_part(progress_token, part_key, "done")
         except Exception as exc:
+            self._mark_adc_progress_part(progress_token, part_key, "error")
             messagebox.showerror(self.tr("error"), str(exc))
 
     def read_adc_stage(self, stage_index: int) -> None:
@@ -7552,6 +7840,8 @@ class AWP1221Page(BasePage):
         self.mode_pages = LazyPages(self._install_mode_page)
         self._shared_state_owner = AWP1221SharedStateOwner()
         self._shared_addr: int | None = None
+        self._last_step_session_identity: tuple[Any, ...] | None = None
+        self._identity_strip_fit_job: str | None = None
         self._settings_store = ChipSettingsStore(model_factory=AWP1221ChipSettingsModel)
         self._settings_model: AWP1221ChipSettingsModel | None = None
         self._settings_defaults: tuple[dict[str, Any], dict[str, Any]] | None = None
@@ -7599,20 +7889,25 @@ class AWP1221Page(BasePage):
         self.footer_scroll, footer_content = self.make_vertical_scroll_area(
             self, horizontal=False, reserve_vertical_gutter=True
         )
-        self.footer_scroll.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        self.footer_scroll.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         footer_content.columnconfigure(0, weight=1)
-        footer, actions, register_panel, identity = self.make_merged_footer(footer_content)
-        yield
+        footer = ttk.Frame(footer_content, style="Panel.TFrame", padding=(8, 4))
         footer.grid(row=0, column=0, sticky="ew")
+        footer.columnconfigure(0, weight=1)
         self._footer_panel = footer
-        self._footer_fit_job = None
-        footer.bind("<Configure>", self._queue_footer_fit)
-        self.bind("<Configure>", self._queue_footer_fit, add="+")
-        self._build_state_actions(actions)
+        self._identity_bar = WrappingGroupBar(footer)
+        self._identity_bar.grid(row=0, column=0, sticky="ew")
+        self._build_identity_bar(self._identity_bar)
+        footer_content.bind("<Configure>", self._queue_identity_strip_fit, add="+")
+        self.bind("<Configure>", self._queue_identity_strip_fit, add="+")
+        self._queue_identity_strip_fit()
         yield
-        register_panel.columnconfigure(8, weight=1)
-        self._build_register_bar(register_panel)
-        self._build_identity_bar(identity)
+        self.mount_trapezoid(
+            self._build_state_actions,
+            self._build_register_bar,
+            state_key="awp1221",
+        )
+        yield
 
         self.gpio_controls = NullGpioControlPanel()
         for mode in ("button_mode", "full_mode"):
@@ -7657,32 +7952,6 @@ class AWP1221Page(BasePage):
         if callable(refresh):
             refresh(page)
 
-    def _queue_footer_fit(self, _event=None) -> None:
-        if self._footer_fit_job is not None:
-            return
-        try:
-            self._footer_fit_job = self.after(0, self._fit_footer_height)
-        except tk.TclError:
-            self._footer_fit_job = None
-
-    def _fit_footer_height(self) -> None:
-        self._footer_fit_job = None
-        try:
-            height = self.winfo_height()
-            if height <= 1:
-                return
-            footer_req = self._footer_panel.winfo_reqheight()
-            desired = min(footer_req + 16, max(96, int(height * .35)))
-            key = (height, footer_req, desired)
-            if key == getattr(self, "_footer_fit_key", None):
-                return
-            self._footer_fit_key = key
-            canvas = self.footer_scroll.canvas
-            if int(canvas.winfo_reqheight()) != desired:
-                canvas.configure(height=desired)
-        except tk.TclError:
-            self._footer_fit_key = None
-
     def _build_state_actions(self, parent: ttk.Frame) -> None:
         button_styles = {
             "awp1221_reset": "Secondary.TButton",
@@ -7699,6 +7968,55 @@ class AWP1221Page(BasePage):
             )
             button.grid(row=0, column=column, sticky="ew", padx=(0, 8))
             self._buttons[key] = button
+
+    def _queue_identity_strip_fit(self, _event=None) -> None:
+        if self._identity_strip_fit_job is not None:
+            return
+        try:
+            self._identity_strip_fit_job = self.after_idle(self._fit_identity_strip)
+        except tk.TclError:
+            self._identity_strip_fit_job = None
+
+    def _fit_identity_strip(self) -> None:
+        self._identity_strip_fit_job = None
+        try:
+            requested = max(36, int(self._footer_panel.winfo_reqheight()) + 16)
+            canvas = self.footer_scroll.canvas
+            if int(canvas.winfo_reqheight()) != requested:
+                canvas.configure(height=requested)
+        except tk.TclError:
+            pass
+
+    def _reset_step_progress(self) -> None:
+        for bar in tuple(getattr(self, "_step_progress_bars", ())):
+            try:
+                bar.reset_all()
+            except (AttributeError, tk.TclError):
+                continue
+
+    def _active_step_progress(self) -> Any | None:
+        page = getattr(self, "_active_step_page", None)
+        return getattr(page, "step_progress", None) if page is not None else None
+
+    def _begin_step_progress(self, step_key: str) -> Any | None:
+        progress = self._active_step_progress()
+        return progress.begin(step_key) if progress is not None else None
+
+    def _mark_step_progress(self, token: Any | None, state: str, *, detail: str = "") -> None:
+        if token is None:
+            return
+        progress = self._active_step_progress()
+        if progress is not None:
+            progress.mark(token.step_key, state, token, detail=detail)
+
+    def _invalidate_step_progress(self, step_key: str | None = None) -> None:
+        progress = self._active_step_progress()
+        if progress is None:
+            return
+        if step_key is None:
+            progress.reset_all()
+        else:
+            progress.invalidate_from(step_key)
 
     def _build_identity_bar(self, parent: ttk.Frame) -> None:
         serial_group = parent.add_group()
@@ -8098,14 +8416,17 @@ class AWP1221Page(BasePage):
         requested = bool(self.en_enabled_var.get())
         if not requested:
             self._invalidate_sinc_for_en_disable()
+            self._invalidate_step_progress("en")
         if not self._ensure_connected():
             self._set_en_state(None)
             self._notify_shared_d4_gpio_panel(None)
             return
 
+        progress_token = self._begin_step_progress("en") if requested else None
         try:
             response = self.ctx.serial.configure_gpio("D4", GPIO_MODE_HIGH if requested else GPIO_MODE_LOW)
         except Exception as exc:
+            self._mark_step_progress(progress_token, "error", detail=str(exc))
             self._set_en_state(None)
             self._invalidate_sinc_for_en_disable()
             self._notify_shared_d4_gpio_panel(None)
@@ -8113,6 +8434,11 @@ class AWP1221Page(BasePage):
             return
 
         if not self._gpio_write_ack_matches(response, requested):
+            if requested:
+                detail = str(getattr(response, "error", "") or "").strip()
+                if not detail:
+                    detail = str(getattr(response, "data", "") or "").strip()
+                self._mark_step_progress(progress_token, "error", detail=detail)
             self._set_en_state(None)
             self._invalidate_sinc_for_en_disable()
             self._notify_shared_d4_gpio_panel(None)
@@ -8124,6 +8450,7 @@ class AWP1221Page(BasePage):
             return
 
         if requested:
+            self._mark_step_progress(progress_token, "done")
             try:
                 self._set_en_high_adc_load()
             except Exception as exc:
@@ -8140,6 +8467,7 @@ class AWP1221Page(BasePage):
     def _ensure_connected(self) -> bool:
         if self.ctx.serial.is_connected:
             return True
+        self._reset_step_progress()
         self._set_en_state(None)
         self._invalidate_gpio_settings()
         owner = getattr(self, "_shared_state_owner", None)
@@ -8159,6 +8487,7 @@ class AWP1221Page(BasePage):
             pass
         else:
             if getattr(self, "_shared_addr", None) != address:
+                self._reset_step_progress()
                 owner = getattr(self, "_shared_state_owner", None)
                 if owner is not None and getattr(self, "_shared_addr", None) is not None:
                     owner.invalidate_all()
@@ -8199,6 +8528,7 @@ class AWP1221Page(BasePage):
             self._sync_awp1221_toolbar_slots(model)
         finally:
             self._settings_sync_depth -= 1
+        self._sync_button_progress_params()
 
     def _settings_model_changed(
         self,
@@ -8217,6 +8547,7 @@ class AWP1221Page(BasePage):
             self._sync_awp1221_toolbar_slots(model)
         finally:
             self._settings_sync_depth -= 1
+        self._sync_button_progress_params()
 
     def apply_settings_model(self, model: ChipSettingsModel | None = None) -> None:
         """Refresh every already-created view from the chip-level draft."""
@@ -8233,6 +8564,7 @@ class AWP1221Page(BasePage):
             self._sync_awp1221_toolbar_slots(target)
         finally:
             self._settings_sync_depth -= 1
+        self._sync_button_progress_params()
 
     def _sync_awp1221_toolbar_slots(self, model: ChipSettingsModel | None) -> None:
         slot = model.slot_selection if model is not None else None
@@ -8243,6 +8575,11 @@ class AWP1221Page(BasePage):
             toolbar = page.preset_toolbar
             if toolbar is not None:
                 toolbar.slot_var.set(str(slot))
+
+    def _sync_button_progress_params(self) -> None:
+        page = self.mode_pages.get("button_mode")
+        if page is not None:
+            page._update_step_progress_params()
 
     def _apply_settings_gpio(self, gpio: Any) -> None:
         if not isinstance(gpio, dict):
@@ -8284,6 +8621,7 @@ class AWP1221Page(BasePage):
             if previous_page is not None:
                 previous_page._capture_settings_model(self._settings_model)
         super()._on_serial_selector_changed(control)
+        self._reset_step_progress()
         self._set_en_state(None)
         self._shared_d4_panel_identity = None
         gpio_controls = getattr(self, "gpio_controls", None)
@@ -8414,6 +8752,8 @@ class AWP1221Page(BasePage):
             self._invalidate_gpio_settings()
         if not resp.ok:
             messagebox.showerror(self.tr("error"), resp.error)
+            return
+        self._reset_step_progress()
 
     def _read_chip_register(self, address: int, register: int) -> int:
         resp = self.ctx.serial.read_register_value(address, register, bits=16)
@@ -8437,6 +8777,7 @@ class AWP1221Page(BasePage):
     def write_chip_state(self, value: int) -> None:
         if not self._ensure_connected():
             return
+        self._reset_step_progress()
         address = self._device_addr()
         try:
             ensure_awp1221_cmd_gate(
@@ -8461,8 +8802,11 @@ class AWP1221Page(BasePage):
     def show_mode(self, mode: str) -> None:
         if mode not in self.mode_pages:
             return
+        mode_changed = mode != self.current_mode
         self.mode_scroll.clamp_width = mode == "button_mode"
         previous_page = self.mode_pages.get(self.current_mode)
+        if mode_changed:
+            self._reset_step_progress()
         if previous_page is not None and self._settings_model is not None:
             previous_page._capture_settings_model(self._settings_model)
         next_page = self.mode_pages[mode]
@@ -8475,6 +8819,11 @@ class AWP1221Page(BasePage):
             page.grid_remove()
         self.mode_pages[mode].grid()
         next_page = self.mode_pages[mode]
+        if mode == "button_mode":
+            next_page._update_step_progress_params()
+            self.show_step_chrome(next_page)
+        else:
+            self.show_step_chrome(None)
         sync_activity = getattr(next_page, "_sync_local_activity", None)
         if callable(sync_activity):
             sync_activity()
@@ -8504,12 +8853,15 @@ class AWP1221Page(BasePage):
             pass
 
     def on_hide(self) -> None:
+        self._reset_step_progress()
+        if hasattr(self, "_step_progress_bars"):
+            self.show_step_chrome(None)
         current_page = self.mode_pages.get(self.current_mode)
         if current_page is not None:
             current_page.on_hide()
 
     def destroy(self) -> None:
-        for name in ("_footer_fit_job", "_mode_scroll_layout_job"):
+        for name in ("_identity_strip_fit_job", "_mode_scroll_layout_job"):
             job = getattr(self, name, None)
             if not job:
                 continue
@@ -8522,9 +8874,20 @@ class AWP1221Page(BasePage):
 
     def on_show(self) -> None:
         super().on_show()
+        identity = active_serial_identity(self.ctx, self.page_name)
+        normalized_identity = tuple(identity) if identity is not None else None
+        if normalized_identity != getattr(self, "_last_step_session_identity", None):
+            self._reset_step_progress()
+        self._last_step_session_identity = normalized_identity
+        if hasattr(self, "_step_progress_bars") and self.current_mode == "button_mode":
+            page = self.mode_pages.get("button_mode")
+            if page is not None:
+                page._update_step_progress_params()
+            self.show_step_chrome(page)
+        elif hasattr(self, "_step_progress_bars"):
+            self.show_step_chrome(None)
         # Navigation does not change D4. Retain its ACK only for the same
         # connected manager/generation; a reconnect still needs confirmation.
-        identity = active_serial_identity(self.ctx, self.page_name)
         same_en_session = identity is not None and identity == getattr(self, "_en_identity", None)
         if same_en_session:
             self._refresh_en_status()
