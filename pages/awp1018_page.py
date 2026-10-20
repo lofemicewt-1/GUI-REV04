@@ -1425,11 +1425,10 @@ class AWP1018NormalModePage(BasePage):
 
     def _build_preset_header(self, parent: tk.Misc) -> ttk.Frame:
         title_key = self.button_mode_key
-        header = self.make_title(parent, title_key, show_logo=False)
-        header.columnconfigure(0, weight=0)
-        header.columnconfigure(1, weight=1)
-
-        preset_frame = self.make_preset_frame(header)
+        header = ttk.Frame(parent, style="App.TFrame")
+        header.columnconfigure(0, weight=1)
+        title_header = self.make_title(header, title_key, show_logo=False)
+        title_header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
         board_identity = self._board_identity()
         selected_slot = (
             self._board_slot_provider(board_identity, None)
@@ -1437,7 +1436,7 @@ class AWP1018NormalModePage(BasePage):
             else 0
         )
         self.preset_toolbar = PresetToolbar(
-            preset_frame,
+            header,
             translate=lambda key: self.tr(key),
             callbacks={
                 "software_preset_1": lambda: self.apply_software_preset(0),
@@ -1470,11 +1469,13 @@ class AWP1018NormalModePage(BasePage):
                 "apply_slot": "apply_current_settings_tooltip",
                 "read_and_apply": "board_preset_read_tooltip",
             },
+            label_keys={"read_and_apply": "r2b_aux_read_slot_into_page"},
             slot_values=(0, 1, 2),
             selected_slot=selected_slot,
             on_slot_selected=lambda slot: self._on_board_slot_selected(slot),
+            auxiliary_actions=("read_and_apply",),
         )
-        self.preset_toolbar.grid(row=0, column=0, sticky="ew")
+        self.preset_toolbar.mount_header()
         self.board_slot_var = self.preset_toolbar.slot_var
         self.board_slot_combo = self.preset_toolbar.slot_combo
         self._labels["board_slot"] = self.preset_toolbar.slot_label
@@ -1546,7 +1547,7 @@ class AWP1018NormalModePage(BasePage):
         self.rowconfigure(1, weight=1)
 
         header = self._build_preset_header(self)
-        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
+        header.grid(row=0, column=0, sticky="ew")
 
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")

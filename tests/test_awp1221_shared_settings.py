@@ -180,7 +180,8 @@ class Awp1221SharedSettingsUiTests(unittest.TestCase):
         toolbar = self.button.preset_toolbar
         self.assertIsNotNone(toolbar)
         self.assertEqual(toolbar.buttons["apply_slot"].winfo_manager(), "")
-        self.assertEqual(toolbar.buttons["read_and_apply"].grid_info()["columnspan"], 2)
+        self.assertEqual(int(toolbar.buttons["read_and_apply"].grid_info()["row"]), 0)
+        self.assertIs(toolbar.buttons["read_and_apply"].master, toolbar.board_frame)
         self.assertEqual(
             toolbar.buttons["read_and_apply"].cget("text"),
             self.button.tr("awp1221_type4_apply"),

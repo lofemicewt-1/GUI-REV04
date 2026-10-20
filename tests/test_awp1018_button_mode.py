@@ -41,6 +41,13 @@ class AWP1018ButtonModeTests(unittest.TestCase):
         self.assertTrue(all(value.get() == "" for value in normal._diff_status_value_vars.values()))
         self.assertNotIn("awp1018_realtime_display", normal._buttons)
         self.assertEqual(tuple(normal.preset_toolbar.slot_combo.cget("values")), ("0", "1", "2"))
+        self.assertIn("read_and_apply", normal.preset_toolbar.auxiliary_actions)
+        self.assertEqual(normal.preset_toolbar.buttons["read_and_apply"].winfo_manager(), "")
+        read_callback = normal.preset_toolbar.callbacks["read_and_apply"]
+        apply_callback = normal.preset_toolbar.callbacks["apply_slot"]
+        self.assertIs(read_callback.__self__, normal)
+        self.assertIs(apply_callback.__self__, normal)
+        self.assertIsNot(read_callback.__func__, apply_callback.__func__)
 
         self.assertEqual(diff.channel_count, 4)
         self.assertEqual(len(diff._channel_checks), 4)
