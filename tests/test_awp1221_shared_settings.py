@@ -2,11 +2,28 @@ from __future__ import annotations
 
 import base64
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
 
-from pages.awp1221_page import AWP1221ChipSettingsModel
+from pages.awp1221_page import (
+    AWP1221ChipSettingsModel,
+    AWP1221ModePage,
+    decode_awp1221_adc_wave,
+)
+from pages.awp1221_board_presets import AWP1221BoardPresetMixin
 from pages.chip_settings_model import can_save_slot
+
+
+class Value:
+    def __init__(self, value=""):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
 
 
 class Awp1221Type4ModelPreflightTests(unittest.TestCase):
@@ -18,6 +35,109 @@ class Awp1221Type4ModelPreflightTests(unittest.TestCase):
             can_save_slot(model),
             (False, "preset_slot_advanced_block_warning"),
         )
+
+    def test_button_capture_preserves_unedited_full_stage_register_words_and_blockers(self) -> None:
+        control = (4 << 12) | (5 << 8) | 0x00DD
+        press = 0xF800
+        release = 0x4123
+        slope = 0x0102
+        wave = 0x6422
+        registers = AWP1221ModePage.STAGE_REGISTER_RANGES[0]
+        button = {
+            "mode": "press", "time_code": 5, "target": 1, "debounce": True,
+            "use_high_12_bits": True, "threshold": 0x800, "wave": 2, "repeat": 1,
+        }
+        old_values = (control, press, release, slope, wave)
+        unsupported = AWP1221ModePage._type4_unsupported_stage(old_values, button, 0)
+        model = AWP1221ChipSettingsModel(shared={
+            "stage0_semantics": {
+                "button": dict(button),
+                "register_values": old_values,
+                "type4_unsupported": unsupported,
+            },
+        })
+        page = SimpleNamespace(
+            mode_key="button_mode",
+            STAGE_REGISTER_RANGES=AWP1221ModePage.STAGE_REGISTER_RANGES,
+            _button_stage_vars=[{}],
+            _stage_vars=[],
+            _button_stage_config=lambda _index: dict(button),
+            _merge_button_stage_semantics=lambda index, current, previous, current_button: (
+                AWP1221ModePage._merge_button_stage_semantics(
+                    page, index, current, previous, current_button
+                )
+            ),
+            _button_stage_values_from_config=lambda index, current, config: (
+                AWP1221ModePage._button_stage_values_from_config(page, index, current, config)
+            ),
+            _type4_unsupported_stage=AWP1221ModePage._type4_unsupported_stage,
+        )
+
+        captured = AWP1221ModePage._capture_stage_semantics(page, 0, model)
+
+        self.assertEqual(captured["register_values"], old_values)
+        self.assertEqual(captured["type4_unsupported"], unsupported)
+        self.assertIn("stage0:slope", unsupported)
+        model.set_shared("stage0_semantics", captured)
+        model.set_advanced("type4_unsupported", unsupported)
+        self.assertEqual(can_save_slot(model), (False, "preset_slot_advanced_block_warning"))
+
+        edited = dict(button, wave=7)
+        merged = AWP1221ModePage._merge_button_stage_semantics(
+            page,
+            0,
+            dict(zip(registers, old_values)),
+            button,
+            edited,
+        )
+        self.assertEqual(merged[registers[0]], control)
+        self.assertEqual(merged[registers[3]], slope)
+        merged_wave = decode_awp1221_adc_wave(merged[registers[4]])
+        self.assertEqual(merged_wave["press_wave"], 7)
+        self.assertEqual(merged_wave["release_wave"], 7)
+        self.assertEqual(merged_wave["press_repeat"], 1)
+        self.assertEqual(merged_wave["release_repeat"], 3)
+
+    def test_full_type4_capture_uses_stage_recipes_from_settings_model(self) -> None:
+        from pages.awp1221_page import AWP1221_RETURN_BIT_TIME_OPTIONS, AWP1221_ZERO_TIME_OPTIONS
+
+        buttons = (
+            {"mode": "press", "time_code": 3, "target": 1, "debounce": False,
+             "use_high_12_bits": True, "threshold": 0x800, "wave": 5, "repeat": 2},
+            {"mode": "release", "time_code": 3, "target": 0, "debounce": False,
+             "use_high_12_bits": True, "threshold": 0x123, "wave": 5, "repeat": 3},
+        )
+        model = AWP1221ChipSettingsModel(shared={
+            "stage0_semantics": {"button": buttons[0]},
+            "stage1_semantics": {"button": buttons[1]},
+        })
+        page = SimpleNamespace(
+            mode_key="full_mode",
+            _button_stage_vars=[],
+            _capture_settings_model=lambda: model,
+            _remember_board_rom=lambda: None,
+            _sinc_active_group=None,
+            _sinc_selected=lambda: False,
+            _board_rom_values={5: ("SINE", "0x1F", "0x2", "0x3", "7", "256", "ROM")},
+            _sinc_group_values={},
+            _format_trigger_waveform=lambda number: f"slice{number}",
+            _parse_trigger_waveform=AWP1221ModePage._parse_trigger_waveform,
+            _parse_binary_option=AWP1221ModePage._parse_binary_option,
+            zero_time_var=Value(AWP1221_ZERO_TIME_OPTIONS[0]),
+            press_return_bit_time_var=Value(AWP1221_RETURN_BIT_TIME_OPTIONS[1]),
+            release_return_bit_time_var=Value(AWP1221_RETURN_BIT_TIME_OPTIONS[2]),
+            sinc_max_voltage_var=Value("80"),
+            sinc_min_voltage_var=Value("12"),
+            tr=lambda key, **_kwargs: key,
+        )
+
+        captured = AWP1221BoardPresetMixin._capture_type4_model(page)
+
+        self.assertEqual(captured.thresholds, (0x800, 0x123))
+        self.assertEqual(captured.event_repeats, (2, 3))
+        self.assertEqual(captured.wave_refs, (0, 0))
+        self.assertEqual(captured.jumps, (1, 0))
+        self.assertEqual(captured.waves[0].times, (7,))
 
 
 class Awp1221SharedSettingsUiTests(unittest.TestCase):

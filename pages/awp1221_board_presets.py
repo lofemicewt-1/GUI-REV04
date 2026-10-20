@@ -55,7 +55,8 @@ class AWP1221BoardPresetMixin:
     def _capture_type4_model(self) -> Awp1221PresetModel:
         from pages.awp1221_page import (
             AWP1221_RETURN_BIT_TIME_OPTIONS, AWP1221_ZERO_TIME_OPTIONS,
-            awp1221_parse_threshold_text, awp1221_sinc_serial_group,
+            awp1221_format_threshold_signed, awp1221_parse_threshold_text,
+            awp1221_sinc_serial_group,
         )
         self._remember_board_rom()
         active = getattr(self, "_sinc_active_group", None)
@@ -65,9 +66,44 @@ class AWP1221BoardPresetMixin:
         current_sinc = None
         if self._sinc_selected():
             current_sinc = awp1221_sinc_serial_group(self.sinc_serial_var.get())[1]
+        settings_model = None
+        stage_values = []
+        if self._button_stage_vars:
+            # Keep Button Mode's raw view reads: these preserve its established
+            # validation text and the exact threshold spelling (including 0x800).
+            stage_values = [
+                {
+                    "wave": variables["wave"].get(),
+                    "threshold": variables["threshold"].get(),
+                    "repeat": variables["repeat"].get(),
+                    "jump_target": variables["jump_target"].get(),
+                }
+                for variables in self._button_stage_vars
+            ]
+        elif self.mode_key == "full_mode":
+            settings_model = self._capture_settings_model()
+            if settings_model is None:
+                raise ValueError("AWP1221 settings are not available")
+            for stage_index in range(2):
+                semantics = settings_model.shared.get(f"stage{stage_index}_semantics", {})
+                button = semantics.get("button") if isinstance(semantics, dict) else None
+                if not isinstance(button, dict):
+                    raise ValueError(f"Full Mode Stage{stage_index} settings are unavailable")
+                threshold = int(button.get("threshold", 0)) & 0x0FFF
+                threshold_text = (
+                    "0x800" if threshold == 0x800
+                    else awp1221_format_threshold_signed(threshold)
+                )
+                target = int(button.get("target", 0))
+                stage_values.append({
+                    "wave": self._format_trigger_waveform(int(button.get("wave", 0))),
+                    "threshold": threshold_text,
+                    "repeat": str(button.get("repeat", 0)),
+                    "jump_target": f"Stage{target}",
+                })
         recipes, refs, thresholds, repeats, jumps = [], [], [], [], []
-        for variables in self._button_stage_vars:
-            start = self._parse_trigger_waveform(variables["wave"].get())
+        for values_for_stage in stage_values:
+            start = self._parse_trigger_waveform(values_for_stage["wave"])
             values = self._board_rom_values.get(start)
             if values is not None and start != current_sinc:
                 kind, coarse, fine, offset, time, repeat, source = values
@@ -92,14 +128,15 @@ class AWP1221BoardPresetMixin:
             if recipe not in recipes:
                 recipes.append(recipe)
             refs.append(recipes.index(recipe))
-            thresholds.append(awp1221_parse_threshold_text(str(variables["threshold"].get())))
-            repeats.append(int(str(variables["repeat"].get()), 0))
-            target = str(variables["jump_target"].get())
+            thresholds.append(awp1221_parse_threshold_text(str(values_for_stage["threshold"])))
+            repeats.append(int(str(values_for_stage["repeat"]), 0))
+            target = str(values_for_stage["jump_target"])
             if target not in ("Stage0", "Stage1"):
                 raise ValueError(f"Jump target must be Stage0 or Stage1, not {target}")
             jumps.append(0 if target == "Stage0" else 1)
         has_sinc = any(recipe.kind >= 4 for recipe in recipes)
-        settings_model = self._capture_settings_model()
+        if settings_model is None:
+            settings_model = self._capture_settings_model()
         if settings_model is None:
             raise ValueError("AWP1221 settings are not available")
         allowed, warning_key = can_save_slot(settings_model)
@@ -143,11 +180,14 @@ class AWP1221BoardPresetMixin:
             address = self.device_addr()
             raw = None
             if action == "save":
-                allowed, warning_key = can_save_slot(settings_model)
-                if not allowed:
-                    messagebox.showwarning(self.tr("info"), self.tr(warning_key or "preset_slot_advanced_block_warning"))
-                    return
-                model = self._capture_type4_model()
+                try:
+                    model = self._capture_type4_model()
+                except ValueError as exc:
+                    warning = self.tr("preset_slot_advanced_block_warning")
+                    if str(exc) == warning:
+                        messagebox.showwarning(self.tr("info"), warning)
+                        return
+                    raise
                 raw = pack_v2_preset(V2Preset(PAYLOAD_TYPE_AWP1221_RUNTIME, 0x1221,
                                               address, pack_awp1221_payload(model)))
         except (ValueError, TypeError) as exc:

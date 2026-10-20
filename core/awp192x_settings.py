@@ -26,13 +26,48 @@ def settings_store_for_context(ctx: Any) -> ChipSettingsStore:
     return store
 
 
-def connection_key_for_context(ctx: Any) -> tuple[int, str]:
-    """Identify the active serial router/port; DeviceKey also includes address."""
+def connection_key_for_context(
+    ctx: Any,
+    page_name: str = "awp1921_1923",
+) -> tuple[Any, ...]:
+    """Identify the chip page's active transport session.
+
+    The page-level selector can override the application's global port. A
+    SerialRouter identity also includes its manager and connection generation
+    so reconnecting on the same port does not reuse an old draft.
+    """
     state = ctx.state
-    port = getattr(state, "selected_port", None)
+    serial = ctx.serial
+    selector = getattr(serial, "selected_port_for_page", None)
+    try:
+        port = selector(page_name) if callable(selector) else None
+    except TypeError:
+        port = selector() if callable(selector) else None
+    if port is None:
+        port = getattr(state, "selected_port", None)
     if port is None:
         port = getattr(state, "extra", {}).get("selected_port_name", "")
-    return id(ctx.serial), str(port or "")
+
+    identity_provider = getattr(serial, "page_connection_identity", None)
+    if callable(identity_provider):
+        try:
+            identity = identity_provider(page_name)
+        except TypeError:
+            identity = identity_provider()
+        if identity is not None:
+            return (id(serial), *tuple(identity))
+
+    manager_provider = getattr(serial, "manager_for_port", None)
+    manager = manager_provider(str(port)) if callable(manager_provider) and port else None
+    if manager is not None:
+        generations = getattr(serial, "_manager_connection_generations", {})
+        generation = max(
+            int(getattr(manager, "connection_generation", 0)),
+            int(generations.get(id(manager), 0)),
+        )
+        return id(serial), str(port or ""), id(manager), generation
+
+    return id(serial), str(port or ""), int(getattr(serial, "connection_generation", 0))
 
 
 def waveform_number(value: Any) -> int:

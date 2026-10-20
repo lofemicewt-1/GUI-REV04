@@ -2782,6 +2782,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             if stage is not None:
                 updates[f"stage{stage_index}_semantics"] = stage
                 unsupported.extend(stage.get("type4_unsupported", ()))
+            else:
+                previous = target.shared.get(f"stage{stage_index}_semantics", {})
+                if isinstance(previous, dict):
+                    unsupported.extend(previous.get("type4_unsupported", ()))
         target.update_shared(updates)
         target.update_advanced({"type4_unsupported": tuple(sorted(set(unsupported)))})
         gpio = self._capture_gpio_settings()
@@ -2806,7 +2810,12 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 button = self._button_stage_config(stage_index)
             except (AttributeError, IndexError, TypeError, ValueError):
                 return None
-            composed = self._button_stage_values_from_config(stage_index, current, button)
+            composed = self._merge_button_stage_semantics(
+                stage_index,
+                current,
+                previous.get("button", {}),
+                button,
+            )
             current.update(composed)
         elif self.mode_key == "full_mode" and stage_index < len(self._stage_vars):
             try:
@@ -2837,6 +2846,78 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             "button": dict(button),
             "register_values": register_values,
             "type4_unsupported": self._type4_unsupported_stage(register_values, button, stage_index),
+        }
+
+    def _merge_button_stage_semantics(
+        self,
+        stage_index: int,
+        current: dict[int, int],
+        previous: dict[str, Any],
+        button: dict[str, Any],
+    ) -> dict[int, int]:
+        """Apply only Button edits while retaining Full-only register fields."""
+        shared_fields = (
+            "mode", "time_code", "target", "debounce", "use_high_12_bits",
+            "threshold", "wave", "repeat",
+        )
+        if not isinstance(previous, dict) or any(name not in previous for name in shared_fields):
+            return self._button_stage_values_from_config(stage_index, current, button)
+
+        changed = {name: previous[name] != button[name] for name in shared_fields}
+        if not any(changed.values()):
+            return dict(current)
+
+        control_reg, press_reg, release_reg, slope_reg, wave_reg = self.STAGE_REGISTER_RANGES[stage_index]
+        control = int(current[control_reg]) & 0xFFFF
+        press = int(current[press_reg]) & 0xFFFF
+        release = int(current[release_reg]) & 0xFFFF
+        wave = int(current[wave_reg]) & 0xFFFF
+
+        if changed["mode"]:
+            event_bits = 0x0011 if button["mode"] == "press" else 0x0022
+            control = (control & ~0x0033) | event_bits
+        if changed["time_code"]:
+            time_code = int(button["time_code"])
+            control = (control & ~0xFF00) | (time_code << 8) | (time_code << 12)
+
+        if changed["target"] or changed["debounce"]:
+            common = ((int(bool(button["debounce"])) << 15)
+                      | (int(button["target"]) << 13))
+            press = (press & ~0xA000) | common
+            release = (release & ~0xA000) | common
+
+        active_reg = press_reg if button["mode"] == "press" else release_reg
+        active_value = press if active_reg == press_reg else release
+        if changed["use_high_12_bits"]:
+            active_value = (active_value & ~AWP1221_ADC_THRESHOLD_PRECISION_MASK) | (
+                int(bool(button["use_high_12_bits"])) * AWP1221_ADC_THRESHOLD_PRECISION_MASK
+            )
+        if changed["threshold"]:
+            active_value = (active_value & ~0x0FFF) | (int(button["threshold"]) & 0x0FFF)
+        if active_reg == press_reg:
+            press = active_value
+        else:
+            release = active_value
+
+        if changed["wave"]:
+            wave = (wave & ~0x1F1F) | (int(button["wave"]) & 0x1F) | (
+                (int(button["wave"]) & 0x1F) << 8
+            )
+        if changed["repeat"]:
+            repeat = int(button["repeat"]) & 0x7
+            wave = (wave & ~0xE0E0) | (repeat << 5) | (repeat << 13)
+
+        return {
+            control_reg: control & 0xFFFF,
+            press_reg: press & 0xFFFF,
+            release_reg: release & 0xFFFF,
+            slope_reg: int(current.get(slope_reg, 0)) & 0xFFFF,
+            wave_reg: wave & 0xFFFF,
+        } if slope_reg in current else {
+            control_reg: control & 0xFFFF,
+            press_reg: press & 0xFFFF,
+            release_reg: release & 0xFFFF,
+            wave_reg: wave & 0xFFFF,
         }
 
     @staticmethod

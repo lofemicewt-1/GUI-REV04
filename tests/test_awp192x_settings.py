@@ -7,10 +7,15 @@ from unittest.mock import patch
 from core.awp192x_button_runtime import (
     AWP192X_GENERATOR_SINC,
     AWP192X_GENERATOR_SINC_VERSION,
+    Awp192xSineWaveformRecipe,
     Awp192xWaveformRecipe,
     generate_awp192x_waveform_points,
 )
-from core.awp192x_settings import Awp192xChipSettingsModel, waveform_number
+from core.awp192x_settings import (
+    Awp192xChipSettingsModel,
+    connection_key_for_context,
+    waveform_number,
+)
 from core.waveform_storage import WaveformStorage
 from pages.awp192x_modes import (
     ButtonModePage,
@@ -470,6 +475,8 @@ class Awp192xSettingsTests(unittest.TestCase):
             ENDLESS_PLAY_BIT=0x4000,
             BUTTON_RUNTIME_PAYLOAD_VERSION=2,
             BUTTON_RUNTIME_FLAG_SERIAL_VALID=1,
+            WAVEFORM_FIELD_MASK=ButtonModePage.WAVEFORM_FIELD_MASK,
+            REPEAT_FIELD_MASK=ButtonModePage.REPEAT_FIELD_MASK,
             ADC_OUTPUT_ENABLE=0x8000,
             ADC_D2_CONFIG=0x4000,
             _current_max_output_reg_value=lambda: 2,
@@ -486,6 +493,234 @@ class Awp192xSettingsTests(unittest.TestCase):
         self.assertFalse(hasattr(page, "waveform_page"))
         with self.assertRaisesRegex(ValueError, "at most 8 waveforms"):
             ButtonModePage.build_button_runtime_payload(page)
+
+    def test_full_reg14_decode_and_sync_never_write_amplitude_register(self):
+        options = build_awp192x_amp_options()
+        state = SimpleNamespace()
+        page = SimpleNamespace(
+            SLOW_TIME_OPTIONS=FullModePage.SLOW_TIME_OPTIONS,
+            DATA_DEPTH_OPTIONS=FullModePage.DATA_DEPTH_OPTIONS,
+            DAC_MODE_OPTIONS=FullModePage.DAC_MODE_OPTIONS,
+            amp_options=options,
+            full_slow_up_var=Value("0"),
+            full_slow_down_var=Value("0"),
+            full_half_cycle_var=Value(False),
+            full_phase_var=Value("0"),
+            full_data_depth_var=Value("1024"),
+            full_dac_mode_var=Value("SRAM/ROM"),
+            max_voltage_var=Value(""),
+            ctx=SimpleNamespace(state=state),
+            _option_label=lambda table, code: FullModePage._option_label(table, code),
+        )
+
+        FullModePage._apply_full_reg14_settings(page, 0xA57E)
+
+        self.assertEqual(page.full_slow_up_var.get(), FullModePage._option_label(FullModePage.SLOW_TIME_OPTIONS, 2))
+        self.assertEqual(page.full_slow_down_var.get(), FullModePage._option_label(FullModePage.SLOW_TIME_OPTIONS, 2))
+        self.assertFalse(page.full_half_cycle_var.get())
+        self.assertEqual(page.full_phase_var.get(), "180")
+        self.assertEqual(page.full_data_depth_var.get(), FullModePage._option_label(FullModePage.DATA_DEPTH_OPTIONS, (0xA57E >> 7) & 7))
+        self.assertEqual(page.full_dac_mode_var.get(), FullModePage._option_label(FullModePage.DAC_MODE_OPTIONS, 2))
+        self.assertEqual(page.max_voltage_var.get(), options[-1][0])
+        self.assertEqual(state.current_max_output_reg_value, 0xA57E)
+
+        writes = []
+        page._syncing_chip_settings = False
+        page._reading_current_settings = True
+        page._compose_full_reg14 = lambda: (_ for _ in ()).throw(AssertionError("must return before compose"))
+        page._write_full_reg14 = lambda **_kwargs: writes.append("write")
+        page.max_voltage_var.set("unmatched amplitude label")
+        FullModePage._on_voltage_changed(page)
+        self.assertEqual(writes, [])
+
+    def test_full_duration_sync_updates_hint_without_writing_register_15(self):
+        writes = []
+        page = SimpleNamespace(
+            duration_var=Value("27"),
+            ctx=SimpleNamespace(state=SimpleNamespace()),
+            _syncing_chip_settings=True,
+            _reading_current_settings=False,
+            write_reg=lambda *args, **kwargs: writes.append((args, kwargs)),
+            _full_period_points=lambda: 256,
+            period_hint_var=Value(""),
+            language="en",
+        )
+
+        FullModePage._update_period_hint(page)
+
+        self.assertEqual(writes, [])
+        self.assertEqual(page.ctx.state.single_point_duration_us, 27)
+        self.assertIn("Waveform period", page.period_hint_var.get())
+
+    def test_full_slot_payload_uses_fresh_shared_settings_snapshot(self):
+        storage = WaveformStorage()
+        recipes = {}
+        for index in (2, 7):
+            recipe = Awp192xSineWaveformRecipe(
+                slice_index=index,
+                start_addr=index * 8,
+                points=4,
+                start_phase_deg=0,
+                end_phase_deg=90,
+                amplitude_mv=1000,
+                offset_mv=0,
+            )
+            recipes[index] = recipe
+            values = list(generate_awp192x_waveform_points(recipe))
+            storage.add_or_replace(index, recipe.start_addr, recipe.start_addr + len(values), len(values), "sine", values, recipe)
+
+        model = Awp192xChipSettingsModel(shared={
+            "output_amplitude": 0x007E,
+            "point_duration": 42,
+            "thresholds": {"press": 12.0, "release": -4.0},
+            "filter_settings": {"average": 3, "ovv": 4},
+            "polarity": 1,
+            "range": 1,
+            "press_action": {"repeat": 5, "wave": 7, "endless": False, "enabled": True},
+            "release_action": {"repeat": 4, "wave": 2, "endless": False, "enabled": False},
+            "manual_playback": {"repeat": 6, "wave": 7, "endless": False},
+            "serial_waveforms": [{"wave": 0x1F, "repeat": 1} for _ in range(8)],
+        })
+        page = SimpleNamespace(
+            page_name="full_mode",
+            storage=storage,
+            waveform_page=None,
+            SERIAL_WAVE_NUMBER=0x1E,
+            ADC_DETECT_ENABLE=0x8000,
+            ENDLESS_PLAY_BIT=0x4000,
+            ADC_EVENT_CONFIG=0x0321,
+            BUTTON_RUNTIME_PAYLOAD_VERSION=2,
+            BUTTON_RUNTIME_FLAG_SERIAL_VALID=1,
+            WAVEFORM_FIELD_MASK=ButtonModePage.WAVEFORM_FIELD_MASK,
+            REPEAT_FIELD_MASK=ButtonModePage.REPEAT_FIELD_MASK,
+            _map_adc_voltage_to_code=lambda voltage, gain=0: 0x800 + round(float(voltage) * 10) + gain,
+            _parse_script_repeat_count=lambda text, name: ButtonModePage._parse_script_repeat_count(page, text, name),
+            _parse_script_waveform_slice=lambda text, name: ButtonModePage._parse_script_waveform_slice(page, text, name),
+            _set_repeat_and_waveform_fields=lambda base, repeat, wave: ButtonModePage._set_repeat_and_waveform_fields(page, base, repeat, wave),
+            _set_waveform_field=lambda base, wave: ButtonModePage._set_waveform_field(page, base, wave),
+            _set_repeat_field=lambda base, repeat: ButtonModePage._set_repeat_field(page, base, repeat),
+        )
+
+        payload = ButtonModePage.build_button_runtime_payload(page, settings_model=model)
+
+        self.assertEqual(payload.max_output_reg, 0x007E)
+        self.assertEqual(payload.duration_reg, 41)
+        self.assertEqual((payload.press_threshold_reg, payload.release_threshold_reg), (2169, 2009))
+        self.assertEqual(payload.adc_filter_reg, 0x34)
+        self.assertEqual(payload.adc_event_wait_press, 0x0321)
+        self.assertEqual(payload.press_action_base, (4 << 5) | 7)
+        self.assertEqual(payload.release_action_base, (3 << 5) | 2)
+        self.assertEqual(payload.manual_play_reg, (5 << 5) | 7)
+        self.assertEqual(payload.waveforms, (recipes[7], recipes[2]))
+
+    def test_full_slot_save_preflights_and_serializes_the_same_snapshot(self):
+        model = Awp192xChipSettingsModel(shared={"output_amplitude": 2})
+        preflight = []
+        serialized = []
+        uploaded = []
+
+        def capture_shared():
+            model.update_shared({"press_action": {"wave": 7, "repeat": 5}})
+            return model.shared
+
+        def capture_advanced():
+            model.set_advanced("slot_omitted", True)
+            return model.advanced
+
+        def preflight_snapshot(snapshot):
+            preflight.append(snapshot)
+            return True, None
+
+        page = SimpleNamespace(
+            page_name="full_mode",
+            _ensure_connected=lambda: True,
+            _chip_settings_model=model,
+            _capture_shared_settings=capture_shared,
+            _capture_full_advanced_settings=capture_advanced,
+            build_board_stored_preset=lambda _page, settings_model: serialized.append(settings_model) or object(),
+            board_slot_var=Value("2"),
+            tr=lambda key: key,
+            ctx=SimpleNamespace(
+                state=SimpleNamespace(awp192x_device_addr=0x44),
+                serial=SimpleNamespace(
+                    sync_config_preset=lambda *args, **kwargs: uploaded.append((args, kwargs))
+                    or SimpleNamespace(ok=True),
+                ),
+            ),
+        )
+
+        with patch("pages.awp192x_modes.can_save_slot", side_effect=preflight_snapshot), \
+             patch("core.awp192x_button_runtime.pack_awp192x_button_payload", return_value=b"runtime"), \
+             patch("core.arduino_preset_sync.pack_v2_preset", return_value=b"preset"), \
+             patch("core.arduino_preset_sync.signature_for_address", return_value=0x1923), \
+             patch("pages.awp192x_modes.messagebox.showwarning") as warning, \
+             patch("pages.awp192x_modes.messagebox.showinfo"):
+            ButtonModePage.save_board_preset(page)
+
+        warning.assert_called_once()
+        self.assertIs(preflight[0], serialized[0])
+        self.assertIsNot(preflight[0], model)
+        self.assertEqual(preflight[0].shared["press_action"], {"wave": 7, "repeat": 5})
+        self.assertTrue(preflight[0].advanced["slot_omitted"])
+        self.assertEqual(uploaded[0][0][0], 2)
+
+    def test_settings_key_and_selector_switch_follow_page_session_generation(self):
+        state = SimpleNamespace(
+            awp192x_device_addr=0x44,
+            selected_port="COM1",
+            extra={"serial_port_awp1921_1923": "COM1", "generation": 1},
+        )
+        serial = SimpleNamespace(
+            selected_port_for_page=lambda name: state.extra.get(f"serial_port_{name}", state.selected_port),
+            page_connection_identity=lambda name: (
+                state.extra.get(f"serial_port_{name}", state.selected_port),
+                51,
+                state.extra["generation"],
+            ),
+        )
+        ctx = SimpleNamespace(state=state, serial=serial)
+        self.assertEqual(
+            connection_key_for_context(ctx, "awp1921_1923"),
+            (id(serial), "COM1", 51, 1),
+        )
+
+        class Combo:
+            def bind(self, _sequence, callback, add=None):
+                self.callback = callback
+
+        combo = Combo()
+        host = SimpleNamespace(
+            page_name="awp1921_1923",
+            _serial_selectors=[{"page_name": "awp1921_1923", "combo": combo}],
+            current_mode="button_mode",
+            mode_pages={},
+        )
+        page = SimpleNamespace(
+            master=host,
+            ctx=ctx,
+            page_name="button_mode",
+            storage=WaveformStorage(),
+            _chip_settings_device_key=None,
+            _syncing_chip_settings=False,
+            _sync_toolbar_slot=lambda: None,
+            _capture_shared_settings=lambda: {},
+            after_idle=lambda callback: callback(),
+            _awp192x_settings_host=lambda: host,
+            _awp192x_settings_page_name=lambda: host.page_name,
+        )
+        page._select_awp192x_settings_model = lambda: ButtonModePage._select_awp192x_settings_model(page)
+        page._on_awp192x_settings_connection_changed = lambda event=None: ButtonModePage._on_awp192x_settings_connection_changed(page, event)
+        host.mode_pages["button_mode"] = page
+        first = page._select_awp192x_settings_model()
+
+        ButtonModePage._bind_awp192x_settings_connection_selector(page)
+        state.extra["serial_port_awp1921_1923"] = "COM2"
+        state.extra["generation"] = 2
+        combo.callback(None)
+
+        self.assertIsNot(page._chip_settings_model, first)
+        self.assertNotEqual(page._chip_settings_model.device_key, first.device_key)
+        self.assertEqual(page._chip_settings_model.device_key.connection, (id(serial), "COM2", 51, 2))
 
 
 if __name__ == "__main__":
