@@ -125,7 +125,12 @@ class ButtonWaveformPage(WaveformGeneratorPage):
     def __init__(self, parent, ctx, *, storage, owner):
         self.owner = owner
         self.source = "ram"
+        self._button_import_fingerprint = None
         super().__init__(parent, ctx, embedded=True, storage=storage)
+        self.set_write_observer(
+            lambda: owner._begin_button_progress_step("waveform"),
+            owner._on_button_waveform_write_result,
+        )
 
     def _build_ui(self):
         self.columnconfigure(0, weight=0, minsize=550)
@@ -225,9 +230,12 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         self.read_slices_xscrollbar = None
         for _, variable, _ in specs:
             variable.trace_add("write", lambda *_: self._on_param_changed())
+            variable.trace_add("write", lambda *_: self.owner._on_button_progress_inputs_changed())
         self.fill_zero_tail_var.trace_add("write", lambda *_: self._on_param_changed())
+        self.fill_zero_tail_var.trace_add("write", lambda *_: self.owner._on_button_progress_inputs_changed())
         for variable in [*self.serial_slice_vars, *self.serial_repeat_vars]:
             variable.trace_add("write", lambda *_: self._on_serial_param_changed())
+            variable.trace_add("write", lambda *_: self.owner._on_button_progress_inputs_changed())
         self.canvas.bind("<Configure>", lambda _: self._redraw_active_plot())
         self.refresh_language()
         self._update_waveform_specific_fields()
@@ -246,6 +254,42 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         self._update_waveform_specific_fields()
         self._preview_waveform()
         self._notify_metrics_changed()
+        self.owner._sync_button_step_progress_params()
+        self.owner._reconcile_rom_waveform_progress()
+
+    def progress_input_fingerprint(self):
+        """Return editable waveform inputs without using preview revision signals."""
+        variables = (
+            self.waveform_type_var,
+            self.slice_var,
+            self.points_var,
+            self.start_phase_var,
+            self.end_phase_var,
+            self.offset_var,
+            self.voltage_amplitude_var,
+            self.sinc_positive_voltage_var,
+            self.sinc_negative_voltage_var,
+            self.sinc_points1_var,
+            self.sinc_points2_var,
+            self.sinc_points3_var,
+            self.start_addr_var,
+            self.end_addr_var,
+            self.write_points_per_batch_var,
+            self.fill_zero_tail_var,
+            *self.serial_slice_vars,
+            *self.serial_repeat_vars,
+        )
+        return (
+            tuple(variable.get() for variable in variables),
+            bool(self._preview_imported_waveform),
+            self._button_import_fingerprint,
+        )
+
+    def import_waveform(self):
+        super().import_waveform()
+        values = self._imported_values
+        self._button_import_fingerprint = None if values is None else hash(tuple(values))
+        self.owner._on_button_progress_inputs_changed()
 
     def _update_waveform_specific_fields(self):
         super()._update_waveform_specific_fields()
