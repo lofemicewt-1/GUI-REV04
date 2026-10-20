@@ -19,7 +19,6 @@ from config.languages import t
 from core import firmware_flasher as ff
 from core.ui_dispatch import post_to_ui
 from pages.base_page import fit_toplevel_to_screen
-from pages.fast_label import make_label
 
 # Session memory of the last chosen .hex (never persisted to disk).
 _last_hex_path: str = ""
@@ -122,7 +121,7 @@ class FirmwareFlashDialog(tk.Toplevel):
         body.rowconfigure(4, weight=1)
 
         for row, key in ((0, "firmware_hex_file"), (1, "firmware_port")):
-            label = make_label(body, style="Panel.TLabel")
+            label = ttk.Label(body, style="Panel.TLabel")
             label.grid(row=row, column=0, sticky="w", padx=(0, 8), pady=5)
             self._labels.append((label, key))
 
@@ -151,7 +150,7 @@ class FirmwareFlashDialog(tk.Toplevel):
         self.progress = ttk.Progressbar(controls, variable=self.progress_var, maximum=100, mode="determinate")
         self.progress.grid(row=0, column=3, sticky="ew")
 
-        self.status_label = make_label(body, textvariable=self.status_var, style="Panel.TLabel", wraplength=560)
+        self.status_label = ttk.Label(body, textvariable=self.status_var, style="Panel.TLabel", wraplength=560)
         self.status_label.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 6))
 
         log_frame = ttk.Frame(body, style="Panel.TFrame")
