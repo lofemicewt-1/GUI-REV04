@@ -2,16 +2,19 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+import base64
+import json
 import math
 import re
 import threading
 import tkinter as tk
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 from core.awp192x_button_runtime import (
+    AWP192X_BUTTON_MAX_WAVEFORMS,
     AWP192X_BUTTON_PAYLOAD_V2_VERSION,
     AWP192X_GENERATOR_SINC,
     AWP192X_GENERATOR_SINC_VERSION,
@@ -30,8 +33,16 @@ from core.base_tool import (
 )
 from core.chip_discovery import AWP192X_PROBE
 from core.waveform_storage import WaveformStorage
+from core.awp192x_settings import (
+    connection_key_for_context,
+    settings_store_for_context,
+    waveform_label,
+    waveform_number,
+)
+from pages.chip_settings_model import SYNC_FIELDS_192X, can_save_slot
 from pages.awp192x_button_view import ButtonModeView
 from pages.base_page import BasePage, CanvasTitle, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
+from pages.preset_toolbar import PresetToolbar
 from pages.waveform_generator import WAVEFORM_DEFAULT_POINTS_PER_WRITE, WaveformGeneratorPage
 
 
@@ -65,6 +76,7 @@ BUTTON_PRESET_SINC_POINTS = (256, 256, 128)
 # from an imported script's register sequence.
 AWP192X_SRAM_AUTO_INCREMENT_ADDRESSES = frozenset(AWP192X_PROBE.addresses)
 AWP192X_WAVEFORM_METADATA_TAG = "AWP192X_WAVEFORM_V1"
+AWP192X_PAGE_SETTINGS_TAG = "AWP192X_PAGE_SETTINGS_V1"
 
 
 @dataclass(frozen=True)
@@ -351,6 +363,21 @@ class ButtonModePage(ButtonModeView, BasePage):
         "apply_slot": "apply_current_settings_tooltip",
         "read_slot": "read_current_settings_tooltip",
     }
+    PRESET_ACTION_KEYS = (
+        "software_preset_1",
+        "software_preset_2",
+        "software_preset_3",
+        "import_page_settings",
+        "export_page_settings",
+        "save_slot",
+        "set_active_slot",
+        "apply_slot",
+        "read_and_apply",
+    )
+    READ_SETTINGS_TOOLTIP = {
+        "zh": "读取芯片当前设置并同步到页面；不读取所选板载槽位，也不会额外写入槽位。",
+        "en": "Read the chip's current settings into the page. This does not load the selected slot or write any slot.",
+    }
 
     def _ensure_connected(self) -> bool:
         """检查当前串口是否已经连接。"""
@@ -507,88 +534,9 @@ class ButtonModePage(ButtonModeView, BasePage):
         yield
 
         preset_frame = self.make_preset_frame(header)
-
-        for index in range(3):
-            key = f"button_mode_preset_{index + 1}"
-            button = ttk.Button(
-                preset_frame,
-                style="Bg.TButton",
-                command=lambda preset_index=index: self.apply_preset(preset_index),
-            )
-            button.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 6, 0))
-            self._buttons[key] = button
-            self._tooltips.append(
-                SimpleTooltip(button, lambda preset_index=index: self._software_preset_tooltip_text(preset_index))
-            )
-
-        import_button = ttk.Button(
-            preset_frame,
-            style="Bg.TButton",
-            command=self.import_user_preset_script,
-        )
-        import_button.grid(row=0, column=3, sticky="ew", padx=(6, 0))
+        self.preset_toolbar = self._create_preset_toolbar(preset_frame)
+        self.preset_toolbar.grid(row=0, column=0, sticky="ew")
         yield
-        self._buttons["button_mode_import_user_preset"] = import_button
-        self._bind_action_tooltip(import_button, "button_mode_import_user_preset")
-
-        export_button = ttk.Button(
-            preset_frame,
-            style="Bg.TButton",
-            command=self.export_user_preset_script,
-        )
-        export_button.grid(row=0, column=4, sticky="ew", padx=(6, 0))
-        self._buttons["button_mode_export_user_preset"] = export_button
-        self._bind_action_tooltip(export_button, "button_mode_export_user_preset")
-        yield
-
-        slot_cell = ttk.Frame(preset_frame, style="App.TFrame")
-        slot_cell.grid(row=1, column=0, sticky="ew", pady=(self._module_spacing(), 0), padx=(0, 0))
-
-        board_slot_label = ttk.Label(slot_cell, style="App.TLabel")
-        board_slot_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
-        self._labels["board_slot"] = board_slot_label
-
-        slot_combo = ttk.Combobox(slot_cell, textvariable=self.board_slot_var, values=["0", "1", "2"], state="readonly", width=4)
-        yield
-        slot_combo.grid(row=0, column=1, sticky="w")
-
-        save_board_button = ttk.Button(
-            preset_frame,
-            style="Bg.TButton",
-            command=self.save_board_preset,
-        )
-        save_board_button.grid(row=1, column=1, sticky="ew", pady=(self._module_spacing(), 0), padx=(6, 0))
-        self._buttons["save_to_board"] = save_board_button
-        self._bind_action_tooltip(save_board_button, "save_to_board")
-
-        set_active_button = ttk.Button(
-            preset_frame,
-            style="Bg.TButton",
-            command=self.set_board_preset_active,
-        )
-        yield
-        set_active_button.grid(row=1, column=2, sticky="ew", pady=(self._module_spacing(), 0), padx=(6, 0))
-        self._buttons["set_active"] = set_active_button
-        self._bind_action_tooltip(set_active_button, "set_active")
-
-        apply_board_button = ttk.Button(
-            preset_frame,
-            style="Bg.TButton",
-            command=self.apply_board_preset,
-        )
-        apply_board_button.grid(row=1, column=3, sticky="ew", pady=(self._module_spacing(), 0), padx=(6, 0))
-        self._buttons["apply_slot"] = apply_board_button
-        yield
-        self._bind_action_tooltip(apply_board_button, "apply_slot")
-
-        read_board_button = ttk.Button(
-            preset_frame,
-            style="Bg.TButton",
-            command=self.read_current_settings,
-        )
-        read_board_button.grid(row=1, column=4, sticky="ew", pady=(self._module_spacing(), 0), padx=(6, 0))
-        self._buttons["read_slot"] = read_board_button
-        self._bind_action_tooltip(read_board_button, "read_slot")
 
         yield from self._build_button_body_steps()
         yield
@@ -614,9 +562,630 @@ class ButtonModePage(ButtonModeView, BasePage):
         self.refresh_language()
         self._refresh_threshold_register_value_labels()
         self._on_endless_play_changed()
+        self._initialize_awp192x_settings_model()
+        self._attach_shared_settings_traces()
+
+    def _create_preset_toolbar(self, parent: tk.Misc) -> PresetToolbar:
+        callbacks = {
+            "software_preset_1": lambda: self.apply_preset(0),
+            "software_preset_2": lambda: self.apply_preset(1),
+            "software_preset_3": lambda: self.apply_preset(2),
+            "import_page_settings": self.import_user_preset_script,
+            "export_page_settings": self.export_user_preset_script,
+            "save_slot": self.save_board_preset,
+            "set_active_slot": self.set_board_preset_active,
+            "apply_slot": self.apply_board_preset,
+            "read_and_apply": self.read_current_settings,
+        }
+        label_keys = {
+            "set_active_slot": "preset_toolbar_set_active_slot",
+            "apply_slot": "preset_toolbar_apply_slot",
+            "read_and_apply": "preset_toolbar_read_and_apply",
+        }
+        tooltip_keys = {
+            "import_page_settings": "button_mode_import_page_settings_tooltip",
+            "export_page_settings": "button_mode_export_page_settings_tooltip",
+            "set_active_slot": "set_boot_settings_tooltip",
+            "apply_slot": "apply_current_settings_tooltip",
+        }
+        toolbar = PresetToolbar(
+            parent,
+            translate=lambda key: self.tr(key),
+            callbacks=callbacks,
+            capabilities={action: True for action in (*self.PRESET_ACTION_KEYS, "slot_selection")},
+            label_keys=label_keys,
+            tooltip_keys=tooltip_keys,
+            slot_values=(0, 1, 2),
+            selected_slot=self.board_slot_var.get(),
+            on_slot_selected=self._on_toolbar_slot_selected,
+        )
+        self._buttons.update({
+            "button_mode_preset_1": toolbar.buttons["software_preset_1"],
+            "button_mode_preset_2": toolbar.buttons["software_preset_2"],
+            "button_mode_preset_3": toolbar.buttons["software_preset_3"],
+            "button_mode_import_user_preset": toolbar.buttons["import_page_settings"],
+            "button_mode_export_user_preset": toolbar.buttons["export_page_settings"],
+            "save_to_board": toolbar.buttons["save_slot"],
+            "set_active": toolbar.buttons["set_active_slot"],
+            "apply_slot": toolbar.buttons["apply_slot"],
+            "read_slot": toolbar.buttons["read_and_apply"],
+        })
+        self._labels["board_slot"] = toolbar.slot_label
+        self._tooltips.extend(toolbar._tooltips)
+        read_tooltip = SimpleTooltip(toolbar.buttons["read_and_apply"], self._read_settings_tooltip_text)
+        toolbar._tooltips.append(read_tooltip)
+        self._tooltips.append(read_tooltip)
+        save_tooltip = SimpleTooltip(toolbar.buttons["save_slot"], self._save_slot_tooltip_text)
+        toolbar._tooltips.append(save_tooltip)
+        self._tooltips.append(save_tooltip)
+        for index in range(3):
+            tooltip = SimpleTooltip(
+                toolbar.buttons[f"software_preset_{index + 1}"],
+                lambda preset_index=index: self._software_preset_tooltip_text(preset_index),
+            )
+            toolbar._tooltips.append(tooltip)
+            self._tooltips.append(tooltip)
+        return toolbar
+
+    def _read_settings_tooltip_text(self) -> str:
+        return self.READ_SETTINGS_TOOLTIP["zh" if self.language.startswith("zh") else "en"]
+
+    def _save_slot_tooltip_text(self) -> str:
+        text = self.tr("save_no_gui_settings_tooltip")
+        if self.page_name == "full_mode":
+            text += "\n" + self.tr("preset_slot_advanced_scope_warning")
+        return text
+
+    def _on_toolbar_slot_selected(self, slot: int | str) -> None:
+        self.board_slot_var.set(str(slot))
+        model = getattr(self, "_chip_settings_model", None)
+        if model is not None:
+            model.set_slot_selection(slot)
+
+    def _sync_toolbar_slot(self) -> None:
+        toolbar = getattr(self, "preset_toolbar", None)
+        model = getattr(self, "_chip_settings_model", None)
+        if toolbar is None or model is None:
+            return
+        slot = model.slot_selection
+        if slot is None:
+            slot = 0
+        toolbar.slot_var.set(str(slot))
+        self.board_slot_var.set(str(slot))
+
+    def _select_awp192x_settings_model(self):
+        store = settings_store_for_context(self.ctx)
+        model = store.select_device(
+            connection_key_for_context(self.ctx),
+            int(self.ctx.state.awp192x_device_addr),
+        )
+        previous_key = getattr(self, "_chip_settings_device_key", None)
+        self._chip_settings_model = model
+        self._chip_settings_device_key = model.device_key
+
+        storage_by_device = getattr(self.ctx.state, "_awp192x_waveform_storage_by_device", None)
+        if storage_by_device is None:
+            storage_by_device = {}
+            setattr(self.ctx.state, "_awp192x_waveform_storage_by_device", storage_by_device)
+        if model.device_key not in storage_by_device:
+            storage_by_device[model.device_key] = (
+                self.storage if previous_key is None else WaveformStorage()
+            )
+        self.storage = storage_by_device[model.device_key]
+        waveform_page = getattr(self, "waveform_page", None)
+        if waveform_page is not None:
+            waveform_page.storage = self.storage
+
+        if previous_key != model.device_key:
+            self._syncing_chip_settings = True
+            try:
+                if model.shared:
+                    self._apply_shared_settings(model.shared)
+                elif getattr(self, "_default_shared_settings", None):
+                    self._apply_shared_settings(self._default_shared_settings)
+                    self._capture_shared_settings()
+                if self.page_name == "full_mode":
+                    if model.advanced:
+                        self._apply_full_advanced_settings(model.advanced)
+                    elif getattr(self, "_default_full_advanced_settings", None):
+                        self._apply_full_advanced_settings(self._default_full_advanced_settings)
+                        self._capture_full_advanced_settings()
+            finally:
+                self._syncing_chip_settings = False
+        if model.slot_selection is None:
+            model.set_slot_selection(0)
+        self._sync_toolbar_slot()
+        return model
+
+    def _initialize_awp192x_settings_model(self) -> None:
+        self._syncing_chip_settings = True
+        try:
+            self._default_shared_settings = self._capture_shared_settings()
+            if self.page_name == "full_mode":
+                self._default_full_advanced_settings = self._capture_full_advanced_settings()
+        finally:
+            self._syncing_chip_settings = False
+        model = self._select_awp192x_settings_model()
+        if not model.shared:
+            self._capture_shared_settings()
+        if self.page_name == "full_mode" and not model.advanced:
+            self._capture_full_advanced_settings()
+        self._bind_host_address_changes()
+
+    def _bind_host_address_changes(self) -> None:
+        if getattr(self, "_host_address_var", None) is not None:
+            return
+        parent = getattr(self, "master", None)
+        while parent is not None and not hasattr(parent, "addr_var"):
+            parent = getattr(parent, "master", None)
+        address_var = getattr(parent, "addr_var", None)
+        if address_var is None or not hasattr(address_var, "trace_add"):
+            return
+        self._host_address_var = address_var
+        self._host_address_trace_id = address_var.trace_add(
+            "write",
+            lambda *_: self._queue_device_model_sync(),
+        )
+
+    def _queue_device_model_sync(self) -> None:
+        try:
+            self.after_idle(self._sync_awp192x_settings_from_model)
+        except tk.TclError:
+            pass
+
+    def _attach_shared_settings_traces(self) -> None:
+        variables = [
+            self.max_voltage_var,
+            self.duration_var,
+            self.press_threshold_var,
+            self.release_threshold_var,
+            self.adc_average_time_var,
+            self.adc_ovv_time_var,
+            self.button_adc_pol_var,
+            self.button_adc_gain_var,
+            self.press_repeat_count_var,
+            self.release_repeat_count_var,
+            self.play_repeat_count_var,
+            self.press_waveform_var,
+            self.release_waveform_var,
+            self.play_waveform_var,
+            self.endless_play_var,
+        ]
+        if self.page_name == "full_mode":
+            variables.extend(
+                [
+                    self.adc_threshold_h_var,
+                    self.adc_threshold_l_var,
+                    self.adc_gain_var,
+                    self.adc_pol_var,
+                    *self.full_event_enable_vars.values(),
+                    *self.full_event_endless_vars.values(),
+                    *self.full_event_repeat_vars.values(),
+                    *self.full_event_wave_vars.values(),
+                    *self.serial_wave_vars,
+                    *self.serial_loop_vars,
+                ]
+            )
+        waveform_page = getattr(self, "waveform_page", None)
+        if waveform_page is not None:
+            variables.extend([*waveform_page.serial_slice_vars, *waveform_page.serial_repeat_vars])
+        for variable in variables:
+            variable.trace_add("write", lambda *_: self._on_shared_settings_changed())
+        if self.page_name == "full_mode":
+            advanced_variables = [
+                self.adc_mode_var,
+                *self.adc_trigger_vars.values(),
+                self.full_dac_mode_var,
+                self.full_slow_up_var,
+                self.full_slow_down_var,
+                self.full_half_cycle_var,
+                self.full_phase_var,
+                self.full_data_depth_var,
+                *self.int_mask_vars.values(),
+                self.fifo_depth_var,
+                self.str_auto_addr_var,
+                self.dis_plt_var,
+                self.auto_end_var,
+                self.auto_zero_var,
+                self.reg_lock_var,
+                self.clk_sync_var,
+                self.clk_out_var,
+                self.sync_play_var,
+                self.ram_address_var,
+            ]
+            for variable in advanced_variables:
+                variable.trace_add("write", lambda *_: self._on_full_advanced_settings_changed())
+
+    def _on_shared_settings_changed(self) -> None:
+        if getattr(self, "_syncing_chip_settings", False) or getattr(self, "_reading_current_settings", False):
+            return
+        model = getattr(self, "_chip_settings_model", None)
+        if model is None:
+            return
+        self._capture_shared_settings()
+        if self.page_name == "full_mode":
+            self._capture_full_advanced_settings()
+
+    def _on_full_advanced_settings_changed(self) -> None:
+        if getattr(self, "_syncing_chip_settings", False) or getattr(self, "_reading_current_settings", False):
+            return
+        self._capture_full_advanced_settings()
+
+    @staticmethod
+    def _option_code(label: str, options: tuple[tuple[str, int], ...], default: int = 0) -> int:
+        return next((int(code) for text, code in options if text == label), int(default))
+
+    def _capture_shared_settings(self) -> dict[str, Any]:
+        model = getattr(self, "_chip_settings_model", None)
+        try:
+            output = next(code for label, _voltage, code in self.amp_options if label == self.max_voltage_var.get())
+            if self.page_name == "full_mode":
+                thresholds = {
+                    "press": float(self.adc_threshold_h_var.get()),
+                    "release": float(self.adc_threshold_l_var.get()),
+                }
+                polarity = 1 if self.adc_pol_var.get() == "OUT-" else 0
+                adc_range = 1 if self.adc_gain_var.get() == "0-19V" else 0
+                press_key, release_key = "adc_over_h_posedge", "adc_over_l_posedge"
+                press_action = {
+                    "repeat": int(self.full_event_repeat_vars[press_key].get(), 0),
+                    "wave": waveform_number(self.full_event_wave_vars[press_key].get()),
+                    "endless": bool(self.full_event_endless_vars[press_key].get()),
+                    "enabled": bool(self.full_event_enable_vars[press_key].get()),
+                }
+                release_action = {
+                    "repeat": int(self.full_event_repeat_vars[release_key].get(), 0),
+                    "wave": waveform_number(self.full_event_wave_vars[release_key].get()),
+                    "endless": bool(self.full_event_endless_vars[release_key].get()),
+                    "enabled": bool(self.full_event_enable_vars[release_key].get()),
+                }
+                serials = [
+                    {"wave": waveform_number(wave.get()), "repeat": int(loop.get(), 0)}
+                    for wave, loop in zip(self.serial_wave_vars, self.serial_loop_vars)
+                ]
+                average_label = self.adc_average_time_var.get()
+                ovv_label = self.adc_ovv_time_var.get()
+            else:
+                thresholds = {
+                    "press": float(self.press_threshold_var.get()),
+                    "release": float(self.release_threshold_var.get()),
+                }
+                polarity = 1 if self.button_adc_pol_var.get() == "OUT-" else 0
+                adc_range = 1 if self.button_adc_gain_var.get() == "0-19V" else 0
+                press_action = {
+                    "repeat": int(self.press_repeat_count_var.get(), 0),
+                    "wave": waveform_number(self.press_waveform_var.get()),
+                    "endless": bool(model.shared.get("press_action", {}).get("endless", False)) if model is not None else False,
+                    "enabled": True,
+                }
+                release_action = {
+                    "repeat": int(self.release_repeat_count_var.get(), 0),
+                    "wave": waveform_number(self.release_waveform_var.get()),
+                    "endless": bool(model.shared.get("release_action", {}).get("endless", False)) if model is not None else False,
+                    "enabled": False,
+                }
+                serial_page = getattr(self, "waveform_page", None)
+                if serial_page is not None:
+                    serials = [
+                        {"wave": waveform_number(wave.get()), "repeat": int(loop.get(), 0)}
+                        for wave, loop in zip(serial_page.serial_slice_vars, serial_page.serial_repeat_vars)
+                    ]
+                else:
+                    serials = model.shared.get("serial_waveforms", []) if model is not None else []
+                average_label = self.adc_average_time_var.get()
+                ovv_label = self.adc_ovv_time_var.get()
+            manual = {
+                "repeat": int(self.play_repeat_count_var.get(), 0),
+                "wave": waveform_number(self.play_waveform_var.get()),
+                "endless": bool(self.endless_play_var.get()),
+            }
+            average = self._option_code(average_label, self.ADC_AVERAGE_OPTIONS)
+            ovv = self._option_code(ovv_label, self.ADC_OVV_OPTIONS)
+            shared = {
+                "output_amplitude": int(output),
+                "point_duration": int(self.duration_var.get(), 0),
+                "thresholds": thresholds,
+                "filter_settings": {"average": average, "ovv": ovv},
+                "polarity": polarity,
+                "range": adc_range,
+                "press_action": press_action,
+                "release_action": release_action,
+                "manual_playback": manual,
+                "serial_waveforms": serials,
+            }
+        except (AttributeError, KeyError, StopIteration, TypeError, ValueError, tk.TclError):
+            return {}
+        if model is not None:
+            model.update_shared({key: shared[key] for key in SYNC_FIELDS_192X})
+        return shared
+
+    def _apply_shared_settings(self, shared: dict[str, Any]) -> None:
+        if not shared:
+            return
+        self._syncing_chip_settings = True
+        try:
+            output = int(shared.get("output_amplitude", self._current_max_output_reg_value()))
+            label = next(
+                (label for label, _voltage, code in self.amp_options if code == output),
+                self.max_voltage_var.get(),
+            )
+            self.max_voltage_var.set(label)
+            self.duration_var.set(str(shared.get("point_duration", self.ctx.state.single_point_duration_us)))
+            thresholds = shared.get("thresholds", {})
+            press_threshold = str(thresholds.get("press", self.press_threshold_var.get()))
+            release_threshold = str(thresholds.get("release", self.release_threshold_var.get()))
+            self.press_threshold_var.set(press_threshold)
+            self.release_threshold_var.set(release_threshold)
+            filters = shared.get("filter_settings", {})
+            average = int(filters.get("average", 0))
+            ovv = int(filters.get("ovv", 0))
+            self.adc_average_time_var.set(self._adc_average_label(average))
+            self.adc_ovv_time_var.set(self._adc_ovv_label(ovv))
+            polarity = "OUT-" if int(shared.get("polarity", 0)) else "OUT+"
+            adc_range = "0-19V" if int(shared.get("range", 0)) else "0-100V"
+            self.button_adc_pol_var.set(polarity)
+            self.button_adc_gain_var.set(adc_range)
+            press = dict(shared.get("press_action", {}))
+            release = dict(shared.get("release_action", {}))
+            manual = dict(shared.get("manual_playback", {}))
+            self.press_repeat_count_var.set(str(press.get("repeat", 1)))
+            self.release_repeat_count_var.set(str(release.get("repeat", 1)))
+            self.press_waveform_var.set(waveform_label(int(press.get("wave", 0))))
+            self.release_waveform_var.set(waveform_label(int(release.get("wave", 0))))
+            self.play_repeat_count_var.set(str(manual.get("repeat", 1)))
+            self.play_waveform_var.set(waveform_label(int(manual.get("wave", 0x1F)), full=self.page_name == "full_mode"))
+            self.endless_play_var.set(bool(manual.get("endless", False)))
+
+            if self.page_name == "full_mode":
+                self.adc_threshold_h_var.set(press_threshold)
+                self.adc_threshold_l_var.set(release_threshold)
+                self.adc_pol_var.set(polarity)
+                self.adc_gain_var.set(adc_range)
+                for key, action in (("adc_over_h_posedge", press), ("adc_over_l_posedge", release)):
+                    self.full_event_wave_vars[key].set(waveform_label(int(action.get("wave", 0)), full=True))
+                    self.full_event_repeat_vars[key].set(str(action.get("repeat", 1)))
+                    self.full_event_endless_vars[key].set(bool(action.get("endless", False)))
+                    self.full_event_enable_vars[key].set(bool(action.get("enabled", key == "adc_over_h_posedge")))
+                for variables, values in (
+                    (self.serial_wave_vars, shared.get("serial_waveforms", [])),
+                    (self.serial_loop_vars, shared.get("serial_waveforms", [])),
+                ):
+                    for index, variable in enumerate(variables):
+                        if index >= len(values):
+                            continue
+                        entry = values[index]
+                        variable.set(
+                            self._format_serial_wave(int(entry.get("wave", 0x1F)))
+                            if variables is self.serial_wave_vars
+                            else str(entry.get("repeat", 1))
+                        )
+                self._set_full_shared_event_enable_defaults()
+            else:
+                serial_page = getattr(self, "waveform_page", None)
+                if serial_page is not None:
+                    for index, entry in enumerate(shared.get("serial_waveforms", [])):
+                        if index >= len(serial_page.serial_slice_vars):
+                            break
+                        serial_page.serial_slice_vars[index].set(waveform_label(int(entry.get("wave", 0x1F))))
+                        serial_page.serial_repeat_vars[index].set(str(entry.get("repeat", 1)))
+            self._refresh_threshold_register_value_labels()
+            self._update_period_hint(write_register=False)
+        finally:
+            self._syncing_chip_settings = False
+
+    def _set_full_shared_event_enable_defaults(self) -> None:
+        # Button Mode's press detector is represented by bit 15 on 0x0F. The
+        # Full event table's independent enable bits remain Full-only state.
+        return
+
+    def _capture_full_advanced_settings(self) -> dict[str, Any]:
+        try:
+            return self._capture_full_advanced_settings_unchecked()
+        except (AttributeError, KeyError, TypeError, ValueError, tk.TclError):
+            # Full Mode has editable numeric fields. During typing, intermediate
+            # values can be incomplete; keep the last valid model snapshot until
+            # the field is valid again.
+            return {}
+
+    def _capture_full_advanced_settings_unchecked(self) -> dict[str, Any]:
+        if self.page_name != "full_mode" or not hasattr(self, "adc_mode_var"):
+            return {}
+        event_details = {}
+        for key, _reg, _source_bit in self.ADC_EVENT_CONFIGS:
+            if key in {"adc_over_h_posedge", "adc_over_l_posedge"}:
+                continue
+            event_details[key] = {
+                "enable": bool(self.full_event_enable_vars[key].get()),
+                "endless": bool(self.full_event_endless_vars[key].get()),
+                "repeat": int(self.full_event_repeat_vars[key].get(), 0),
+                "wave": waveform_number(self.full_event_wave_vars[key].get()),
+            }
+        triggers = {key: bool(value.get()) for key, value in self.adc_trigger_vars.items()}
+        waveform_editor = self._capture_full_waveform_editor_settings()
+        extra = {
+            "adc_mode": self._option_code(self.adc_mode_var.get(), (("Direct", 0), ("INPT", 1), ("AUTO", 2))),
+            "adc_triggers": triggers,
+            "adc_config_fixed_bits": int(getattr(self, "_full_adc_config_fixed_bits", 0)),
+            "full_events": event_details,
+            "full_event_action_flags": {
+                "press_enable": bool(self.full_event_enable_vars["adc_over_h_posedge"].get()),
+                "release_enable": bool(self.full_event_enable_vars["adc_over_l_posedge"].get()),
+                "press_endless": bool(self.full_event_endless_vars["adc_over_h_posedge"].get()),
+                "release_endless": bool(self.full_event_endless_vars["adc_over_l_posedge"].get()),
+            },
+            "dac_mode": self._option_code(self.full_dac_mode_var.get(), self.DAC_MODE_OPTIONS),
+            "slow_up": self._option_code(self.full_slow_up_var.get(), self.SLOW_TIME_OPTIONS),
+            "slow_down": self._option_code(self.full_slow_down_var.get(), self.SLOW_TIME_OPTIONS),
+            "half_cycle": bool(self.full_half_cycle_var.get()),
+            "phase": int(self.full_phase_var.get(), 0),
+            "data_depth": self._option_code(self.full_data_depth_var.get(), self.DATA_DEPTH_OPTIONS),
+            "interrupt_mask": {key: bool(value.get()) for key, value in self.int_mask_vars.items()},
+            "fifo_depth": self._option_code(self.fifo_depth_var.get(), self.FIFO_DEPTH_OPTIONS),
+            "global_config": {
+                "str_auto_addr": bool(self.str_auto_addr_var.get()),
+                "dis_plt": bool(self.dis_plt_var.get()),
+                "auto_end": bool(self.auto_end_var.get()),
+                "auto_zero": bool(self.auto_zero_var.get()),
+                "reg_lock": self._option_code(self.reg_lock_var.get(), self.REG_LOCK_OPTIONS),
+                "clk_sync": bool(self.clk_sync_var.get()),
+                "clk_out": bool(self.clk_out_var.get()),
+                "sync_play": bool(self.sync_play_var.get()),
+            },
+            "ram_address": str(self.ram_address_var.get()),
+            "waveform_editor": waveform_editor,
+        }
+        model = getattr(self, "_chip_settings_model", None)
+        if model is not None:
+            model.update_advanced(extra)
+            model.advanced["slot_blocked"] = self._full_type3_slot_is_blocked(extra)
+            model.advanced["slot_omitted"] = bool(event_details or extra.get("interrupt_mask") or extra.get("global_config"))
+        return extra
+
+    @staticmethod
+    def _full_type3_slot_is_blocked(advanced: dict[str, Any]) -> bool:
+        expected_triggers = {key: key == "adc_over_h_posedge" for key in advanced.get("adc_triggers", {})}
+        expected_fixed_bits = 0x0001
+        flags = advanced.get("full_event_action_flags", {})
+        return bool(
+            advanced.get("adc_mode", 0) != 0
+            or advanced.get("adc_triggers") != expected_triggers
+            or advanced.get("adc_config_fixed_bits", 0) != expected_fixed_bits
+            or not flags.get("press_enable", True)
+            or flags.get("release_enable", False)
+            or flags.get("press_endless", False)
+            or flags.get("release_endless", False)
+        )
+
+    def _apply_full_advanced_settings(self, advanced: dict[str, Any]) -> None:
+        if self.page_name != "full_mode" or not hasattr(self, "adc_mode_var"):
+            return
+        self._syncing_chip_settings = True
+        try:
+            mode = int(advanced.get("adc_mode", 0))
+            self.adc_mode_var.set({0: "Direct", 1: "INPT", 2: "AUTO"}.get(mode, "Direct"))
+            for key, value in advanced.get("adc_triggers", {}).items():
+                if key in self.adc_trigger_vars:
+                    self.adc_trigger_vars[key].set(bool(value))
+            self._full_adc_config_fixed_bits = int(advanced.get("adc_config_fixed_bits", 0))
+            for key, event in advanced.get("full_events", {}).items():
+                if key not in self.full_event_enable_vars:
+                    continue
+                self.full_event_enable_vars[key].set(bool(event.get("enable", False)))
+                self.full_event_endless_vars[key].set(bool(event.get("endless", False)))
+                self.full_event_repeat_vars[key].set(str(event.get("repeat", 1)))
+                self.full_event_wave_vars[key].set(waveform_label(int(event.get("wave", 0x1F)), full=True))
+            flags = advanced.get("full_event_action_flags", {})
+            for key, name in (("adc_over_h_posedge", "press"), ("adc_over_l_posedge", "release")):
+                if f"{name}_enable" in flags:
+                    self.full_event_enable_vars[key].set(bool(flags[f"{name}_enable"]))
+                if f"{name}_endless" in flags:
+                    self.full_event_endless_vars[key].set(bool(flags[f"{name}_endless"]))
+            self.full_dac_mode_var.set(self._option_label(self.DAC_MODE_OPTIONS, advanced.get("dac_mode", 2)))
+            self.full_slow_up_var.set(self._option_label(self.SLOW_TIME_OPTIONS, advanced.get("slow_up", 0)))
+            self.full_slow_down_var.set(self._option_label(self.SLOW_TIME_OPTIONS, advanced.get("slow_down", 0)))
+            self.full_half_cycle_var.set(bool(advanced.get("half_cycle", False)))
+            self.full_phase_var.set(str(advanced.get("phase", 0)))
+            self.full_data_depth_var.set(self._option_label(self.DATA_DEPTH_OPTIONS, advanced.get("data_depth", 0)))
+            for key, value in advanced.get("interrupt_mask", {}).items():
+                if key in self.int_mask_vars:
+                    self.int_mask_vars[key].set(bool(value))
+            self.fifo_depth_var.set(self._option_label(self.FIFO_DEPTH_OPTIONS, advanced.get("fifo_depth", 0)))
+            global_config = advanced.get("global_config", {})
+            for name in ("str_auto_addr", "dis_plt", "auto_end", "auto_zero", "clk_sync", "clk_out", "sync_play"):
+                if name in global_config:
+                    getattr(self, f"{name}_var").set(bool(global_config[name]))
+            self.reg_lock_var.set(self._option_label(self.REG_LOCK_OPTIONS, global_config.get("reg_lock", 0)))
+            self.ram_address_var.set(str(advanced.get("ram_address", "0x0000")))
+            editor_state = advanced.get("waveform_editor")
+            if isinstance(editor_state, dict) and getattr(self, "waveform_page", None) is not None:
+                self._apply_full_waveform_editor_settings(editor_state)
+        finally:
+            self._syncing_chip_settings = False
+
+    def _capture_full_waveform_editor_settings(self) -> dict[str, Any] | None:
+        page = getattr(self, "waveform_page", None)
+        if page is None:
+            model = getattr(self, "_chip_settings_model", None)
+            return model.advanced.get("waveform_editor") if model is not None else None
+        try:
+            return {
+                "waveform_type": str(page.waveform_type_var.get()),
+                "slice": int(page.slice_var.get()),
+                "points": int(page.points_var.get(), 0),
+                "start_phase": str(page.start_phase_var.get()),
+                "end_phase": str(page.end_phase_var.get()),
+                "offset": str(page.offset_var.get()),
+                "amplitude": str(page.voltage_amplitude_var.get()),
+                "sinc_positive": str(page.sinc_positive_voltage_var.get()),
+                "sinc_negative": str(page.sinc_negative_voltage_var.get()),
+                "sinc_points": [
+                    int(page.sinc_points1_var.get(), 0),
+                    int(page.sinc_points2_var.get(), 0),
+                    int(page.sinc_points3_var.get(), 0),
+                ],
+                "start_addr": str(page.start_addr_var.get()),
+                "fill_zero_tail": bool(page.fill_zero_tail_var.get()),
+            }
+        except (AttributeError, TypeError, ValueError, tk.TclError):
+            return None
+
+    def _apply_full_waveform_editor_settings(self, settings: dict[str, Any]) -> None:
+        page = getattr(self, "waveform_page", None)
+        if page is None:
+            return
+        try:
+            page.waveform_type_var.set(str(settings.get("waveform_type", "sine")))
+            page.slice_var.set(int(settings.get("slice", 0)))
+            page.points_var.set(str(settings.get("points", 256)))
+            page.start_phase_var.set(str(settings.get("start_phase", "0")))
+            page.end_phase_var.set(str(settings.get("end_phase", "360")))
+            page.offset_var.set(str(settings.get("offset", "0")))
+            page.voltage_amplitude_var.set(str(settings.get("amplitude", "95")))
+            page.sinc_positive_voltage_var.set(str(settings.get("sinc_positive", "95")))
+            page.sinc_negative_voltage_var.set(str(settings.get("sinc_negative", "-95")))
+            sinc_points = settings.get("sinc_points", (85, 86, 85))
+            page.sinc_points1_var.set(str(sinc_points[0]))
+            page.sinc_points2_var.set(str(sinc_points[1]))
+            page.sinc_points3_var.set(str(sinc_points[2]))
+            page.start_addr_var.set(str(settings.get("start_addr", "0x0002")))
+            page.fill_zero_tail_var.set(bool(settings.get("fill_zero_tail", False)))
+            page._update_end_addr()
+        except (AttributeError, IndexError, TypeError, ValueError, tk.TclError):
+            return
+
+    def _on_full_editor_serial_changed(self, page: WaveformGeneratorPage) -> None:
+        if getattr(self, "_syncing_chip_settings", False):
+            return
+        self._syncing_chip_settings = True
+        try:
+            for index, (wave, repeat) in enumerate(zip(page.serial_slice_vars, page.serial_repeat_vars)):
+                if index >= len(self.serial_wave_vars):
+                    break
+                self.serial_wave_vars[index].set(wave.get())
+                self.serial_loop_vars[index].set(repeat.get())
+        finally:
+            self._syncing_chip_settings = False
+        self._capture_shared_settings()
+        self._capture_full_advanced_settings()
+
+    @staticmethod
+    def _option_label(options: tuple[tuple[str, int], ...], code: Any) -> str:
+        value = int(code)
+        return next((label for label, item_code in options if int(item_code) == value), options[0][0])
+
+    def _sync_awp192x_settings_from_model(self) -> None:
+        model = self._select_awp192x_settings_model()
+        if model.shared:
+            self._apply_shared_settings(model.shared)
+        if self.page_name == "full_mode" and model.advanced:
+            self._apply_full_advanced_settings(model.advanced)
 
     def _mark_button_runtime_dirty(self) -> None:
-        if self.page_name == "button_mode" and not getattr(self, "_reading_current_settings", False):
+        if (
+            self.page_name == "button_mode"
+            and not getattr(self, "_reading_current_settings", False)
+            and not getattr(self, "_syncing_chip_settings", False)
+        ):
             self._button_runtime_dirty = True
 
     def _on_button_runtime_waveform_changed(self) -> None:
@@ -805,9 +1374,14 @@ class ButtonModePage(ButtonModeView, BasePage):
 
     def refresh_language(self) -> None:
         super().refresh_language()
+        toolbar = getattr(self, "preset_toolbar", None)
+        if toolbar is not None:
+            toolbar.refresh_language()
         for key, label in self._labels.items():
             label.configure(text=self.tr(key))
         for key, btn in self._buttons.items():
+            if toolbar is not None and btn in toolbar.buttons.values():
+                continue
             btn.configure(text=self.tr(key))
         for key, check in self._checks.items():
             check.configure(text=self.tr(key))
@@ -834,6 +1408,13 @@ class ButtonModePage(ButtonModeView, BasePage):
 
     def destroy(self) -> None:
         self._button_adc_generation += 1
+        address_var = getattr(self, "_host_address_var", None)
+        trace_id = getattr(self, "_host_address_trace_id", None)
+        if address_var is not None and trace_id is not None:
+            try:
+                address_var.trace_remove("write", trace_id)
+            except (tk.TclError, AttributeError):
+                pass
         if self.page_name == "button_mode":
             self._close_button_adc_graph()
         self._hide_tooltips()
@@ -870,6 +1451,7 @@ class ButtonModePage(ButtonModeView, BasePage):
     def export_user_preset_script(self) -> None:
         try:
             content = format_register_script(self._build_current_register_script_operations())
+            content = self._prepend_page_settings_metadata(content)
         except Exception as exc:
             messagebox.showerror(self.tr("error"), f"{self.tr('invalid_input')}\n{exc}")
             return
@@ -900,7 +1482,9 @@ class ButtonModePage(ButtonModeView, BasePage):
             return
 
         try:
-            operations = parse_register_script(Path(path).read_text(encoding="utf-8-sig"))
+            content = Path(path).read_text(encoding="utf-8-sig")
+            metadata = self._parse_page_settings_metadata(content)
+            operations = parse_register_script(content)
         except Exception as exc:
             messagebox.showerror(self.tr("error"), f"{self.tr('invalid_input')}\n{exc}")
             return
@@ -917,7 +1501,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         def worker() -> None:
             error = self._execute_register_script_operations(operations)
             try:
-                self.after(0, self._finish_register_script_import, error, operations)
+                self.after(0, self._finish_register_script_import, error, operations, metadata)
             except tk.TclError:
                 pass
 
@@ -927,6 +1511,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         self,
         error: str | None,
         operations: list[RegisterScriptOperation] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         self._set_register_script_buttons_state("normal")
         if error:
@@ -934,8 +1519,106 @@ class ButtonModePage(ButtonModeView, BasePage):
             return
         if operations:
             self._apply_register_script_waveform_page_state(operations)
+        if metadata:
+            self._apply_page_settings_metadata(metadata)
         messagebox.showinfo(self.tr("info"), self.tr("register_script_import_success"))
         self.read_current_settings(show_success=False)
+
+    def _prepend_page_settings_metadata(self, content: str) -> str:
+        model = getattr(self, "_chip_settings_model", None)
+        if model is None:
+            return content
+        waveforms = []
+        for item in self.storage.slices.values():
+            recipe = item.power_on_recipe
+            recipe_data = None
+            if isinstance(recipe, (Awp192xWaveformRecipe, Awp192xSineWaveformRecipe)):
+                recipe_data = {
+                    "kind": "sine" if isinstance(recipe, Awp192xSineWaveformRecipe) else "sinc",
+                    **asdict(recipe),
+                }
+            waveforms.append({
+                "index": item.index,
+                "start_addr": item.start_addr,
+                "end_addr": item.end_addr,
+                "points": item.points,
+                "waveform_type": item.waveform_type,
+                "values": list(item.values),
+                "recipe": recipe_data,
+            })
+        payload = {
+            "format": "AWP192X_PAGE_SETTINGS",
+            "version": 1,
+            "mode": self.page_name,
+            "shared": model.shared,
+            "advanced": model.advanced,
+            "waveforms": waveforms,
+        }
+        raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        metadata_line = f"# {AWP192X_PAGE_SETTINGS_TAG} {base64.urlsafe_b64encode(raw).decode('ascii')}\n"
+        return metadata_line + content
+
+    @staticmethod
+    def _parse_page_settings_metadata(content: str) -> dict[str, Any] | None:
+        prefix = f"# {AWP192X_PAGE_SETTINGS_TAG} "
+        for line in content.splitlines():
+            if not line.startswith(prefix):
+                continue
+            try:
+                raw = base64.urlsafe_b64decode(line[len(prefix) :].strip().encode("ascii"))
+                payload = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("invalid AWP192x page settings metadata") from exc
+            if (
+                not isinstance(payload, dict)
+                or payload.get("format") != "AWP192X_PAGE_SETTINGS"
+                or payload.get("version") != 1
+            ):
+                raise ValueError("unsupported AWP192x page settings metadata")
+            return payload
+        return None
+
+    def _apply_page_settings_metadata(self, payload: dict[str, Any]) -> None:
+        model = getattr(self, "_chip_settings_model", None)
+        shared = payload.get("shared")
+        advanced = payload.get("advanced")
+        self._syncing_chip_settings = True
+        try:
+            if isinstance(shared, dict):
+                if model is not None:
+                    model.update_shared(shared)
+                self._apply_shared_settings(shared)
+            if isinstance(advanced, dict) and model is not None:
+                model.update_advanced(advanced)
+                if self.page_name == "full_mode":
+                    self._apply_full_advanced_settings(advanced)
+            waveforms = payload.get("waveforms")
+            if isinstance(waveforms, list):
+                self.storage.clear()
+                for raw_item in waveforms:
+                    if not isinstance(raw_item, dict):
+                        continue
+                    recipe_data = raw_item.get("recipe")
+                    recipe = None
+                    if isinstance(recipe_data, dict):
+                        recipe_fields = {key: value for key, value in recipe_data.items() if key != "kind"}
+                        if recipe_data.get("kind") == "sinc":
+                            recipe = Awp192xWaveformRecipe(**recipe_fields)
+                        elif recipe_data.get("kind") == "sine":
+                            recipe = Awp192xSineWaveformRecipe(**recipe_fields)
+                    self.storage.add_or_replace(
+                        int(raw_item["index"]),
+                        int(raw_item["start_addr"]),
+                        int(raw_item["end_addr"]),
+                        int(raw_item["points"]),
+                        str(raw_item["waveform_type"]),
+                        [int(value) for value in raw_item.get("values", [])],
+                        power_on_recipe=recipe,
+                    )
+        except (KeyError, TypeError, ValueError) as exc:
+            messagebox.showerror(self.tr("error"), f"{self.tr('invalid_input')}\n{exc}")
+        finally:
+            self._syncing_chip_settings = False
 
     def _set_register_script_buttons_state(self, state: str) -> None:
         for key in ("button_mode_import_user_preset", "button_mode_export_user_preset"):
@@ -1025,11 +1708,17 @@ class ButtonModePage(ButtonModeView, BasePage):
         return None
 
     def _build_current_register_script_operations(self) -> list[RegisterScriptOperation]:
-        page = self.waveform_page
+        page = getattr(self, "waveform_page", None)
         use_imported = getattr(page, "_preview_imported_waveform", False)
         dev = self.ctx.state.awp192x_device_addr
         runtime = None
-        if page.waveform_type_var.get() == "sinc" and not use_imported and getattr(page, "source", None) != "rom":
+        if (
+            page is not None
+            and self.page_name != "full_mode"
+            and page.waveform_type_var.get() == "sinc"
+            and not use_imported
+            and getattr(page, "source", None) != "rom"
+        ):
             runtime = self.build_button_runtime_payload(self)
             max_output_reg_value = runtime.max_output_reg
             duration = runtime.duration_reg + 1
@@ -1045,7 +1734,13 @@ class ButtonModePage(ButtonModeView, BasePage):
         else:
             max_output_reg_value = self._current_max_output_reg_value()
             duration = self._parse_script_duration()
-            press_code, release_code = self._current_threshold_codes()
+            if self.page_name == "full_mode":
+                thresholds = self._parse_full_adc_thresholds(show_error=False)
+                if thresholds is None:
+                    raise ValueError("Full Mode ADC threshold settings are incomplete")
+                press_code, release_code = thresholds
+            else:
+                press_code, release_code = self._current_threshold_codes()
             press_repeat = self._parse_script_repeat_count(
                 self.press_repeat_count_var.get(),
                 "press repeat",
@@ -1066,29 +1761,41 @@ class ButtonModePage(ButtonModeView, BasePage):
                 self.play_waveform_var.get(),
                 "play waveform",
             )
-            press_value = self._set_repeat_and_waveform_fields(
-                self.ADC_DETECT_ENABLE,
-                press_repeat,
-                press_slice,
-            )
-            release_value = self._set_repeat_and_waveform_fields(
-                0,
-                release_repeat,
-                release_slice,
-            )
-            play_mode_value = self._set_waveform_field(0, play_slice)
-            if self.endless_play_var.get():
-                play_mode_value |= self.ENDLESS_PLAY_BIT
+            if self.page_name == "full_mode":
+                max_output_reg_value = self._compose_full_reg14()
+                press_value = self._compose_full_event_value("adc_over_h_posedge", show_error=False)
+                release_value = self._compose_full_event_value("adc_over_l_posedge", show_error=False)
+                play_mode_value = self._compose_full_manual_play_value(show_error=False)
+                if None in (press_value, release_value, play_mode_value):
+                    raise ValueError("Full Mode playback settings are incomplete")
+                adc_output_enable = self.ADC_OUTPUT_ENABLE
+                d2_config = self._compose_interrupt_mask()
+                adc_filter_config = self._compose_adc_config_0c()
+                adc_event_config = self._compose_adc_config_0b()
             else:
-                play_repeat = self._parse_script_repeat_count(
-                    self.play_repeat_count_var.get(),
-                    "play repeat",
+                press_value = self._set_repeat_and_waveform_fields(
+                    self.ADC_DETECT_ENABLE,
+                    press_repeat,
+                    press_slice,
                 )
-                play_mode_value = self._set_repeat_field(play_mode_value, play_repeat)
-            adc_output_enable = self.ADC_OUTPUT_ENABLE
-            d2_config = self.ADC_D2_CONFIG
-            adc_filter_config = self._compose_button_adc_filter_config()
-            adc_event_config = self._compose_button_adc_event_config()
+                release_value = self._set_repeat_and_waveform_fields(
+                    0,
+                    release_repeat,
+                    release_slice,
+                )
+                play_mode_value = self._set_waveform_field(0, play_slice)
+                if self.endless_play_var.get():
+                    play_mode_value |= self.ENDLESS_PLAY_BIT
+                else:
+                    play_repeat = self._parse_script_repeat_count(
+                        self.play_repeat_count_var.get(),
+                        "play repeat",
+                    )
+                    play_mode_value = self._set_repeat_field(play_mode_value, play_repeat)
+                adc_output_enable = self.ADC_OUTPUT_ENABLE
+                d2_config = self.ADC_D2_CONFIG
+                adc_filter_config = self._compose_button_adc_filter_config()
+                adc_event_config = self._compose_button_adc_event_config()
 
         operations = build_button_mode_register_script_operations(
             dev,
@@ -1105,30 +1812,94 @@ class ButtonModePage(ButtonModeView, BasePage):
             play_mode_value=play_mode_value,
         )
 
-        if getattr(page, "source", None) == "rom":
+        if (
+            page is not None
+            and self.page_name != "full_mode"
+            and getattr(page, "source", None) == "rom"
+        ):
             return operations
 
-        if page.waveform_type_var.get() == "serial":
+        if self.page_name == "full_mode":
+            for event_key, reg, _source_bit in self.ADC_EVENT_CONFIGS:
+                if reg in (0x0F, 0x11):
+                    continue
+                event_value = self._compose_full_event_value(event_key, show_error=False)
+                if event_value is None:
+                    raise ValueError(f"Full Mode {event_key} settings are incomplete")
+                operations.append(
+                    RegisterScriptOperation(
+                        dev,
+                        "WRITE",
+                        reg,
+                        event_value,
+                        f"Set Full Mode {event_key} action",
+                    )
+                )
+            operations.append(
+                RegisterScriptOperation(
+                    dev,
+                    "WRITE",
+                    0x04,
+                    self._compose_global_config(),
+                    "Set Full Mode global configuration",
+                )
+            )
+            operations.extend(
+                RegisterScriptOperation(
+                    dev,
+                    "WRITE",
+                    reg,
+                    self._compose_serial_register(pair * 2),
+                    "Set Full Mode serial waveform chain",
+                )
+                for pair, reg in enumerate((0x17, 0x18, 0x19, 0x1A))
+            )
+        elif page is not None and page.waveform_type_var.get() == "serial":
             operations.extend(
                 RegisterScriptOperation(dev, "WRITE", reg, value, "Set serial waveform playback configuration")
                 for reg, value in page.build_serial_register_values()
             )
             return operations
 
-        values, _voltages, slice_index, start_addr, end_addr, _waveform_type = page._generate_current(
-            use_imported=use_imported
-        )
-        operations.extend(
-            build_waveform_register_script_operations(
-                dev,
-                values=values,
-                slice_index=slice_index,
-                start_addr=start_addr,
-                end_addr=end_addr,
-                max_output_reg_value=max_output_reg_value,
-                waveform_recipe=runtime.waveform_recipe if runtime is not None else None,
+        if page is not None and page.waveform_type_var.get() != "serial":
+            values, _voltages, slice_index, start_addr, end_addr, _waveform_type = page._generate_current(
+                use_imported=use_imported
             )
-        )
+            recipe = runtime.waveform_recipe if runtime is not None else None
+            if recipe is None:
+                item = self.storage.slices.get(slice_index)
+                recipe = getattr(item, "power_on_recipe", None)
+            operations.extend(
+                build_waveform_register_script_operations(
+                    dev,
+                    values=values,
+                    slice_index=slice_index,
+                    start_addr=start_addr,
+                    end_addr=end_addr,
+                    max_output_reg_value=max_output_reg_value,
+                    waveform_recipe=recipe if isinstance(recipe, Awp192xWaveformRecipe) else None,
+                )
+            )
+        if self.page_name == "full_mode":
+            page_slice = int(page.slice_var.get()) if page is not None else -1
+            for slice_index, item in sorted(self.storage.slices.items()):
+                if slice_index == page_slice:
+                    continue
+                operations.extend(
+                    build_waveform_register_script_operations(
+                        dev,
+                        values=list(item.values),
+                        slice_index=slice_index,
+                        start_addr=item.start_addr,
+                        end_addr=item.end_addr,
+                        max_output_reg_value=max_output_reg_value,
+                        waveform_recipe=(
+                            item.power_on_recipe
+                            if isinstance(item.power_on_recipe, Awp192xWaveformRecipe)
+                            else None
+                        ),
+                    )
+                )
         return operations
 
     def _parse_script_duration(self) -> int:
@@ -1183,6 +1954,8 @@ class ButtonModePage(ButtonModeView, BasePage):
         value = text.strip().lower()
         if value == "serial":
             index = self.SERIAL_WAVE_NUMBER
+        elif value in {"rom sin", "sin", "0x1f", "31"}:
+            index = 0x1F
         elif value.startswith("slice"):
             index = int(value.replace("slice", "", 1), 10)
         else:
@@ -1196,7 +1969,11 @@ class ButtonModePage(ButtonModeView, BasePage):
             us = int(self.duration_var.get())
             register_duration = encode_single_point_duration(us)
             self.ctx.state.single_point_duration_us = us
-            if write_register and not getattr(self, "_reading_current_settings", False):
+            if (
+                write_register
+                and not getattr(self, "_reading_current_settings", False)
+                and not getattr(self, "_syncing_chip_settings", False)
+            ):
                 self.write_reg(0x15, register_duration, show_error=False)
             # \u8fd9\u91cc\u7528\u5f53\u524d\u6ce2\u5f62\u70b9\u6570\u4f30\u7b97
             points = self.waveform_page.effective_points() if hasattr(self, "waveform_page") else 0
@@ -1217,7 +1994,7 @@ class ButtonModePage(ButtonModeView, BasePage):
                 self.ctx.state.current_max_output_reg_value = reg_value
                 if self.page_name == "button_mode":
                     self._mark_button_runtime_dirty()
-                elif not getattr(self, "_reading_current_settings", False):
+                elif not getattr(self, "_reading_current_settings", False) and not getattr(self, "_syncing_chip_settings", False):
                     self.write_reg(0x14, reg_value, show_error=False)
                 break
 
@@ -1253,19 +2030,21 @@ class ButtonModePage(ButtonModeView, BasePage):
         return self.write_reg(0x0B, self._compose_button_adc_event_config(), show_error=show_error)
 
     def _on_button_adc_filter_changed(self) -> None:
+        if getattr(self, "_reading_current_settings", False) or getattr(self, "_syncing_chip_settings", False):
+            return
         if self.page_name == "button_mode":
             self._mark_button_runtime_dirty()
             return
         self._write_button_adc_filter_config(show_error=False)
 
     def _on_button_adc_pol_changed(self) -> None:
-        if getattr(self, "_reading_current_settings", False):
+        if getattr(self, "_reading_current_settings", False) or getattr(self, "_syncing_chip_settings", False):
             return
         self._mark_button_runtime_dirty()
 
     def _on_button_adc_gain_changed(self) -> None:
         self._refresh_threshold_register_value_labels()
-        if getattr(self, "_reading_current_settings", False):
+        if getattr(self, "_reading_current_settings", False) or getattr(self, "_syncing_chip_settings", False):
             return
         self._mark_button_runtime_dirty()
 
@@ -1442,21 +2221,23 @@ class ButtonModePage(ButtonModeView, BasePage):
 
     def _apply_button_preset(self, config: dict[str, Any]) -> None:
         self._load_preset_gui_values(config)
-
-        page = self.waveform_page
-        page._preview_imported_waveform = False
-        page._update_end_addr()
-        page._preview_waveform()
+        page = getattr(self, "waveform_page", None)
+        if page is not None:
+            page._preview_imported_waveform = False
+            page._update_end_addr()
+            page._preview_waveform()
         self._update_period_hint(write_register=False)
 
         if not self.ctx.serial.is_connected:
             messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
             return
-        if page._waveform_write_busy:
+        if getattr(page, "_waveform_write_busy", False) or getattr(self, "_preset_waveform_write_busy", False):
             return
 
         try:
-            write_data = page._generate_current(use_imported=False)
+            recipe = self._button_preset_recipe(config)
+            values = list(generate_awp192x_waveform_points(recipe))
+            write_data = (values, [], recipe.slice_index, recipe.start_addr, recipe.start_addr + len(values), "sinc")
             gain = self._selected_button_adc_gain_code()
             press_code = self._map_adc_voltage_to_code(
                 float(config.get("press_threshold", 1.2)),
@@ -1472,11 +2253,20 @@ class ButtonModePage(ButtonModeView, BasePage):
                 0,
             )
             adc_filter_config = self._compose_button_adc_filter_config()
+            full_register_values = None
+            if self.page_name == "full_mode":
+                full_register_values = (
+                    self._compose_full_reg14(),
+                    self._compose_adc_config_0b(),
+                    self._compose_interrupt_mask(),
+                )
         except Exception as exc:
             messagebox.showerror(self.tr("error"), f"{self.tr('invalid_input')}\n{exc}")
             return
 
-        page._set_waveform_write_busy(True)
+        self._preset_waveform_write_busy = True
+        if page is not None:
+            page._set_waveform_write_busy(True)
         self._set_preset_buttons_state("disabled")
         dev = self.ctx.state.awp192x_device_addr
 
@@ -1489,46 +2279,142 @@ class ButtonModePage(ButtonModeView, BasePage):
                 press_value=press_value,
                 release_repeat=int(config["release_repeat"]),
                 adc_filter_config=adc_filter_config,
+                full_register_values=full_register_values,
             )
             if not error:
-                values, _voltages, slice_index, start_addr, end_addr, _waveform_type = write_data
-                error = page._write_waveform_to_device(
-                    dev,
-                    values,
-                    slice_index,
-                    start_addr,
-                    end_addr,
-                )
+                values_to_write, _voltages, slice_index, start_addr, end_addr, _waveform_type = write_data
+                if page is not None and self.page_name != "full_mode":
+                    error = page._write_waveform_to_device(
+                        dev,
+                        values_to_write,
+                        slice_index,
+                        start_addr,
+                        end_addr,
+                    )
+                else:
+                    error = self._write_waveform_values_to_device(
+                        dev,
+                        values_to_write,
+                        slice_index,
+                        start_addr,
+                        end_addr,
+                    )
             try:
-                self.after(0, self._finish_preset_write, write_data, error)
+                self.after(0, self._finish_preset_write, write_data, error, recipe)
             except tk.TclError:
                 pass
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _load_preset_gui_values(self, config: dict[str, Any]) -> None:
-        self.max_voltage_var.set(self.amp_options[-1][0])
-        self.duration_var.set(str(config["duration"]))
-        self.press_threshold_var.set(_format_preset_number(config.get("press_threshold", 1.2)))
-        self.release_threshold_var.set(_format_preset_number(config.get("release_threshold", -0.01)))
-        self.press_repeat_count_var.set(str(config["press_repeat"]))
-        self.release_repeat_count_var.set(str(config["release_repeat"]))
-        self.press_waveform_var.set("slice0")
-        self.release_waveform_var.set("slice0")
-        self.play_waveform_var.set("slice0")
-        self.play_repeat_count_var.set("1")
-        self.endless_play_var.set(False)
-
-        page = self.waveform_page
-        page.waveform_type_var.set("sinc")
-        page.slice_var.set(0)
-        page.sinc_positive_voltage_var.set(str(config["sinc_positive"]))
-        page.sinc_negative_voltage_var.set(str(config.get("sinc_negative", BUTTON_PRESET_SINC_NEGATIVE_VOLTAGE)))
+    @staticmethod
+    def _button_preset_recipe(config: dict[str, Any]) -> Awp192xWaveformRecipe:
         points = config.get("sinc_points", BUTTON_PRESET_SINC_POINTS)
-        page.sinc_points1_var.set(str(points[0]))
-        page.sinc_points2_var.set(str(points[1]))
-        page.sinc_points3_var.set(str(points[2]))
-        page.start_addr_var.set("0x0002")
+        return Awp192xWaveformRecipe(
+            generator_type=AWP192X_GENERATOR_SINC,
+            generator_version=AWP192X_GENERATOR_SINC_VERSION,
+            slice_index=0,
+            start_addr=0x0002,
+            points1=int(points[0]),
+            points2=int(points[1]),
+            points3=int(points[2]),
+            positive_mv=round(float(config["sinc_positive"]) * 1000),
+            negative_mv=round(float(config.get("sinc_negative", BUTTON_PRESET_SINC_NEGATIVE_VOLTAGE)) * 1000),
+        )
+
+    def _write_waveform_values_to_device(
+        self,
+        dev: int,
+        values: list[int],
+        slice_index: int,
+        start_addr: int,
+        end_addr: int,
+    ) -> str | None:
+        """Write an SRAM waveform without relying on a waveform editor window."""
+        if not self.ctx.serial.is_connected:
+            return "Serial port is not connected"
+        lock = getattr(self.ctx.serial, "_lock", None)
+
+        def write_locked() -> str | None:
+            restore_max_output = int(
+                getattr(self.ctx.state, "current_max_output_reg_value", 0x007E)
+            )
+            writes = (
+                (0x14, 0x0003),
+                (0x16, int(slice_index) * 2),
+                (0x00, int(start_addr)),
+                (0x16, int(slice_index) * 2 + 1),
+                (0x00, min(int(end_addr), WaveformStorage.SRAM_MAX)),
+                (0x16, int(start_addr)),
+            )
+            for reg, value in writes:
+                response = self.ctx.serial.write_register_value(dev, reg, value, bits=16)
+                if not response.ok:
+                    return response.error
+            for offset in range(0, len(values), WAVEFORM_DEFAULT_POINTS_PER_WRITE):
+                response = self.ctx.serial.write_register_values(
+                    dev,
+                    0x00,
+                    values[offset : offset + WAVEFORM_DEFAULT_POINTS_PER_WRITE],
+                    bits=16,
+                )
+                if not response.ok:
+                    return response.error
+            response = self.ctx.serial.write_register_value(
+                dev,
+                0x14,
+                restore_max_output,
+                bits=16,
+            )
+            return None if response.ok else response.error
+
+        if lock is None:
+            return write_locked()
+        with lock:
+            return write_locked()
+
+    def _load_preset_gui_values(self, config: dict[str, Any]) -> None:
+        was_syncing = getattr(self, "_syncing_chip_settings", False)
+        self._syncing_chip_settings = True
+        points = config.get("sinc_points", BUTTON_PRESET_SINC_POINTS)
+        page = getattr(self, "waveform_page", None)
+        try:
+            self.max_voltage_var.set(self.amp_options[-1][0])
+            self.duration_var.set(str(config["duration"]))
+            self.press_threshold_var.set(_format_preset_number(config.get("press_threshold", 1.2)))
+            self.release_threshold_var.set(_format_preset_number(config.get("release_threshold", -0.01)))
+            self.press_repeat_count_var.set(str(config["press_repeat"]))
+            self.release_repeat_count_var.set(str(config["release_repeat"]))
+            self.press_waveform_var.set("slice0")
+            self.release_waveform_var.set("slice0")
+            self.play_waveform_var.set("slice0")
+            self.play_repeat_count_var.set("1")
+            self.endless_play_var.set(False)
+
+            if page is not None:
+                page.waveform_type_var.set("sinc")
+                page.slice_var.set(0)
+                page.sinc_positive_voltage_var.set(str(config["sinc_positive"]))
+                page.sinc_negative_voltage_var.set(str(config.get("sinc_negative", BUTTON_PRESET_SINC_NEGATIVE_VOLTAGE)))
+                page.sinc_points1_var.set(str(points[0]))
+                page.sinc_points2_var.set(str(points[1]))
+                page.sinc_points3_var.set(str(points[2]))
+                page.start_addr_var.set("0x0002")
+            if self.page_name == "full_mode":
+                self.adc_threshold_h_var.set(_format_preset_number(config.get("press_threshold", 1.2)))
+                self.adc_threshold_l_var.set(_format_preset_number(config.get("release_threshold", -0.01)))
+                self.full_event_wave_vars["adc_over_h_posedge"].set("slice0")
+                self.full_event_wave_vars["adc_over_l_posedge"].set("slice0")
+                self.full_event_repeat_vars["adc_over_h_posedge"].set(str(config["press_repeat"]))
+                self.full_event_repeat_vars["adc_over_l_posedge"].set(str(config["release_repeat"]))
+                self.full_event_endless_vars["adc_over_h_posedge"].set(False)
+                self.full_event_endless_vars["adc_over_l_posedge"].set(False)
+                self.full_event_enable_vars["adc_over_h_posedge"].set(True)
+                self.full_event_enable_vars["adc_over_l_posedge"].set(False)
+        finally:
+            self._syncing_chip_settings = was_syncing
+        self._capture_shared_settings()
+        if self.page_name == "full_mode":
+            self._capture_full_advanced_settings()
 
     def _write_preset_registers(
         self,
@@ -1540,18 +2426,41 @@ class ButtonModePage(ButtonModeView, BasePage):
         press_value: int,
         release_repeat: int,
         adc_filter_config: int,
+        full_register_values: tuple[int, int, int] | None = None,
     ) -> str | None:
         register_duration = encode_single_point_duration(duration)
+        max_output_register = (
+            full_register_values[0]
+            if full_register_values is not None
+            else self._compose_full_reg14()
+            if self.page_name == "full_mode"
+            else 0x007E
+        )
+        adc_event_config = (
+            full_register_values[1]
+            if full_register_values is not None
+            else self._compose_adc_config_0b()
+            if self.page_name == "full_mode"
+            else self._compose_button_adc_event_config()
+        )
+        interrupt_or_d2_config = (
+            full_register_values[2]
+            if full_register_values is not None
+            else self._compose_interrupt_mask()
+            if self.page_name == "full_mode"
+            else self.ADC_D2_CONFIG
+        )
+        self.ctx.state.current_max_output_reg_value = max_output_register
         register_values = (
-            (0x14, 0x007E),
+            (0x14, max_output_register),
             (0x15, register_duration),
             (0x08, press_code),
             (0x09, release_code),
             (0x0A, self.ADC_OUTPUT_ENABLE),
-            (0x03, self.ADC_D2_CONFIG),
+            (0x03, interrupt_or_d2_config),
             (0x0C, adc_filter_config),
             (0x0F, press_value),
-            (0x0B, self._compose_button_adc_event_config()),
+            (0x0B, adc_event_config),
         )
         for reg, value in register_values:
             resp = self.ctx.serial.write_register_value(dev, reg, value, bits=16)
@@ -1594,21 +2503,25 @@ class ButtonModePage(ButtonModeView, BasePage):
         self,
         write_data: tuple[list[int], list[float], int, int, int, str],
         error: str | None,
+        power_on_recipe: Awp192xWaveformRecipe | Awp192xSineWaveformRecipe | None = None,
     ) -> None:
-        page = self.waveform_page
-        page._set_waveform_write_busy(False)
+        page = getattr(self, "waveform_page", None)
+        self._preset_waveform_write_busy = False
+        if page is not None:
+            page._set_waveform_write_busy(False)
         self._set_preset_buttons_state("normal")
         if error:
             messagebox.showerror(self.tr("error"), error)
             return
 
         values, _voltages, slice_index, start_addr, end_addr, waveform_type = write_data
-        power_on_recipe = page._power_on_recipe_for_values(
-            waveform_type=waveform_type,
-            slice_index=slice_index,
-            start_addr=start_addr,
-            values=values,
-        )
+        if power_on_recipe is None and page is not None:
+            power_on_recipe = page._power_on_recipe_for_values(
+                waveform_type=waveform_type,
+                slice_index=slice_index,
+                start_addr=start_addr,
+                values=values,
+            )
         self.storage.add_or_replace(
             slice_index,
             start_addr,
@@ -1619,22 +2532,26 @@ class ButtonModePage(ButtonModeView, BasePage):
             power_on_recipe=power_on_recipe,
         )
         self.storage.record_successful_write(slice_index)
-        page._analyzed_ranges = [
-            (idx, existing_start, existing_end)
-            for idx, existing_start, existing_end in getattr(page, "_analyzed_ranges", [])
-            if idx != slice_index
-        ]
-        page._analyzed_ranges.append((slice_index, start_addr, end_addr))
-        page._update_chip_cache_after_write(slice_index, start_addr, end_addr, values)
-        page._sync_read_slices_text()
-        page._preview_waveform()
-        self._update_period_hint()
+        if page is not None:
+            page._analyzed_ranges = [
+                (idx, existing_start, existing_end)
+                for idx, existing_start, existing_end in getattr(page, "_analyzed_ranges", [])
+                if idx != slice_index
+            ]
+            page._analyzed_ranges.append((slice_index, start_addr, end_addr))
+            page._update_chip_cache_after_write(slice_index, start_addr, end_addr, values)
+            page._sync_read_slices_text()
+            page._preview_waveform()
+        model = getattr(self, "_chip_settings_model", None)
+        if model is not None:
+            model.mark_applied()
+        self._update_period_hint(write_register=False)
         messagebox.showinfo(self.tr("info"), self.tr("preset_write_success"))
 
     @staticmethod
     def build_button_runtime_payload(page):
         """Build the versioned AWP192x Button configuration shared by live and EEPROM paths."""
-        wf_page = page.waveform_page
+        wf_page = getattr(page, "waveform_page", None)
         max_output_reg = page._current_max_output_reg_value()
         duration_us = int(page.duration_var.get())
         duration_reg = encode_single_point_duration(duration_us)
@@ -1662,9 +2579,22 @@ class ButtonModePage(ButtonModeView, BasePage):
         serial_selected = page.SERIAL_WAVE_NUMBER in (press_slice, release_slice, play_slice)
         serial_values = {0x17: 0, 0x18: 0, 0x19: 0, 0x1A: 0}
         if serial_selected:
-            if not hasattr(wf_page, "build_serial_register_values"):
+            if hasattr(page, "serial_wave_vars") and hasattr(page, "serial_loop_vars"):
+                codes = [waveform_number(variable.get()) for variable in page.serial_wave_vars]
+                repeats = [int(variable.get(), 0) for variable in page.serial_loop_vars]
+                if len(codes) != 8 or len(repeats) != 8 or any(not 1 <= count <= 8 for count in repeats):
+                    raise ValueError("serial waveform configuration is incomplete")
+                serial_values.update({
+                    0x17 + pair: ((repeats[pair * 2] - 1) & 0x07)
+                    | ((codes[pair * 2] & 0x1F) << 3)
+                    | (((repeats[pair * 2 + 1] - 1) & 0x07) << 8)
+                    | ((codes[pair * 2 + 1] & 0x1F) << 11)
+                    for pair in range(4)
+                })
+            elif wf_page is not None and hasattr(wf_page, "build_serial_register_values"):
+                serial_values.update(dict(wf_page.build_serial_register_values()))
+            else:
                 raise ValueError("serial waveform configuration is incomplete")
-            serial_values.update(dict(wf_page.build_serial_register_values()))
 
         required_slices = required_awp192x_button_waveform_slices(
             press_action_base=press_config & ~page.ADC_DETECT_ENABLE,
@@ -1675,9 +2605,9 @@ class ButtonModePage(ButtonModeView, BasePage):
             serial_config_0x19=serial_values[0x19],
             serial_config_0x1A=serial_values[0x1A],
         )
-        stored_slices = getattr(getattr(wf_page, "storage", None), "slices", {})
-        current_slice = int(wf_page.slice_var.get()) if hasattr(wf_page, "slice_var") else -1
-        current_type = wf_page.waveform_type_var.get() if hasattr(wf_page, "waveform_type_var") else ""
+        stored_slices = getattr(getattr(page, "storage", None), "slices", {})
+        current_slice = int(wf_page.slice_var.get()) if wf_page is not None and hasattr(wf_page, "slice_var") else -1
+        current_type = wf_page.waveform_type_var.get() if wf_page is not None and hasattr(wf_page, "waveform_type_var") else ""
 
         waveforms: list[Awp192xWaveformRecipe | Awp192xSineWaveformRecipe] = []
         for slice_index in required_slices:
@@ -1731,6 +2661,17 @@ class ButtonModePage(ButtonModeView, BasePage):
                 )
             waveforms.append(recipe)
 
+        if not waveforms:
+            raise ValueError(
+                "AWP192x Type-3 slots require at least one SINC/SIN SRAM waveform recipe"
+            )
+        if len(waveforms) > AWP192X_BUTTON_MAX_WAVEFORMS:
+            raise ValueError(
+                "AWP192x Type-3 slots support at most "
+                f"{AWP192X_BUTTON_MAX_WAVEFORMS} waveforms; "
+                f"the current chain requires {len(waveforms)}"
+            )
+
         return Awp192xButtonPayloadV2(
             payload_version=page.BUTTON_RUNTIME_PAYLOAD_VERSION,
             flags=page.BUTTON_RUNTIME_FLAG_SERIAL_VALID if serial_selected else 0,
@@ -1757,6 +2698,12 @@ class ButtonModePage(ButtonModeView, BasePage):
 
     def save_board_preset(self) -> None:
         if not self._ensure_connected():
+            return
+
+        model = getattr(self, "_chip_settings_model", None)
+        allowed, warning_key = can_save_slot(model) if model is not None else (True, None)
+        if not allowed:
+            messagebox.showwarning(self.tr("error"), self.tr(warning_key or "preset_slot_advanced_block_warning"))
             return
 
         try:
@@ -1788,7 +2735,13 @@ class ButtonModePage(ButtonModeView, BasePage):
         resp = self.ctx.serial.sync_config_preset(slot, payload, set_active=False)
 
         if resp.ok:
-            messagebox.showinfo(self.tr("info"), self.tr("board_preset_saved"))
+            if self.page_name == "full_mode" and getattr(self._chip_settings_model, "advanced", {}).get("slot_omitted"):
+                messagebox.showwarning(
+                    self.tr("info"),
+                    f"{self.tr('board_preset_saved')}\n{self.tr('preset_slot_advanced_scope_warning')}",
+                )
+            else:
+                messagebox.showinfo(self.tr("info"), self.tr("board_preset_saved"))
         else:
             messagebox.showerror(self.tr("error"), resp.error)
 
@@ -1813,10 +2766,12 @@ class ButtonModePage(ButtonModeView, BasePage):
 
         if resp.ok:
             messagebox.showinfo(self.tr("info"), self.tr("board_preset_read").format(slot=slot))
+            self.read_board_preset(show_success=False)
+            self.read_current_settings(show_success=False)
         else:
             messagebox.showerror(self.tr("error"), resp.error)
 
-    def read_board_preset(self) -> None:
+    def read_board_preset(self, *, show_success: bool = True) -> None:
         if not self._ensure_connected():
             return
 
@@ -1847,7 +2802,8 @@ class ButtonModePage(ButtonModeView, BasePage):
             except ValueError as exc:
                 messagebox.showerror(self.tr("error"), f"{self.tr('board_preset_read_invalid')}\n{exc}")
                 return
-            messagebox.showinfo(self.tr("info"), summary)
+            if show_success:
+                messagebox.showinfo(self.tr("info"), summary)
         else:
             messagebox.showerror(self.tr("error"), resp.error)
 
@@ -2012,10 +2968,14 @@ class ButtonModePage(ButtonModeView, BasePage):
             self.duration_var.set(str((registers[0x15] & 0xFFFF) + 1))
 
             gain_label = "0-19V" if registers[0x0B] & (1 << 9) else "0-100V"
-            press_voltage = self._code_to_voltage(registers[0x08] & 0x0FFF, gain_label, "OUT+")
-            release_voltage = self._code_to_voltage(registers[0x09] & 0x0FFF, gain_label, "OUT+")
+            polarity_label = "OUT-" if registers[0x0B] & (1 << 8) else "OUT+"
+            press_voltage = self._code_to_voltage(registers[0x08] & 0x0FFF, gain_label, polarity_label)
+            release_voltage = self._code_to_voltage(registers[0x09] & 0x0FFF, gain_label, polarity_label)
             self.press_threshold_var.set(self._format_current_voltage(press_voltage))
             self.release_threshold_var.set(self._format_current_voltage(release_voltage))
+            if self.page_name == "full_mode":
+                self.adc_threshold_h_var.set(self._format_current_voltage(press_voltage))
+                self.adc_threshold_l_var.set(self._format_current_voltage(release_voltage))
 
             adc_filter = registers[0x0C]
             self.adc_average_time_var.set(self._adc_average_label((adc_filter >> 4) & 0x0F))
@@ -2034,17 +2994,47 @@ class ButtonModePage(ButtonModeView, BasePage):
             self.play_waveform_var.set(self._format_current_waveform_slice(play_config & self.WAVEFORM_FIELD_MASK))
             self.endless_play_var.set(bool(play_config & self.ENDLESS_PLAY_BIT))
 
+            if self.page_name == "full_mode":
+                full_gain = "0-19V" if registers[0x0B] & (1 << 9) else "0-100V"
+                full_pol = "OUT-" if registers[0x0B] & (1 << 8) else "OUT+"
+                self.adc_gain_var.set(full_gain)
+                self.adc_pol_var.set(full_pol)
+                self.adc_mode_var.set({0: "Direct", 1: "INPT", 2: "AUTO"}.get(registers[0x0B] & 0x03, "Direct"))
+                represented_mask = (1 << 9) | (1 << 8) | 0x0003
+                for event_key, _reg, source_bit in self.ADC_EVENT_CONFIGS:
+                    represented_mask |= 1 << source_bit
+                    self.adc_trigger_vars[event_key].set(bool(registers[0x0B] & (1 << source_bit)))
+                self._full_adc_config_fixed_bits = registers[0x0B] & ~represented_mask
+                for key, action, value in (
+                    ("adc_over_h_posedge", press_config, press_config),
+                    ("adc_over_l_posedge", release_config, release_config),
+                ):
+                    self.full_event_enable_vars[key].set(bool(value & (1 << 15)))
+                    self.full_event_endless_vars[key].set(bool(value & self.ENDLESS_PLAY_BIT))
+                    self.full_event_repeat_vars[key].set(str(((value & self.REPEAT_FIELD_MASK) >> 5) + 1))
+                    self.full_event_wave_vars[key].set(
+                        waveform_label(value & self.WAVEFORM_FIELD_MASK, full=True)
+                    )
+                self.play_waveform_var.set(
+                    waveform_label(play_config & self.WAVEFORM_FIELD_MASK, full=True)
+                )
+
             for pair, reg in enumerate(range(0x17, 0x1B)):
                 value = registers[reg]
                 even_index = pair * 2
-                self.waveform_page.serial_repeat_vars[even_index].set(str((value & 0x0007) + 1))
-                self.waveform_page.serial_slice_vars[even_index].set(
-                    self._format_current_serial_slice((value >> 3) & 0x1F)
+                entries = (
+                    ((value >> 3) & 0x1F, (value & 0x0007) + 1),
+                    ((value >> 11) & 0x1F, ((value >> 8) & 0x0007) + 1),
                 )
-                self.waveform_page.serial_repeat_vars[even_index + 1].set(str(((value >> 8) & 0x0007) + 1))
-                self.waveform_page.serial_slice_vars[even_index + 1].set(
-                    self._format_current_serial_slice((value >> 11) & 0x1F)
-                )
+                for offset, (wave, repeat) in enumerate(entries):
+                    index = even_index + offset
+                    if self.page_name == "full_mode":
+                        self.serial_wave_vars[index].set(self._format_serial_wave(wave))
+                        self.serial_loop_vars[index].set(str(repeat))
+                    waveform_page = getattr(self, "waveform_page", None)
+                    if waveform_page is not None:
+                        waveform_page.serial_repeat_vars[index].set(str(repeat))
+                        waveform_page.serial_slice_vars[index].set(self._format_current_serial_slice(wave))
 
             if waveform_recipes is not None:
                 self._apply_waveform_recipes_page_state(
@@ -2067,19 +3057,23 @@ class ButtonModePage(ButtonModeView, BasePage):
                         values,
                     )
 
-                waveform_page = self.waveform_page
-                waveform_page._analyzed_ranges = list(analyzed)
-                waveform_page._chip_values_cache = list(ram_values)
-                waveform_page._chip_voltages = waveform_page._chip_values_to_voltages(ram_values, analyzed)
-                waveform_page._plot_mode = "chip"
-                waveform_page._save_chip_cache(self.ctx.state.awp192x_device_addr, ram_values, analyzed)
-                waveform_page._render_analyzed_ranges_text(analyzed)
-                waveform_page._draw_plot(waveform_page._chip_voltages)
+                waveform_page = getattr(self, "waveform_page", None)
+                if waveform_page is not None:
+                    waveform_page._analyzed_ranges = list(analyzed)
+                    waveform_page._chip_values_cache = list(ram_values)
+                    waveform_page._chip_voltages = waveform_page._chip_values_to_voltages(ram_values, analyzed)
+                    waveform_page._plot_mode = "chip"
+                    waveform_page._save_chip_cache(self.ctx.state.awp192x_device_addr, ram_values, analyzed)
+                    waveform_page._render_analyzed_ranges_text(analyzed)
+                    waveform_page._draw_plot(waveform_page._chip_voltages)
         finally:
             self._reading_current_settings = previous_reading
 
         self._refresh_threshold_register_value_labels()
         self._update_period_hint(write_register=False)
+        self._capture_shared_settings()
+        if self.page_name == "full_mode":
+            self._capture_full_advanced_settings()
 
     @staticmethod
     def _normalize_waveform_recipe(
@@ -2130,10 +3124,11 @@ class ButtonModePage(ButtonModeView, BasePage):
         if not normalized:
             raise ValueError("AWP192x Button Runtime contains no waveform recipes")
 
-        page = self.waveform_page
+        page = getattr(self, "waveform_page", None)
         if replace_all:
             self.storage.clear()
-            page._analyzed_ranges = []
+            if page is not None:
+                page._analyzed_ranges = []
 
         generated: list[
             tuple[
@@ -2148,6 +3143,19 @@ class ButtonModePage(ButtonModeView, BasePage):
             end_addr = self.storage.make_end_addr(recipe.start_addr, len(values))
             waveform_type = "sine" if isinstance(recipe, Awp192xSineWaveformRecipe) else "sinc"
             generated.append((recipe, values, end_addr, waveform_type))
+
+        if page is None:
+            for recipe, values, end_addr, waveform_type in generated:
+                self.storage.add_or_replace(
+                    recipe.slice_index,
+                    recipe.start_addr,
+                    end_addr,
+                    len(values),
+                    waveform_type,
+                    values,
+                    power_on_recipe=recipe,
+                )
+            return
 
         recipe, values, end_addr, waveform_type = generated[0]
         page._imported_values = None
@@ -2203,44 +3211,61 @@ class ButtonModePage(ButtonModeView, BasePage):
         if imported is None:
             return False
         if imported.recipe is not None:
-            self._apply_waveform_recipe_page_state(imported.recipe)
+            if getattr(self, "waveform_page", None) is not None:
+                self._apply_waveform_recipe_page_state(imported.recipe)
+            else:
+                values = list(generate_awp192x_waveform_points(imported.recipe))
+                end_addr = self.storage.make_end_addr(imported.recipe.start_addr, len(values))
+                waveform_type = "sine" if isinstance(imported.recipe, Awp192xSineWaveformRecipe) else "sinc"
+                self.storage.add_or_replace(
+                    imported.recipe.slice_index,
+                    imported.recipe.start_addr,
+                    end_addr,
+                    len(values),
+                    waveform_type,
+                    values,
+                    power_on_recipe=imported.recipe,
+                )
             self.storage.record_successful_write(imported.slice_index)
             return True
 
-        page = self.waveform_page
+        page = getattr(self, "waveform_page", None)
         values = list(imported.values)
-        page._imported_values = list(values)
-        page._preview_imported_waveform = True
-        page._plot_mode = "current"
-        page.waveform_type_var.set("imported")
-        page.slice_var.set(imported.slice_index)
-        page.start_addr_var.set(f"0x{imported.start_addr:04X}")
-        if hasattr(page, "fill_zero_tail_var"):
-            page.fill_zero_tail_var.set(False)
-        page.points_var.set(str(len(values)))
-        page.end_addr_var.set(f"0x{imported.end_addr:04X}")
-        update_fields = getattr(page, "_update_waveform_specific_fields", None)
-        if callable(update_fields):
-            update_fields()
-        update_end = getattr(page, "_update_end_addr", None)
-        if callable(update_end):
-            update_end()
-        page.points_var.set(str(len(values)))
-        page.end_addr_var.set(f"0x{imported.end_addr:04X}")
-        self._remember_waveform_page_values(
+        if page is not None:
+            page._imported_values = list(values)
+            page._preview_imported_waveform = True
+            page._plot_mode = "current"
+            page.waveform_type_var.set("imported")
+            page.slice_var.set(imported.slice_index)
+            page.start_addr_var.set(f"0x{imported.start_addr:04X}")
+            if hasattr(page, "fill_zero_tail_var"):
+                page.fill_zero_tail_var.set(False)
+            page.points_var.set(str(len(values)))
+            page.end_addr_var.set(f"0x{imported.end_addr:04X}")
+            update_fields = getattr(page, "_update_waveform_specific_fields", None)
+            if callable(update_fields):
+                update_fields()
+            update_end = getattr(page, "_update_end_addr", None)
+            if callable(update_end):
+                update_end()
+            page.points_var.set(str(len(values)))
+            page.end_addr_var.set(f"0x{imported.end_addr:04X}")
+        self.storage.add_or_replace(
             values=values,
-            slice_index=imported.slice_index,
+            waveform_type="imported",
+            index=imported.slice_index,
             start_addr=imported.start_addr,
             end_addr=imported.end_addr,
-            waveform_type="imported",
+            points=len(values),
         )
         self.storage.record_successful_write(imported.slice_index)
-        page._last_values = list(values)
-        page._last_voltages = [page.engine.map_dac_to_voltage(value) for value in values]
-        page._notify_metrics_changed()
-        preview = getattr(page, "_preview_waveform", None)
-        if callable(preview):
-            preview()
+        if page is not None:
+            page._last_values = list(values)
+            page._last_voltages = [page.engine.map_dac_to_voltage(value) for value in values]
+            page._notify_metrics_changed()
+            preview = getattr(page, "_preview_waveform", None)
+            if callable(preview):
+                preview()
         return True
 
     def _set_preset_buttons_state(self, state: str) -> None:
@@ -2399,6 +3424,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._set_button_selected("start_play", False)
 
     def on_show(self) -> None:
+        self._sync_awp192x_settings_from_model()
         if self.page_name == "button_mode":
             self._mark_button_runtime_dirty()
             self._update_period_hint(write_register=bool(getattr(self, '_prepared_registers_pending', False)))
@@ -3011,6 +4037,8 @@ class FullModePage(ButtonModePage):
         self.adc_pol_var = tk.StringVar(value="OUT+")
         self.adc_mode_var = tk.StringVar(value="Direct")
         self.adc_trigger_vars = {key: tk.BooleanVar(value=False) for key in self.ADC_TRIGGER_KEYS}
+        self.adc_trigger_vars["adc_over_h_posedge"].set(True)
+        self._full_adc_config_fixed_bits = 0x0001
         self.play_waveform_var.set("ROM sin")
         self.play_repeat_count_var.set("1")
         self.endless_play_var.set(False)
@@ -3024,6 +4052,7 @@ class FullModePage(ButtonModePage):
         self.full_event_endless_vars = {key: tk.BooleanVar(value=False) for key, _reg, _bit in self.ADC_EVENT_CONFIGS}
         self.full_event_repeat_vars = {key: tk.StringVar(value="1") for key, _reg, _bit in self.ADC_EVENT_CONFIGS}
         self.full_event_wave_vars = {key: tk.StringVar(value="ROM sin") for key, _reg, _bit in self.ADC_EVENT_CONFIGS}
+        self.full_event_enable_vars["adc_over_h_posedge"].set(True)
         self.status_value_var = tk.StringVar(value="")
         self.chip_id_var = tk.StringVar(value="")
         self.int_mask_vars = {key: tk.BooleanVar(value=False) for key, _bit in self.INT_MASK_BITS}
@@ -3060,6 +4089,9 @@ class FullModePage(ButtonModePage):
 
         header = self.make_title(self, "full_mode", show_logo=False)
         header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
+        preset_frame = self.make_preset_frame(header)
+        self.preset_toolbar = self._create_preset_toolbar(preset_frame)
+        self.preset_toolbar.grid(row=0, column=0, sticky="ew")
 
         body = ttk.Frame(self, style="App.TFrame")
         yield
@@ -3414,6 +4446,8 @@ class FullModePage(ButtonModePage):
         self.refresh_language()
         self._refresh_full_adc_threshold_register_value_labels()
         self._on_endless_play_changed()
+        self._initialize_awp192x_settings_model()
+        self._attach_shared_settings_traces()
 
     def _add_section_title(self, parent: tk.Misc, row: int, key: str) -> int:
         title_options = {
@@ -3978,16 +5012,52 @@ class FullModePage(ButtonModePage):
             storage=self.storage,
         )
         self.waveform_page.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        self._syncing_chip_settings = True
+        try:
+            for index, (wave, repeat) in enumerate(zip(self.serial_wave_vars, self.serial_loop_vars)):
+                self.waveform_page.serial_slice_vars[index].set(wave.get())
+                self.waveform_page.serial_repeat_vars[index].set(repeat.get())
+            model = getattr(self, "_chip_settings_model", None)
+            editor_state = model.advanced.get("waveform_editor") if model is not None else None
+            if isinstance(editor_state, dict):
+                self._apply_full_waveform_editor_settings(editor_state)
+        finally:
+            self._syncing_chip_settings = False
+        for variable in [*self.waveform_page.serial_slice_vars, *self.waveform_page.serial_repeat_vars]:
+            variable.trace_add(
+                "write",
+                lambda *_args, page=self.waveform_page: self._on_full_editor_serial_changed(page),
+            )
+        for variable in (
+            self.waveform_page.waveform_type_var,
+            self.waveform_page.slice_var,
+            self.waveform_page.points_var,
+            self.waveform_page.start_phase_var,
+            self.waveform_page.end_phase_var,
+            self.waveform_page.offset_var,
+            self.waveform_page.voltage_amplitude_var,
+            self.waveform_page.sinc_positive_voltage_var,
+            self.waveform_page.sinc_negative_voltage_var,
+            self.waveform_page.sinc_points1_var,
+            self.waveform_page.sinc_points2_var,
+            self.waveform_page.sinc_points3_var,
+            self.waveform_page.start_addr_var,
+            self.waveform_page.fill_zero_tail_var,
+        ):
+            variable.trace_add("write", lambda *_args: self._capture_full_advanced_settings())
         scroll_area.content.columnconfigure(0, weight=1)
         self.waveform_page.metrics_revision_var.trace_add(
             "write",
             lambda *_: self._update_period_hint(write_register=False),
         )
         self.waveform_page.refresh_language()
-        self._update_period_hint()
+        self._update_period_hint(write_register=False)
 
     def _close_waveform_window(self) -> None:
         if hasattr(self, "waveform_page"):
+            if self.page_name == "full_mode":
+                self._capture_shared_settings()
+                self._capture_full_advanced_settings()
             delattr(self, "waveform_page")
         if self._waveform_window is not None:
             try:
@@ -3995,7 +5065,7 @@ class FullModePage(ButtonModePage):
             except Exception:
                 pass
         self._waveform_window = None
-        self._update_period_hint()
+        self._update_period_hint(write_register=False)
 
     def _option_code(self, selected: str, options: tuple[tuple[str, int], ...], default: int = 0) -> int:
         return next((value for label, value in options if label == selected), default)
@@ -4139,7 +5209,8 @@ class FullModePage(ButtonModePage):
         gain_code = 1 if self.adc_gain_var.get() == "0-19V" else 0
         pol_code = 1 if self.adc_pol_var.get() == "OUT-" else 0
 
-        value = (gain_code << 9) | (pol_code << 8) | mode_code
+        value = (int(getattr(self, "_full_adc_config_fixed_bits", 0)) & 0xFFFF)
+        value |= (gain_code << 9) | (pol_code << 8) | mode_code
         for event_key, _reg, source_bit in self.ADC_EVENT_CONFIGS:
             if self.adc_trigger_vars[event_key].get():
                 value |= 1 << source_bit
@@ -4539,16 +5610,9 @@ class FullModePage(ButtonModePage):
         return self._code_to_voltage(code, self._adc_detect_gain_var.get(), self._adc_detect_pol_var.get())
 
     def on_show(self) -> None:
-        self._on_voltage_changed()
-        self._update_period_hint()
-        self._on_adc_threshold_changed()
-        self._on_adc_average_changed()
-        self._on_adc_ovv_changed()
-        self._on_adc_gain_pol_changed()
-        self._on_adc_mode_changed()
-        self._on_full_manual_play_changed()
-        for event_key in self.full_event_enable_vars:
-            self._on_full_sense_event_changed(event_key)
+        self._sync_awp192x_settings_from_model()
+        self._refresh_full_adc_threshold_register_value_labels()
+        self._update_period_hint(write_register=False)
         if not self._sense_status_active:
             self._set_sense_status_color(self.STATUS_IDLE_COLOR)
 
@@ -4577,21 +5641,34 @@ class FullModePage(ButtonModePage):
             self.period_hint_var.set("")
 
     def _on_voltage_changed(self) -> None:
+        if getattr(self, "_syncing_chip_settings", False) or getattr(self, "_reading_current_settings", False):
+            selected = self.max_voltage_var.get()
+            for label, voltage, _reg_value in self.amp_options:
+                if label == selected:
+                    self.ctx.state.current_max_output_voltage = voltage
+                    self.ctx.state.current_max_output_reg_value = self._compose_full_reg14()
+                    return
         self._write_full_reg14(show_error=False)
 
     def _on_adc_average_changed(self) -> None:
+        if getattr(self, "_reading_current_settings", False) or getattr(self, "_syncing_chip_settings", False):
+            return
         selected = self.adc_average_time_var.get()
         code = next((value for label, value in self.ADC_AVERAGE_OPTIONS if label == selected), 0x00)
         self.ctx.state.extra["adc_average_code"] = code
         self._write_adc_config_0c(show_error=False)
 
     def _on_adc_ovv_changed(self) -> None:
+        if getattr(self, "_reading_current_settings", False) or getattr(self, "_syncing_chip_settings", False):
+            return
         selected = self.adc_ovv_time_var.get()
         code = next((value for label, value in self.ADC_OVV_OPTIONS if label == selected), 0x0)
         self.ctx.state.extra["adc_ovv_code"] = code
         self._write_adc_config_0c(show_error=False)
 
     def _on_adc_gain_pol_changed(self) -> None:
+        if getattr(self, "_reading_current_settings", False) or getattr(self, "_syncing_chip_settings", False):
+            return
         gain_code = 1 if self.adc_gain_var.get() == "0-19V" else 0
         pol_code = 1 if self.adc_pol_var.get() == "OUT-" else 0
         self.ctx.state.extra["adc_gain_code"] = gain_code
@@ -4600,6 +5677,8 @@ class FullModePage(ButtonModePage):
         self._on_adc_threshold_changed()
 
     def _on_adc_mode_changed(self) -> None:
+        if getattr(self, "_reading_current_settings", False) or getattr(self, "_syncing_chip_settings", False):
+            return
         selected = self.adc_mode_var.get()
         if selected == "INPT":
             mode_code = 0x01
@@ -4611,17 +5690,25 @@ class FullModePage(ButtonModePage):
         self._write_adc_config_0b(show_error=False)
 
     def _on_adc_inpt_source_changed(self) -> None:
+        if getattr(self, "_reading_current_settings", False) or getattr(self, "_syncing_chip_settings", False):
+            return
         self._write_adc_config_0b(show_error=False)
 
     def _on_adc_threshold_changed(self) -> None:
         self._refresh_full_adc_threshold_register_value_labels()
+        if getattr(self, "_reading_current_settings", False) or getattr(self, "_syncing_chip_settings", False):
+            return
         self._write_full_adc_thresholds(show_error=False)
 
     def _on_full_manual_play_changed(self) -> None:
+        if getattr(self, "_reading_current_settings", False) or getattr(self, "_syncing_chip_settings", False):
+            return
         self._write_full_manual_play_config(show_error=False)
         self._update_period_hint(write_register=False)
 
     def _on_full_sense_event_changed(self, event_key: str) -> None:
+        if getattr(self, "_reading_current_settings", False) or getattr(self, "_syncing_chip_settings", False):
+            return
         value = self._compose_full_event_value(event_key, show_error=False)
         if value is None:
             return
@@ -4633,6 +5720,8 @@ class FullModePage(ButtonModePage):
         entry = self._repeat_entries.get("play_repeat_count")
         if entry is not None:
             entry.configure(state="disabled" if self.endless_play_var.get() else "normal")
+        if getattr(self, "_reading_current_settings", False) or getattr(self, "_syncing_chip_settings", False):
+            return
         self._on_full_manual_play_changed()
 
     def _on_full_data_depth_changed(self) -> None:
