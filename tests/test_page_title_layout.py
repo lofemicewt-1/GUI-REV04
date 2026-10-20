@@ -175,6 +175,54 @@ class PageTitleLayoutTests(unittest.TestCase):
 
         self.assertEqual(int(header._preset_area.grid_info()["row"]), 0)
 
+    def test_preset_toolbar_stacks_at_padded_scroll_content_boundary(self) -> None:
+        self.root.geometry("1600x600")
+        self.root.deiconify()
+        self.page.rowconfigure(0, weight=1)
+        self.page.columnconfigure(0, weight=1)
+        viewport, content = self.page.make_vertical_scroll_area(
+            self.page,
+            horizontal=True,
+            clamp_width=True,
+        )
+        viewport.grid(row=0, column=0, sticky="nsew")
+        content.configure(padding=(8, 0, 8, 0))
+        header = self.page.make_title(content, "button_mode", show_logo=False)
+        header.grid(row=0, column=0, sticky="ew")
+        preset = self.page.make_preset_frame(header)
+        for column in range(5):
+            ttk.Button(
+                preset,
+                style="Bg.TButton",
+                text=f"Preset {column}",
+            ).grid(row=0, column=column, sticky="ew")
+
+        self._settle()
+        required_width = (
+            int(header._mode_title_width)
+            + int(header._preset_frame.winfo_reqwidth())
+            + 24
+        )
+        target_canvas_width = required_width + 8
+        for _ in range(3):
+            canvas_width = int(viewport.canvas.winfo_width())
+            if canvas_width == target_canvas_width:
+                break
+            root_width = int(self.root.winfo_width())
+            self.root.geometry(
+                f"{root_width + target_canvas_width - canvas_width}x600"
+            )
+            self._settle()
+
+        canvas_width = int(viewport.canvas.winfo_width())
+        self.assertGreaterEqual(canvas_width, required_width)
+        self.assertLess(canvas_width - 16, required_width)
+        self.assertEqual(int(header._preset_area.grid_info()["row"]), 1)
+
+        content.configure(padding=(8, 0, 8))
+        self.page._layout_mode_header(header)
+        self.assertEqual(int(header._preset_area.grid_info()["row"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

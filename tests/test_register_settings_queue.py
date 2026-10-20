@@ -102,10 +102,10 @@ class RoutedRegisterSettingsTests(unittest.TestCase):
                 if change=="generation_shadow":
                     router._manager_connection_generations[id(manager)]=10
                 entered,release=threading.Event(),threading.Event()
-                manager.read_hook=lambda reg:(entered.set(),release.wait(2))
+                manager.read_hook = lambda reg, e=entered, r=release: (e.set(), r.wait(2))
                 router.queue_register_setting("awp1018",0x48,0x06,0x4000,clear_mask=0xC000,address_state_key="awp1018_device_addr")
-                self.assertTrue(entered.wait(1))
                 try:
+                    self.assertTrue(entered.wait(1))
                     if change in {"generation","generation_shadow"}:manager.connection_generation+=1
                     elif change=="manager":router._managers["FAKE_A"]=SlowManager(0)
                     elif change=="port":router.set_page_port("awp1018","FAKE_B")

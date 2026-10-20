@@ -1563,11 +1563,42 @@ class BasePage(ttk.Frame):
         frame = getattr(header, "_preset_frame", None)
         action_width = max(1, int(frame.winfo_reqwidth())) if frame is not None else 1
         viewport = VerticalScrollArea._nearest_scroll_area(header)
+        available_width = 0
+        width_known = False
         try:
-            available_width = int(viewport.canvas.winfo_width()) if viewport is not None else 0
+            if viewport is not None:
+                canvas_width = int(viewport.canvas.winfo_width())
+                if canvas_width > 1:
+                    horizontal_padding = 0
+                    ancestor = header.master
+                    while ancestor is not None:
+                        try:
+                            raw_padding = ancestor.cget("padding")
+                            padding = (
+                                raw_padding
+                                if isinstance(raw_padding, (tuple, list))
+                                else ancestor.tk.splitlist(raw_padding)
+                            )
+                            if len(padding) in (1, 2):
+                                horizontal_sides = (padding[0], padding[0])
+                            elif len(padding) >= 3:
+                                horizontal_sides = (padding[0], padding[2])
+                            else:
+                                horizontal_sides = ()
+                            horizontal_padding += sum(
+                                ancestor.winfo_pixels(side)
+                                for side in horizontal_sides
+                            )
+                        except (tk.TclError, TypeError, ValueError):
+                            pass
+                        if ancestor is viewport.content:
+                            break
+                        ancestor = getattr(ancestor, "master", None)
+                    available_width = max(0, canvas_width - horizontal_padding)
+                    width_known = True
         except tk.TclError:
-            available_width = 0
-        if available_width <= 1:
+            pass
+        if not width_known:
             try:
                 available_width = int(header.master.winfo_width())
             except tk.TclError:
