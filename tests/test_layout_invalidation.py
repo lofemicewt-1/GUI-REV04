@@ -8,6 +8,60 @@ from tests.validate_responsive_layout import mocked_application
 
 
 class LayoutInvalidationTests(unittest.TestCase):
+    def test_warm_navigation_keeps_cached_widgets_and_waits_for_active_mode_layout(self):
+        with mocked_application() as app:
+            app.set_animations(False)
+            root, nav = app.root, app.navigation
+            nav.show("awp1921_1923")
+            pump(root, .3)
+            host = dict.__getitem__(nav.pages, "awp1921_1923")
+            button_page = dict.__getitem__(host.mode_pages, "button_mode")
+            self.assertTrue(nav._page_layout_ready())
+
+            button_page._button_adc_diagram_job = "pending-diagram-job"
+            self.assertFalse(nav._page_layout_ready())
+            button_page._button_adc_diagram_job = None
+            self.assertTrue(nav._page_layout_ready())
+
+            nav.show("awp1018")
+            pump(root, .3)
+            nav.show("awp1921_1923")
+            pump(root, .3)
+            self.assertIs(dict.__getitem__(nav.pages, "awp1921_1923"), host)
+            self.assertIs(dict.__getitem__(host.mode_pages, "button_mode"), button_page)
+
+    def test_192x_preview_and_diagram_redraws_coalesce_and_cancel(self):
+        with mocked_application() as app:
+            app.set_animations(False)
+            root, nav = app.root, app.navigation
+            nav.show("awp1921_1923")
+            pump(root, .3)
+            host = dict.__getitem__(nav.pages, "awp1921_1923")
+            button_page = dict.__getitem__(host.mode_pages, "button_mode")
+            waveform_page = button_page.waveform_page
+
+            with patch.object(button_page, "_draw_button_adc_diagram", wraps=button_page._draw_button_adc_diagram) as diagram:
+                for _ in range(12):
+                    button_page._queue_button_adc_diagram()
+                pump(root, .1)
+            self.assertEqual(diagram.call_count, 1)
+
+            with patch.object(waveform_page, "_redraw_active_plot", wraps=waveform_page._redraw_active_plot) as preview:
+                for _ in range(12):
+                    waveform_page._queue_plot_redraw()
+                pump(root, .1)
+            self.assertEqual(preview.call_count, 1)
+
+            errors = []
+            root.report_callback_exception = lambda kind, value, tb: errors.append(repr(value))
+            button_page._queue_button_adc_diagram()
+            pending = button_page._button_adc_diagram_job
+            self.assertIsNotNone(pending)
+            button_page.destroy()
+            root.update()
+            self.assertNotIn(pending, root.tk.splitlist(root.tk.call("after", "info")))
+            self.assertEqual(errors, [])
+
     def test_warm_chip_switch_does_not_resize_an_unchanged_canvas_window(self):
         with mocked_application() as app:
             app.set_animations(False)

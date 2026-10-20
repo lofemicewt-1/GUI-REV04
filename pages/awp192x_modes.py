@@ -12,7 +12,9 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Any
+from typing import Any, Callable
+
+from config.lang_r2_c import install as _install_r2c_language
 
 from core.awp192x_button_runtime import (
     AWP192X_BUTTON_MAX_WAVEFORMS,
@@ -52,6 +54,8 @@ from pages.base_page import (
 )
 from pages.preset_toolbar import PresetToolbar
 from pages.waveform_generator import WAVEFORM_DEFAULT_POINTS_PER_WRITE, WaveformGeneratorPage
+
+_install_r2c_language()
 
 
 def build_awp192x_amp_options() -> list[tuple[str, float, int]]:
@@ -469,6 +473,9 @@ class ButtonModePage(ButtonModeView, BasePage):
         self.press_waveform_var = tk.StringVar(value="slice0")
         self.release_waveform_var = tk.StringVar(value="slice0")
         self.play_waveform_var = tk.StringVar(value="slice0")
+        self._waveform_choice_bindings: list[dict[str, Any]] = []
+        self._waveform_choice_trace_ids: list[tuple[tk.Variable, str]] = []
+        self._waveform_choice_notice_persistent = False
         self.endless_play_var = tk.BooleanVar(value=False)
         self.board_slot_var = tk.StringVar(value="0")
         self.period_hint_var = tk.StringVar(value="")
@@ -489,6 +496,8 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._sense_timeout_mode = False
         self._sense_blink_job: str | None = None
         self._sense_ready_poll_job: str | None = None
+        self._button_adc_diagram_job: str | None = None
+        self._button_adc_diagram_drawn = None
         self._adc_realtime_active = False
         self._adc_realtime_job: str | None = None
         self._button_adc_generation = 0
@@ -509,6 +518,7 @@ class ButtonModePage(ButtonModeView, BasePage):
 
         self._preparing = defer_build
         self._prepared_registers_pending = defer_build
+        self.bind("<Destroy>", self._on_button_page_destroy, add="+")
         self._build_steps = self._initialize_steps()
         if not defer_build:
             for _ in self._build_steps:
@@ -539,6 +549,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
         header.columnconfigure(0, weight=0)
         header.columnconfigure(1, weight=1)
+        self._build_waveform_choice_notice(header, persistent=True)
         yield
 
         preset_frame = self.make_preset_frame(header)
@@ -1333,7 +1344,144 @@ class ButtonModePage(ButtonModeView, BasePage):
             )
 
     def _slice_options(self) -> list[str]:
+        if self.page_name == "button_mode":
+            return ["slice0", "0x1F"]
         return [f"slice{i}" for i in range(30)] + ["serial", "0x1F"]
+
+    def _build_waveform_choice_notice(self, parent: tk.Misc, *, persistent: bool = False) -> None:
+        self._waveform_choice_notice_persistent = bool(persistent)
+        frame = ttk.Frame(parent, style="App.TFrame")
+        frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=(8, 0), pady=(3, 0))
+        frame.columnconfigure(0, weight=1)
+        label = ttk.Label(frame, style="Muted.TLabel", wraplength=640)
+        label.grid(row=0, column=0, sticky="w")
+        link = ttk.Button(
+            frame,
+            text=self.tr("r2c_full_mode_link"),
+            style="Secondary.TButton",
+            command=self._open_full_mode,
+        )
+        link.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        self._waveform_choice_notice_frame = frame
+        self._waveform_choice_notice_label = label
+        self._waveform_choice_notice_link = link
+        if not persistent:
+            frame.grid_remove()
+        self._refresh_waveform_choice_labels()
+
+    def _bind_waveform_choice(
+        self,
+        combo: ttk.Combobox,
+        raw_variable: tk.Variable,
+        choices: tuple[str, ...] | list[str],
+        callback: Callable[[], None] | None = None,
+        *,
+        label_keys: dict[str, str] | None = None,
+        display_labels: dict[str, str] | None = None,
+        aliases: dict[str, str] | None = None,
+    ) -> None:
+        """Keep localized combo labels out of the raw waveform variables."""
+        display_variable = tk.StringVar(master=combo, value="")
+        binding = {
+            "combo": combo,
+            "raw": raw_variable,
+            "display": display_variable,
+            "choices": tuple(str(value) for value in choices),
+            "callback": callback,
+            "label_keys": dict(label_keys or {}),
+            "display_labels": dict(display_labels or {}),
+            "aliases": dict(aliases or {}),
+        }
+        self._waveform_choice_bindings.append(binding)
+
+        def refresh(*_args: Any) -> None:
+            self._refresh_waveform_choice_labels()
+
+        trace_id = raw_variable.trace_add("write", refresh)
+        self._waveform_choice_trace_ids.append((raw_variable, trace_id))
+
+        def selected(_event: tk.Event | None = None) -> None:
+            selected_label = display_variable.get()
+            display_to_raw = {
+                self._waveform_choice_display(binding, raw): raw
+                for raw in binding["choices"]
+            }
+            raw = display_to_raw.get(selected_label)
+            if raw is None:
+                return
+            raw_variable.set(raw)
+            if callback is not None:
+                callback()
+
+        combo.configure(textvariable=display_variable)
+        combo.bind("<<ComboboxSelected>>", selected, add="+")
+        self._refresh_waveform_choice_labels()
+
+    def _waveform_choice_display(self, binding: dict[str, Any], raw: str) -> str:
+        label_key = binding["label_keys"].get(raw)
+        if label_key:
+            return self.tr(label_key)
+        return binding["display_labels"].get(raw, raw)
+
+    def _refresh_waveform_choice_labels(self) -> None:
+        unsupported: list[str] = []
+        style = ttk.Style(self)
+        normal_style = "R2cWaveform.TCombobox"
+        unsupported_style = "R2cUnsupportedWaveform.TCombobox"
+        colors = getattr(self.ctx, "colors", {})
+        normal_color = colors.get("text", "#111827")
+        muted_color = colors.get("muted", "#64748B")
+        style.configure(normal_style, foreground=normal_color, fieldforeground=normal_color)
+        style.configure(unsupported_style, foreground=muted_color, fieldforeground=muted_color)
+        for binding in tuple(getattr(self, "_waveform_choice_bindings", ())):
+            combo = binding["combo"]
+            try:
+                if not combo.winfo_exists():
+                    continue
+                raw = str(binding["raw"].get())
+                choices = binding["choices"]
+                aliases = binding["aliases"]
+                is_supported = raw in choices or raw in aliases
+                display_raw = aliases.get(raw, raw)
+                display_value = self._waveform_choice_display(binding, display_raw)
+                display_values = [self._waveform_choice_display(binding, choice) for choice in choices]
+                if not is_supported:
+                    display_values.append(raw)
+                    unsupported.append(raw)
+                combo.configure(
+                    values=tuple(display_values),
+                    style=normal_style if is_supported else unsupported_style,
+                )
+                binding["display"].set(display_value)
+            except (tk.TclError, AttributeError):
+                continue
+
+        notice_frame = getattr(self, "_waveform_choice_notice_frame", None)
+        if notice_frame is None:
+            return
+        label = getattr(self, "_waveform_choice_notice_label", None)
+        link = getattr(self, "_waveform_choice_notice_link", None)
+        if link is not None:
+            try:
+                link.configure(text=self.tr("r2c_full_mode_link"))
+            except tk.TclError:
+                pass
+        if unsupported:
+            if label is not None:
+                label.configure(text=self.tr("r2c_unsupported_waveform_notice", value=unsupported[0]))
+            notice_frame.grid()
+        elif getattr(self, "_waveform_choice_notice_persistent", False):
+            if label is not None:
+                label.configure(text=self.tr("r2c_more_waveforms_notice"))
+            notice_frame.grid()
+        else:
+            notice_frame.grid_remove()
+
+    def _open_full_mode(self) -> None:
+        navigation = getattr(getattr(self.ctx, "app", None), "navigation", None)
+        on_mode_clicked = getattr(navigation, "_on_mode_clicked", None)
+        if callable(on_mode_clicked):
+            on_mode_clicked("full_mode")
 
     def _add_repeat_row(
         self,
@@ -1436,6 +1584,7 @@ class ButtonModePage(ButtonModeView, BasePage):
 
     def refresh_language(self) -> None:
         super().refresh_language()
+        self._refresh_waveform_choice_labels()
         toolbar = getattr(self, "preset_toolbar", None)
         if toolbar is not None:
             toolbar.refresh_language()
@@ -1458,6 +1607,7 @@ class ButtonModePage(ButtonModeView, BasePage):
 
     def refresh_theme(self) -> None:
         super().refresh_theme()
+        self._refresh_waveform_choice_labels()
         if hasattr(self, "waveform_page"):
             self.waveform_page.refresh_theme()
         if self._sense_timeout_mode:
@@ -1469,7 +1619,36 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._refresh_preset_tooltip_theme()
         self._refresh_button_view()
 
+    def _has_pending_layout_work(self) -> bool:
+        if getattr(self, "_button_adc_diagram_job", None) is not None:
+            return True
+        waveform_page = getattr(self, "waveform_page", None)
+        return getattr(waveform_page, "_preview_job", None) is not None
+
+    def _cleanup_waveform_choice_work(self) -> None:
+        for variable, trace_id in self._waveform_choice_trace_ids:
+            try:
+                variable.trace_remove("write", trace_id)
+            except (AttributeError, tk.TclError):
+                pass
+        self._waveform_choice_trace_ids.clear()
+        diagram_job, self._button_adc_diagram_job = self._button_adc_diagram_job, None
+        if diagram_job is not None:
+            try:
+                self.after_cancel(diagram_job)
+            except tk.TclError:
+                pass
+        waveform_page = getattr(self, "waveform_page", None)
+        cancel_preview = getattr(waveform_page, "_cancel_pending_preview", None)
+        if callable(cancel_preview):
+            cancel_preview()
+
+    def _on_button_page_destroy(self, event) -> None:
+        if getattr(event, "widget", None) is self:
+            self._cleanup_waveform_choice_work()
+
     def destroy(self) -> None:
+        self._cleanup_waveform_choice_work()
         self._button_adc_generation += 1
         address_var = getattr(self, "_host_address_var", None)
         trace_id = getattr(self, "_host_address_trace_id", None)

@@ -141,8 +141,9 @@ class TimingCanvasTests(unittest.TestCase):
         canvas.pack(fill="both",expand=True)
         page=SimpleNamespace(adc_diagram=canvas,colors=get_colors("light"),
             tr=lambda key:t("zh",key),press_threshold_var=Value("3"),release_threshold_var=Value("-1"),
-            _button_adc_diagram_phase="press",
+            _button_adc_diagram_phase="press", language="zh",
             _button_adc_phase_buttons={phase:ttk.Button(root) for phase in ("press","release")})
+        page._button_adc_diagram_signature=lambda:ButtonModeView._button_adc_diagram_signature(page)
         page._draw_button_adc_diagram=lambda:ButtonModeView._draw_button_adc_diagram(page)
         page._push_button_graph_thresholds=lambda:None
         for width in (280,540):

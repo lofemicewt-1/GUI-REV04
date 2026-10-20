@@ -12,6 +12,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
+from config.lang_r2_c import install as _install_r2c_language
 from core.lazy_pages import LazyPages
 from core import chip_status_cache
 
@@ -72,6 +73,8 @@ from pages.gpio_controls import (
     NullGpioControlPanel,
     active_serial_identity,
 )
+
+_install_r2c_language()
 
 _GPIO_CATEGORY_BY_LABEL = {label: key for key, label in GPIO_CATEGORY_LABELS.items()}
 _GPIO_FUNCTION_BY_LABEL = {label: code for code, label in GPIO_FUNCTION_LABELS.items()}
@@ -1091,6 +1094,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self.tr = tr
         self.device_addr = device_addr
         self.mode_key = mode_key
+        self._waveform_choice_bindings: list[dict[str, Any]] = []
+        self._waveform_choice_trace_ids: list[tuple[tk.Variable, str]] = []
+        self._waveform_choice_notice_persistent = False
         self._shared_state_owner = shared_state_owner
         self.host = host
         self._settings_model: AWP1221ChipSettingsModel | ChipSettingsModel | None = (
@@ -1183,6 +1189,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self.board_slot_var = tk.StringVar(value="0")
         self._visible_stage_index = 0
         self._preparing = defer_build
+        self.bind("<Destroy>", self._on_mode_page_destroy, add="+")
         self._build_steps = self._initialize_steps()
         if not defer_build:
             for _ in self._build_steps:
@@ -1217,6 +1224,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
         header = self.make_title(self, self.mode_key, show_logo=False)
         header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
+        self._build_waveform_choice_notice(header)
         yield
         self.mode_title_label = header.grid_slaves(row=0, column=0)[0]
 
@@ -1592,7 +1600,6 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
     def _select_button_wave_tab(self, key: str) -> None:
         if key == "sinc":
-            self.auto_serial_var.set(True)
             self.rom_source_var.set("ROM")
             self.rom_waveform_var.set("SINC")
         else:
@@ -2013,9 +2020,13 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             variable=self.auto_serial_var,
             command=self._on_auto_serial_changed,
         )
-        auto_serial.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        auto_serial.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         self._register_text(auto_serial, "awp1221_auto_serial")
         self._selector_widgets["awp1221_auto_serial"] = [auto_serial]
+        if self.mode_key == "button_mode":
+            self._auto_serial_warning_label = ttk.Label(controls, style="Muted.TLabel", wraplength=200)
+            self._auto_serial_warning_label.grid(row=0, column=2, sticky="w", padx=(8, 0), pady=(0, 8))
+            self._auto_serial_warning_label.grid_remove()
         yield
         self._auto_serial_check = auto_serial
         self._rom_combo(
@@ -2321,7 +2332,23 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         yield
         wave_combo.grid(row=3, column=1, sticky="ew", pady=5)
-        self._bind_live_choice(wave_combo, commit_stage)
+        self._bind_waveform_choice(
+            wave_combo,
+            variables["wave"],
+            self._trigger_waveform_options(),
+            callback=commit_stage,
+            label_keys={
+                "serial1": "r2c_1221_normal_vibration",
+                "serial3": "r2c_1221_strong_vibration",
+                "slice0": "r2c_custom_waveform",
+            },
+            aliases={
+                "slice18": "serial1",
+                "slice24": "serial3",
+                "serial1 slice18-20": "serial1",
+                "serial3 slice24-27": "serial3",
+            },
+        )
         self._button_wave_combos.append(wave_combo)
         self._form_label(parent, "awp1221_event_repeat", row=3, column=2)
         repeat_combo = ttk.Combobox(
@@ -2570,6 +2597,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
     def _build_button_preset_header(self) -> None:
         header = self.make_title(self, self.mode_key, show_logo=False)
         header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
+        self._build_waveform_choice_notice(header)
 
         self.mode_title_label = header.grid_slaves(row=0, column=0)[0]
 
@@ -3806,9 +3834,26 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
     ) -> None:
         label_key = "awp1221_button_playback" if self.mode_key == "button_mode" and key == "awp1221_rom_half_cycle" else key
         label = self._form_label(parent, label_key, row=row, column=0)
-        combo = ttk.Combobox(parent, textvariable=variable, values=values, state="readonly", width=18)
+        combo = ttk.Combobox(parent, values=values, state="readonly", width=18)
         combo.grid(row=row, column=1, sticky="ew", pady=5)
         self._selector_widgets[key] = [label, combo]
+        if self.mode_key == "button_mode" and key == "awp1221_rom_slice":
+            self._bind_waveform_choice(
+                combo,
+                variable,
+                ("slice0",),
+                label_keys={"slice0": "r2c_custom_waveform"},
+            )
+        elif self.mode_key == "button_mode" and key == "awp1221_sinc_serial_group":
+            raw_choices = tuple(AWP1221_SINC_SERIAL_OPTIONS[index] for index in (0, 2))
+            self._bind_waveform_choice(
+                combo,
+                variable,
+                raw_choices,
+                display_labels={raw: f"serial{serial}" for raw, serial in zip(raw_choices, (1, 3))},
+            )
+        else:
+            combo.configure(textvariable=variable)
         if key == "awp1221_rom_depth":
             self.rom_depth_combo = combo
         elif key == "awp1221_sinc_depth":
@@ -3821,6 +3866,160 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self.rom_half_cycle_combo = combo
         elif key == "awp1221_rom_phase":
             self.rom_phase_combo = combo
+
+    def _build_waveform_choice_notice(self, parent: tk.Misc, *, persistent: bool = False) -> None:
+        self._waveform_choice_notice_persistent = bool(persistent)
+        frame = ttk.Frame(parent, style="App.TFrame")
+        frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=(8, 0), pady=(3, 0))
+        frame.columnconfigure(0, weight=1)
+        label = ttk.Label(frame, style="Muted.TLabel", wraplength=640)
+        label.grid(row=0, column=0, sticky="w")
+        link = ttk.Button(
+            frame,
+            text=self.tr("r2c_full_mode_link"),
+            style="Secondary.TButton",
+            command=self._open_full_mode,
+        )
+        link.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        self._waveform_choice_notice_frame = frame
+        self._waveform_choice_notice_label = label
+        self._waveform_choice_notice_link = link
+        if not persistent:
+            frame.grid_remove()
+        self._refresh_waveform_choice_labels()
+
+    def _bind_waveform_choice(
+        self,
+        combo: ttk.Combobox,
+        raw_variable: tk.Variable,
+        choices: tuple[str, ...],
+        callback: Callable[[], None] | None = None,
+        *,
+        label_keys: dict[str, str] | None = None,
+        display_labels: dict[str, str] | None = None,
+        aliases: dict[str, str] | None = None,
+    ) -> None:
+        """Bind localized display text without changing serializer values."""
+        display_variable = tk.StringVar(master=combo, value="")
+        binding = {
+            "combo": combo,
+            "raw": raw_variable,
+            "display": display_variable,
+            "choices": tuple(str(value) for value in choices),
+            "callback": callback,
+            "label_keys": dict(label_keys or {}),
+            "display_labels": dict(display_labels or {}),
+            "aliases": dict(aliases or {}),
+        }
+        self._waveform_choice_bindings.append(binding)
+
+        def refresh(*_args: Any) -> None:
+            self._refresh_waveform_choice_labels()
+
+        trace_id = raw_variable.trace_add("write", refresh)
+        self._waveform_choice_trace_ids.append((raw_variable, trace_id))
+
+        def selected(_event: tk.Event | None = None) -> None:
+            selected_label = display_variable.get()
+            display_to_raw = {
+                self._waveform_choice_display(binding, raw): raw
+                for raw in binding["choices"]
+            }
+            raw = display_to_raw.get(selected_label)
+            if raw is None:
+                return
+            raw_variable.set(raw)
+            if callback is not None:
+                callback()
+
+        combo.configure(textvariable=display_variable)
+        combo.bind("<<ComboboxSelected>>", selected, add="+")
+        self._refresh_waveform_choice_labels()
+
+    def _waveform_choice_display(self, binding: dict[str, Any], raw: str) -> str:
+        label_key = binding["label_keys"].get(raw)
+        if label_key:
+            return self.tr(label_key)
+        return binding["display_labels"].get(raw, raw)
+
+    def _refresh_waveform_choice_labels(self) -> None:
+        unsupported: list[str] = []
+        style = ttk.Style(self)
+        normal_style = "R2cWaveform.TCombobox"
+        unsupported_style = "R2cUnsupportedWaveform.TCombobox"
+        colors = getattr(self.ctx, "colors", {})
+        normal_color = colors.get("text", "#111827")
+        muted_color = colors.get("muted", "#64748B")
+        style.configure(normal_style, foreground=normal_color, fieldforeground=normal_color)
+        style.configure(unsupported_style, foreground=muted_color, fieldforeground=muted_color)
+        for binding in tuple(getattr(self, "_waveform_choice_bindings", ())):
+            combo = binding["combo"]
+            try:
+                if not combo.winfo_exists():
+                    continue
+                raw = str(binding["raw"].get())
+                choices = binding["choices"]
+                aliases = binding["aliases"]
+                is_supported = raw in choices or raw in aliases
+                display_raw = aliases.get(raw, raw)
+                display_value = self._waveform_choice_display(binding, display_raw)
+                display_values = [self._waveform_choice_display(binding, choice) for choice in choices]
+                if not is_supported:
+                    display_values.append(raw)
+                    unsupported.append(raw)
+                combo.configure(
+                    values=tuple(display_values),
+                    style=normal_style if is_supported else unsupported_style,
+                )
+                binding["display"].set(display_value)
+            except (tk.TclError, AttributeError):
+                continue
+
+        notice_frame = getattr(self, "_waveform_choice_notice_frame", None)
+        if notice_frame is None:
+            self._refresh_auto_serial_warning()
+            return
+        label = getattr(self, "_waveform_choice_notice_label", None)
+        link = getattr(self, "_waveform_choice_notice_link", None)
+        if link is not None:
+            try:
+                link.configure(text=self.tr("r2c_full_mode_link"))
+            except tk.TclError:
+                pass
+        if unsupported:
+            if label is not None:
+                label.configure(text=self.tr("r2c_unsupported_waveform_notice", value=unsupported[0]))
+            notice_frame.grid()
+        elif getattr(self, "_waveform_choice_notice_persistent", False):
+            if label is not None:
+                label.configure(text=self.tr("r2c_more_waveforms_notice"))
+            notice_frame.grid()
+        else:
+            notice_frame.grid_remove()
+        self._refresh_auto_serial_warning()
+
+    def _refresh_auto_serial_warning(self) -> None:
+        label = getattr(self, "_auto_serial_warning_label", None)
+        if label is None:
+            return
+        selected_serial = any(
+            str(stage["wave"].get()) in {
+                "serial1", "serial3", "slice18", "slice24",
+                "serial1 slice18-20", "serial3 slice24-27",
+            }
+            for stage in getattr(self, "_button_stage_vars", ())
+        )
+        if selected_serial and not self._auto_serial_enabled():
+            label.configure(text=self.tr("r2c_auto_serial_required"))
+            label.grid()
+        else:
+            label.grid_remove()
+
+    def _open_full_mode(self) -> None:
+        navigation = getattr(getattr(self.ctx, "app", None), "navigation", None)
+        on_mode_clicked = getattr(navigation, "_on_mode_clicked", None)
+        if callable(on_mode_clicked):
+            on_mode_clicked("full_mode")
 
     def _rom_entry(
         self,
@@ -4554,6 +4753,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._schedule_button_rom_preview()
 
     def _trigger_waveform_options(self) -> tuple[str, ...]:
+        if self.mode_key == "button_mode":
+            return ("serial1", "serial3", "slice0")
         options = [f"slice{value}" for value in range(AWP1221_WAVEFORM_SLICE_COUNT)]
         if self._auto_serial_enabled():
             options.extend(label for label, _start_slice in AWP1221_SERIAL_WAVEFORMS)
@@ -4563,7 +4764,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
     def _parse_trigger_waveform(value: str) -> int:
         text = str(value).strip().lower()
         for label, start_slice in AWP1221_SERIAL_WAVEFORMS:
-            if text == label.lower():
+            if text in {label.lower(), label.split(" ", 1)[0].lower()}:
                 return start_slice
         if text.startswith("slice"):
             return _require_unsigned(
@@ -4587,19 +4788,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
     def _refresh_trigger_waveform_options(self) -> None:
         options = self._trigger_waveform_options()
-        for combo in (
-            *getattr(self, "_button_wave_combos", ()),
-            *getattr(self, "_full_wave_combos", ()),
-        ):
+        for combo in getattr(self, "_full_wave_combos", ()):
             combo.configure(values=options)
-        variables = [stage["wave"] for stage in getattr(self, "_button_stage_vars", ())]
-        for stage in getattr(self, "_stage_vars", ()):
-            variables.extend((stage["wave"]["press_wave"], stage["wave"]["release_wave"]))
-        for variable in variables:
-            try:
-                variable.set(self._format_trigger_waveform(self._parse_trigger_waveform(variable.get())))
-            except (TypeError, ValueError):
-                variable.set("slice0")
+        self._refresh_waveform_choice_labels()
 
     def _auto_serial_enabled(self) -> bool:
         variable = getattr(self, "auto_serial_var", None)
@@ -6712,13 +6903,25 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             pass
         setattr(self, name, None)
 
-    def destroy(self) -> None:
-        for variable, trace_id in self._settings_trace_ids:
+    def _has_pending_layout_work(self) -> bool:
+        return any(
+            getattr(self, name, None) is not None
+            for name in (
+                "_button_adc_reflow_job",
+                "_comm_log_layout_job",
+                "_comm_log_scroll_job",
+                "_button_adc_diagram_job",
+                "_rom_preview_job",
+            )
+        )
+
+    def _cleanup_waveform_choice_work(self) -> None:
+        for variable, trace_id in getattr(self, "_waveform_choice_trace_ids", ()):
             try:
                 variable.trace_remove("write", trace_id)
             except (AttributeError, tk.TclError):
                 pass
-        self._settings_trace_ids.clear()
+        getattr(self, "_waveform_choice_trace_ids", []).clear()
         for name in (
             "_button_adc_reflow_job",
             "_comm_log_layout_job",
@@ -6727,6 +6930,19 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             "_rom_preview_job",
         ):
             self._cancel_idle_job(name)
+
+    def _on_mode_page_destroy(self, event) -> None:
+        if getattr(event, "widget", None) is self:
+            self._cleanup_waveform_choice_work()
+
+    def destroy(self) -> None:
+        self._cleanup_waveform_choice_work()
+        for variable, trace_id in self._settings_trace_ids:
+            try:
+                variable.trace_remove("write", trace_id)
+            except (AttributeError, tk.TclError):
+                pass
+        self._settings_trace_ids.clear()
         if not getattr(self, '_preparing', False):
             self.on_hide()
         try:
@@ -7453,6 +7669,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
     def refresh_language(self) -> None:
         super().refresh_language()
+        self._refresh_waveform_choice_labels()
         self._refresh_waveform_peak_to_peak()
         self._refresh_waveform_controls()
         self.mode_title_label.configure(text=self.tr(self.mode_key))
@@ -7498,6 +7715,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
     def refresh_theme(self) -> None:
         super().refresh_theme()
+        self._refresh_waveform_choice_labels()
         self._refresh_pressure_status()
         self._refresh_adc_bits()
         self._button_adc_diagram_drawn = None
