@@ -675,15 +675,12 @@ class ProbeAndDecodeTests(unittest.TestCase):
         self.assertEqual(seen, {"dtr": False, "rts": False, "dsrdtr": False, "rtscts": False, "closed": True})
 
     def test_n5_decode_preference(self) -> None:
-        import codecs
+        class _AliasedBytes(bytes):
+            def decode(self, encoding="utf-8", errors="strict"):
+                aliases = {"oem": "cp437", "mbcs": "cp1252"}
+                return bytes.decode(self, aliases.get(encoding, encoding), errors)
 
-        aliases = {"oem": "cp437", "mbcs": "cp1252"}
-
-        def lookup(name):
-            return codecs.lookup(aliases[name]) if name in aliases else None
-        codecs.register(lookup)
-        self.addCleanup(codecs.unregister, lookup)
-        data = b"caf\xe9"
+        data = _AliasedBytes(b"caf\xe9")
         self.assertEqual(ff.decode_console(data, platform="win32", prefer="mbcs"), "café")
         self.assertEqual(ff.decode_console(data, platform="win32", prefer="oem"), "caf\u0398")
         self.assertEqual(ff.decode_console(data, platform="win32"), "caf\u0398")  # pnputil default
