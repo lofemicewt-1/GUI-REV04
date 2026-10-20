@@ -149,6 +149,7 @@ class SimpleTooltip:
     def hide_all(cls, _event: tk.Event | None = None) -> None:
         for tip in list(cls._open):
             tip._hide()
+        PinnedModuleHelp.hide_active()
 
     def _on_widget_destroy(self, event: tk.Event) -> None:
         if getattr(event, "widget", None) is not self.widget:
@@ -238,6 +239,160 @@ class SimpleTooltip:
                 tip.destroy()
             except tk.TclError:
                 pass
+
+
+class PinnedModuleHelp:
+    """Hover preview plus a click-to-pin help panel for module headings."""
+
+    _active: PinnedModuleHelp | None = None
+
+    def __init__(self, page: BasePage, button: ttk.Button, help_key: str) -> None:
+        self.page = page
+        self.button = button
+        self.help_key = help_key
+        self.window: tk.Toplevel | None = None
+        self.body_label: ttk.Label | None = None
+        self.tooltip = SimpleTooltip(button, lambda: page.tr(help_key))
+        button.configure(command=self.toggle)
+        button.bind("<Escape>", self._on_escape, add="+")
+        button.bind("<Unmap>", self._on_anchor_unmap, add="+")
+        button.bind("<Destroy>", self._on_anchor_destroy, add="+")
+
+    def _ensure_escape_hook(self) -> None:
+        try:
+            root = self.button._root()
+        except tk.TclError:
+            return
+        if getattr(root, "_piezo_module_help_escape_hook", False):
+            return
+        root._piezo_module_help_escape_hook = True
+        root.bind_all("<Escape>", PinnedModuleHelp._close_active_from_escape, add="+")
+
+    @classmethod
+    def _close_active_from_escape(cls, _event: tk.Event | None = None) -> str | None:
+        active = cls._active
+        if active is None:
+            return None
+        active.close()
+        return "break"
+
+    def toggle(self) -> None:
+        if PinnedModuleHelp._active is self:
+            self.close()
+            return
+        PinnedModuleHelp.hide_active()
+        self.tooltip._hide()
+        self._open()
+
+    def _open(self) -> None:
+        try:
+            if not self.button.winfo_exists() or not self.button.winfo_ismapped():
+                return
+            root = self.button.winfo_toplevel()
+            window = tk.Toplevel(root)
+            self.window = window
+            window.withdraw()
+            window.wm_overrideredirect(True)
+            window.transient(root)
+            frame = ttk.Frame(window, style="Module.TFrame", padding=9)
+            frame.pack(fill="both", expand=True)
+            frame.columnconfigure(0, weight=1)
+            close = ttk.Button(
+                frame,
+                text=self.page.tr("module_help_close"),
+                style="ModuleHelp.TButton",
+                command=self.close,
+                takefocus=True,
+            )
+            close.grid(row=0, column=0, sticky="e", pady=(0, 5))
+            body = ttk.Label(
+                frame,
+                text=self.page.tr(self.help_key),
+                style="Panel.TLabel",
+                justify="left",
+                wraplength=340,
+            )
+            body.grid(row=1, column=0, sticky="ew")
+            window._module_help_body = body
+            self.body_label = body
+            PinnedModuleHelp._active = self
+            self._ensure_escape_hook()
+            window.bind("<Escape>", self._on_escape, add="+")
+            self._position()
+            window.deiconify()
+            try:
+                close.focus_set()
+            except tk.TclError:
+                try:
+                    self.button.focus_set()
+                except tk.TclError:
+                    pass
+        except tk.TclError:
+            self.close()
+
+    def _position(self) -> None:
+        window = self.window
+        if window is None:
+            return
+        try:
+            window.update_idletasks()
+            screen_width = int(window.winfo_screenwidth())
+            screen_height = int(window.winfo_screenheight())
+            width = max(1, int(window.winfo_reqwidth()))
+            height = max(1, int(window.winfo_reqheight()))
+            x = int(self.button.winfo_rootx() + self.button.winfo_width() + 8)
+            y = int(self.button.winfo_rooty())
+            if x + width > screen_width - 8:
+                x = int(self.button.winfo_rootx() - width - 8)
+            if y + height > screen_height - 8:
+                y = screen_height - height - 8
+            x = min(max(8, x), max(8, screen_width - width - 8))
+            y = min(max(8, y), max(8, screen_height - height - 8))
+            window.wm_geometry(f"+{x}+{y}")
+        except tk.TclError:
+            self.close()
+
+    def refresh_language(self) -> None:
+        if self.body_label is None:
+            return
+        try:
+            self.body_label.configure(text=self.page.tr(self.help_key))
+            for child in self.window.winfo_children() if self.window is not None else ():
+                for button in child.winfo_children():
+                    if isinstance(button, ttk.Button):
+                        button.configure(text=self.page.tr("module_help_close"))
+        except tk.TclError:
+            self.close()
+
+    def _on_escape(self, _event: tk.Event | None = None) -> str:
+        self.close()
+        return "break"
+
+    def _on_anchor_unmap(self, event: tk.Event) -> None:
+        if getattr(event, "widget", None) is self.button:
+            self.close()
+
+    def _on_anchor_destroy(self, event: tk.Event) -> None:
+        if getattr(event, "widget", None) is self.button:
+            self.close()
+            self.tooltip._hide()
+
+    def close(self) -> None:
+        if PinnedModuleHelp._active is self:
+            PinnedModuleHelp._active = None
+        window = self.window
+        self.window = None
+        self.body_label = None
+        if window is not None:
+            try:
+                window.destroy()
+            except tk.TclError:
+                pass
+
+    @classmethod
+    def hide_active(cls) -> None:
+        if cls._active is not None:
+            cls._active.close()
 
 
 def hide_scroll_chrome() -> None:
@@ -411,8 +566,13 @@ class VerticalScrollArea(ttk.Frame):
                 self.scrollbar.grid(row=0, column=1, sticky="ns")
                 self._scrollbar_visible = True
             elif not needs_scrollbar and self._scrollbar_visible:
-                self.scrollbar.grid_remove()
-                self._scrollbar_visible = False
+                # Keep a reserved gutter stable: removing the bar changes the
+                # canvas width and can fight wrapping titles forever.
+                if self.reserve_vertical_gutter:
+                    pass
+                else:
+                    self.scrollbar.grid_remove()
+                    self._scrollbar_visible = False
             if needs_horizontal_scrollbar and not self._horizontal_scrollbar_visible:
                 self.horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
                 self._horizontal_scrollbar_visible = True
@@ -1130,6 +1290,8 @@ class BasePage(ttk.Frame):
         self._serial_log_clear_listener: Any = None
         self._vertical_scroll_areas: list[VerticalScrollArea] = []
         self._serial_selectors: list[dict[str, Any]] = []
+        self._module_title_bindings: list[dict[str, Any]] = []
+        self._module_help_controls: list[PinnedModuleHelp] = []
 
     @property
     def language(self) -> str:
@@ -1157,6 +1319,10 @@ class BasePage(ttk.Frame):
         parent: tk.Misc,
         title_key: str,
         *,
+        step: int | None = None,
+        step_total: int | None = None,
+        role: str | None = None,
+        help_key: str | None = None,
         row: int = 0,
         column: int = 0,
         columnspan: int = 1,
@@ -1164,7 +1330,7 @@ class BasePage(ttk.Frame):
         padx: Any = 0,
         pady: Any = 0,
     ) -> tuple[ttk.Frame, ttk.Label]:
-        """Create a consistent module heading with a reserved future help slot."""
+        """Create a translated module heading, optional step marker and help."""
         title_row = ttk.Frame(parent, style="ModuleTitleRow.TFrame")
         title_row.grid(
             row=row,
@@ -1178,24 +1344,89 @@ class BasePage(ttk.Frame):
 
         title = ttk.Label(title_row, style="ModuleTitle.TLabel", anchor="w", justify="left")
         title.grid(row=0, column=0, sticky="ew")
-        self.bind_text(title, title_key)
+        self._module_title_bindings.append({
+            "label": title,
+            "title_key": title_key,
+            "step": step,
+            "step_total": step_total,
+            "role": role,
+        })
+        self._refresh_module_title(self._module_title_bindings[-1])
 
         help_slot = ttk.Frame(title_row, style="ModuleTitleRow.TFrame", width=26, height=24)
         help_slot.grid(row=0, column=1, sticky="e", padx=(8, 0))
         help_slot.grid_propagate(False)
         title_row._module_help_slot = help_slot
         title_row._module_title_label = title
+        if help_key:
+            help = self.make_module_help_button(help_slot, help_key, row=0, column=0)
+            title_row._module_help_button = help
+            title_row._module_help_controller = self._module_help_controls[-1]
 
         def fit_title(event: tk.Event) -> None:
+            if getattr(title_row, "_fitting_module_title", False):
+                return
             available = max(1, int(event.width) - int(help_slot.winfo_reqwidth()) - 8)
             try:
-                if int(title.cget("wraplength")) != available:
-                    title.configure(wraplength=available)
+                current = int(title.cget("wraplength") or 0)
+            except (tk.TclError, TypeError, ValueError):
+                current = 0
+            # Hysteresis avoids scrollbar/wraplength oscillation (1–2px flips).
+            if abs(current - available) < 2:
+                return
+            title_row._fitting_module_title = True
+            try:
+                title.configure(wraplength=available)
             except (tk.TclError, TypeError, ValueError):
                 pass
+            finally:
+                title_row._fitting_module_title = False
 
         title_row.bind("<Configure>", fit_title, add="+")
         return title_row, title
+
+    def _refresh_module_title(self, binding: dict[str, Any]) -> None:
+        label = binding["label"]
+        title = self.tr(binding["title_key"])
+        step = binding["step"]
+        role = binding["role"]
+        if step is not None:
+            if role:
+                prefix = self.tr(
+                    "module_step_role_prefix",
+                    step=step,
+                    role=self.tr(f"module_role_{role}"),
+                )
+            else:
+                prefix = self.tr("module_step_prefix", step=step)
+            title = f"{prefix}{title}"
+        elif role in {"advanced", "troubleshoot", "shortcut"}:
+            title = self.tr("module_role_suffix", title=title, role=self.tr(f"module_role_{role}"))
+        try:
+            label.configure(text=title)
+        except tk.TclError:
+            pass
+
+    def make_module_help_button(
+        self,
+        parent: tk.Misc,
+        help_key: str,
+        *,
+        row: int = 0,
+        column: int = 0,
+        sticky: str = "nsew",
+    ) -> ttk.Button:
+        button = ttk.Button(
+            parent,
+            text=self.tr("awp1018_help_symbol"),
+            style="ModuleHelp.TButton",
+            width=2,
+            takefocus=True,
+        )
+        button.grid(row=row, column=column, sticky=sticky)
+        controller = PinnedModuleHelp(self, button, help_key)
+        self._module_help_controls.append(controller)
+        return button
 
     def make_module_section(
         self,
@@ -1207,6 +1438,10 @@ class BasePage(ttk.Frame):
         register_spacing: bool = False,
         spacing_before: bool = False,
         spacing_after: bool = True,
+        step: int | None = None,
+        step_total: int | None = None,
+        role: str | None = None,
+        help_key: str | None = None,
         **grid_options: Any,
     ) -> tuple[ttk.Frame, ttk.Frame]:
         """Build a bordered module with an independent title row and content area."""
@@ -1214,7 +1449,14 @@ class BasePage(ttk.Frame):
         section.grid(**grid_options)
         section.columnconfigure(0, weight=1)
         section.rowconfigure(1, weight=1)
-        title_row, title_label = self.make_module_title_row(section, title_key)
+        title_row, title_label = self.make_module_title_row(
+            section,
+            title_key,
+            step=step,
+            step_total=step_total,
+            role=role,
+            help_key=help_key,
+        )
         title_row.grid_configure(sticky="ew")
 
         body = ttk.Frame(section, style="Panel.TFrame")
@@ -1237,6 +1479,25 @@ class BasePage(ttk.Frame):
                 widget.configure(text=self.tr(key))
             except Exception:
                 pass
+        live_titles: list[dict[str, Any]] = []
+        for binding in self._module_title_bindings:
+            try:
+                if int(binding["label"].winfo_exists()):
+                    self._refresh_module_title(binding)
+                    live_titles.append(binding)
+            except tk.TclError:
+                pass
+        self._module_title_bindings = live_titles
+        live_help_controls: list[PinnedModuleHelp] = []
+        for controller in self._module_help_controls:
+            try:
+                if not int(controller.button.winfo_exists()):
+                    continue
+                controller.refresh_language()
+                live_help_controls.append(controller)
+            except tk.TclError:
+                continue
+        self._module_help_controls = live_help_controls
         self._refresh_serial_selectors()
         self._sync_mode_headers()
         self._queue_header_layout()
@@ -1882,7 +2143,14 @@ class BasePage(ttk.Frame):
         toolbar = WrappingGroupBar(frame)
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         title_group = toolbar.add_group()
-        _title_row, _title = self.make_module_title_row(title_group, "serial_log")
+        # Help only — do not attach role=troubleshoot here: the role suffix
+        # lengthens the WrappingGroupBar title and can oscillate forever with
+        # the page scroll area on AWP1922 (and similar two-column pages).
+        _title_row, _title = self.make_module_title_row(
+            title_group,
+            "serial_log",
+            help_key="module_help_serial_log",
+        )
 
         clear_group = toolbar.add_group()
         clear_btn = ttk.Button(clear_group, style="Secondary.TButton", command=self.clear_serial_log)

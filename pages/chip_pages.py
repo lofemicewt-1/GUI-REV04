@@ -1234,14 +1234,24 @@ class AWP1744AWP1766PumpModePage(BasePage):
         panel.columnconfigure(1, weight=1)
         panel.columnconfigure(3, weight=1)
         panel.columnconfigure(4, weight=1)
-        panel.rowconfigure(5, weight=1)
+        panel.rowconfigure(6, weight=1)
+
+        self.make_module_title_row(
+            panel,
+            "pump_output_settings",
+            step=1,
+            step_total=3,
+            help_key="awp1744_help_output",
+            row=0,
+            columnspan=5,
+        )
 
         state_label = ttk.Label(panel, style="Panel.TLabel")
-        state_label.grid(row=0, column=0, sticky="w", padx=(0, 10), pady=8)
+        state_label.grid(row=3, column=0, sticky="w", padx=(0, 10), pady=8)
         self._labels["awp1744_awp1766_pump_switch"] = state_label
 
         switch_frame = ttk.Frame(panel, style="Panel.TFrame")
-        switch_frame.grid(row=0, column=1, columnspan=3, sticky="w", pady=8)
+        switch_frame.grid(row=3, column=1, columnspan=3, sticky="w", pady=8)
 
         open_btn = ttk.Button(switch_frame, style="Secondary.TButton", command=lambda: self.set_pump(True))
         open_btn.grid(row=0, column=0, sticky="w", padx=(0, 8))
@@ -1274,34 +1284,56 @@ class AWP1744AWP1766PumpModePage(BasePage):
             pady=8,
         )
 
+        self.make_module_title_row(
+            panel,
+            "awp1744_pump_switch_title",
+            step=2,
+            step_total=3,
+            help_key="awp1744_help_pump",
+            row=2,
+            columnspan=5,
+            pady=(8, 0),
+        )
+
+        self.make_module_title_row(
+            panel,
+            "awp1744_frequency_reading_title",
+            step=3,
+            step_total=3,
+            help_key="awp1744_help_frequency",
+            row=4,
+            columnspan=5,
+            pady=(8, 0),
+        )
+
         freq_label = ttk.Label(panel, style="Panel.TLabel")
-        freq_label.grid(row=2, column=0, sticky="w", padx=(0, 10), pady=8)
+        freq_label.grid(row=5, column=0, sticky="w", padx=(0, 10), pady=8)
         self._labels["chip_frequency"] = freq_label
 
         ttk.Label(panel, textvariable=self.frequency_var, style="Panel.TLabel").grid(
-            row=2,
+            row=5,
             column=1,
             sticky="w",
             pady=8,
         )
 
         gpio3_label = ttk.Label(panel, style="Muted.TLabel")
-        gpio3_label.grid(row=2, column=2, sticky="w", padx=(18, 10), pady=8)
+        gpio3_label.grid(row=5, column=2, sticky="w", padx=(18, 10), pady=8)
         self._labels["awp1744_awp1766_use_gpio3"] = gpio3_label
 
         freq_btn = ttk.Button(panel, style="Primary.TButton", command=self.start_frequency_read)
-        freq_btn.grid(row=2, column=3, sticky="w", padx=(18, 10), pady=8)
+        freq_btn.grid(row=5, column=3, sticky="w", padx=(18, 10), pady=8)
         self._buttons["awp1744_awp1766_read_frequency"] = freq_btn
 
         ttk.Label(panel, textvariable=self.freq_status_var, style="Muted.TLabel").grid(
-            row=2,
+            row=5,
             column=4,
             sticky="w",
             pady=8,
         )
 
         log_frame = self.make_serial_log(panel, height=12, subscribe=True)
-        log_frame.grid(row=5, column=0, columnspan=5, sticky="nsew", pady=(18, 0))
+        log_frame.grid(row=6, column=0, columnspan=5, sticky="nsew", pady=(18, 0))
         self._register_module_spacing_widget(log_frame, before=True, after=False)
 
         self.refresh_language()

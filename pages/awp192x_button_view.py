@@ -355,7 +355,15 @@ class ButtonModeView:
         body.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         waveform_section, waveform = self.make_module_section(
-            body, "awp1221_button_wave_settings", row=0, column=0, sticky="ew", padding=8
+            body,
+            "awp1221_button_wave_settings",
+            row=0,
+            column=0,
+            sticky="ew",
+            padding=8,
+            step=1,
+            step_total=3,
+            help_key="awp192x_help_button_waveform",
         )
         yield
         waveform.columnconfigure(0, weight=1)
@@ -372,7 +380,17 @@ class ButtonModeView:
         middle.columnconfigure(0, weight=2, uniform="adc_sections")
         middle.columnconfigure(1, weight=3, uniform="adc_sections")
         diagram_section, diagram = self.make_module_section(
-            middle, "awp1221_adc_diagram", row=0, column=0, sticky="nsew", padx=(0, 10), padding=8
+            middle,
+            "awp1221_adc_diagram",
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=(0, 10),
+            padding=8,
+            step=2,
+            step_total=3,
+            role="reference",
+            help_key="awp192x_help_button_legend",
         )
         diagram.columnconfigure(0, weight=1)
         yield
@@ -392,7 +410,15 @@ class ButtonModeView:
         self.adc_diagram.grid(row=1, column=0, sticky="nsew")
         self.adc_diagram.bind("<Configure>", lambda _: self._draw_button_adc_diagram())
         params_section, params = self.make_module_section(
-            middle, "awp1221_button_adc_settings", row=0, column=1, sticky="nsew", padding=8
+            middle,
+            "awp1221_button_adc_settings",
+            row=0,
+            column=1,
+            sticky="nsew",
+            padding=8,
+            step=2,
+            step_total=3,
+            help_key="awp192x_help_button_params",
         )
         yield
         for col in range(4):
@@ -432,7 +458,17 @@ class ButtonModeView:
         lower.columnconfigure(2, weight=2)
         yield
         status_section, status = self.make_module_section(
-            lower, "sense_status_title", row=0, column=0, sticky="nsew", padx=(0, 10), padding=8
+            lower,
+            "sense_status_title",
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=(0, 10),
+            padding=8,
+            step=2,
+            step_total=3,
+            role="feedback",
+            help_key="awp192x_help_button_status",
         )
         self._sense_status_block = tk.Frame(status, width=72, height=28, bg=self.STATUS_IDLE_COLOR)
         self._sense_status_block.grid(row=0, column=0, pady=10)
@@ -441,7 +477,17 @@ class ButtonModeView:
         status_hint.grid(row=1, column=0)
         self.bind_text(status_hint, "sense_status_hint")
         readings_section, readings = self.make_module_section(
-            lower, "awp1221_adc_readings", row=0, column=1, sticky="nsew", padx=(0, 10), padding=8
+            lower,
+            "awp1221_adc_readings",
+            row=0,
+            column=1,
+            sticky="nsew",
+            padx=(0, 10),
+            padding=8,
+            step=2,
+            step_total=3,
+            role="verify",
+            help_key="awp192x_help_button_readings",
         )
         readings.columnconfigure(0, weight=1)
         yield
@@ -475,7 +521,15 @@ class ButtonModeView:
             self._buttons[key] = button
         yield
         switches_section, switches = self.make_module_section(
-            lower, "awp1221_control_buttons", row=0, column=2, sticky="nsew", padding=8
+            lower,
+            "awp1221_control_buttons",
+            row=0,
+            column=2,
+            sticky="nsew",
+            padding=8,
+            step=3,
+            step_total=3,
+            help_key="awp192x_help_button_switches",
         )
         for col in range(2):
             switches.columnconfigure(col, weight=1)

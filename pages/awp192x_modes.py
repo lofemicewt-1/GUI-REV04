@@ -3416,14 +3416,60 @@ class FullModePage(ButtonModePage):
         self._on_endless_play_changed()
 
     def _add_section_title(self, parent: tk.Misc, row: int, key: str) -> int:
-        _title_row, label = self.make_module_title_row(
+        title_options = {
+            "full_mode_basic": {
+                "step": 1,
+                "step_total": 4,
+                "help_key": "awp192x_help_full_basic",
+            },
+            "full_mode_adc": {
+                "step": 2,
+                "step_total": 4,
+                "help_key": "awp192x_help_full_adc",
+            },
+            "full_mode_sense_events": {
+                "step": 3,
+                "step_total": 4,
+                "help_key": "awp192x_help_full_events",
+            },
+            "full_mode_playback": {
+                "step": 4,
+                "step_total": 4,
+                "help_key": "awp192x_help_full_playback",
+            },
+            "full_mode_serial": {
+                "step": 4,
+                "step_total": 4,
+                "role": "advanced",
+                "help_key": "awp192x_help_full_serial",
+            },
+            "full_mode_system": {
+                "step": 4,
+                "step_total": 4,
+                "role": "feedback",
+                "help_key": "awp192x_help_full_system",
+            },
+            "full_mode_interrupt": {
+                "role": "advanced",
+                "help_key": "awp192x_help_full_interrupt",
+            },
+            "full_mode_global": {
+                "role": "advanced",
+                "help_key": "awp192x_help_full_global",
+            },
+            "full_mode_memory": {
+                "role": "advanced",
+                "help_key": "awp192x_help_full_memory",
+            },
+        }
+        _title_row, _label = self.make_module_title_row(
             parent,
             key,
+            **title_options.get(key, {}),
             row=row,
             columnspan=6,
             pady=(10 if row else 0, 4),
         )
-        self._labels[key] = label
         return row + 1
 
     def _add_paired_entries(
@@ -4706,7 +4752,16 @@ class PumpModePage(BasePage):
         yield
         panel.columnconfigure(1, weight=1)
 
-        row = 0
+        self.make_module_title_row(
+            panel,
+            "pump_output_settings",
+            step=1,
+            step_total=2,
+            help_key="awp192x_help_pump_output",
+            row=0,
+            columnspan=2,
+        )
+        row = 1
         self._add_combo(panel, row, "chip_single_output", self.amp_var, [x[0] for x in self.amp_options])
         row += 1
         self._add_frequency_row(panel, row)
@@ -4720,6 +4775,18 @@ class PumpModePage(BasePage):
         self.hint_label = ttk.Label(panel, style="Muted.TLabel")
         self.hint_label.grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 14))
         yield
+        row += 1
+
+        self.make_module_title_row(
+            panel,
+            "pump_switches",
+            step=2,
+            step_total=2,
+            help_key="awp192x_help_pump_switch",
+            row=row,
+            columnspan=2,
+            pady=(4, 0),
+        )
         row += 1
 
         btn_frame = ttk.Frame(panel, style="Panel.TFrame")

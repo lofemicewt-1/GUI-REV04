@@ -144,7 +144,7 @@ class AWP1922Page(BasePage):
         rw_btn.grid(row=0, column=1, sticky="w")
         self._buttons["rw"] = rw_btn
 
-        scroll_area, body = self.make_vertical_scroll_area(self, propagate_height=True)
+        scroll_area, body = self.make_vertical_scroll_area(self, propagate_height=True, reserve_vertical_gutter=True)
         scroll_area.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1, uniform="awp1922_pair")
         body.columnconfigure(1, weight=1, uniform="awp1922_pair")
@@ -164,28 +164,17 @@ class AWP1922Page(BasePage):
         self._right = right
         scroll_area.canvas.bind("<Configure>", self._reflow_columns, add="+")
 
-        row = 0
-        self._add_combo(left, row, "amplitude", self.amp_var, self._amp_labels())
-        row += 1
-        self._add_combo(left, row, "frequency", self.freq_var, [f"{f} Hz" for f in self.FREQ_OPTIONS])
-        row += 1
-
-        play_frame = ttk.Frame(left, style="Panel.TFrame")
-        play_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(14, 0))
-        play_frame.columnconfigure(0, weight=1)
-        play_frame.columnconfigure(1, weight=1)
-
-        start_btn = ttk.Button(play_frame, style="Primary.TButton", command=self.start_play)
-        start_btn.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        self._buttons["start_play"] = start_btn
-
-        stop_btn = ttk.Button(play_frame, style="Secondary.TButton", command=self.stop_play)
-        stop_btn.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        self._buttons["stop_play"] = stop_btn
-        row += 1
-
+        self.make_module_title_row(
+            left,
+            "awp1922_wake_controls",
+            step=1,
+            step_total=3,
+            help_key="awp1922_help_wake",
+            row=0,
+            columnspan=2,
+        )
         power_frame = ttk.Frame(left, style="Panel.TFrame")
-        power_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        power_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 10))
         power_frame.columnconfigure(0, weight=1)
         power_frame.columnconfigure(1, weight=1)
 
@@ -197,8 +186,44 @@ class AWP1922Page(BasePage):
         shutdown_btn.grid(row=0, column=1, sticky="ew", padx=(6, 0))
         self._buttons["shutdown"] = shutdown_btn
 
+        self.make_module_title_row(
+            left,
+            "awp1922_output_settings",
+            step=2,
+            step_total=3,
+            help_key="awp1922_help_output",
+            row=2,
+            columnspan=2,
+            pady=(4, 0),
+        )
+        self._add_combo(left, 3, "amplitude", self.amp_var, self._amp_labels())
+        self._add_combo(left, 4, "frequency", self.freq_var, [f"{f} Hz" for f in self.FREQ_OPTIONS])
+
         self.hint_label = ttk.Label(left, style="Muted.TLabel", wraplength=self._HINT_MEASURE_WRAP)
-        self.hint_label.grid(row=row + 1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        self.hint_label.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(4, 10))
+
+        self.make_module_title_row(
+            left,
+            "awp1922_playback_controls",
+            step=3,
+            step_total=3,
+            help_key="awp1922_help_playback",
+            row=6,
+            columnspan=2,
+            pady=(4, 0),
+        )
+        play_frame = ttk.Frame(left, style="Panel.TFrame")
+        play_frame.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        play_frame.columnconfigure(0, weight=1)
+        play_frame.columnconfigure(1, weight=1)
+
+        start_btn = ttk.Button(play_frame, style="Primary.TButton", command=self.start_play)
+        start_btn.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self._buttons["start_play"] = start_btn
+
+        stop_btn = ttk.Button(play_frame, style="Secondary.TButton", command=self.stop_play)
+        stop_btn.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        self._buttons["stop_play"] = stop_btn
 
         log_frame = self.make_serial_log(right, height=12, subscribe=True)
         log_frame.grid(row=0, column=0, sticky="nsew")

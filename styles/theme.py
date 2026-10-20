@@ -975,6 +975,19 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
     )
 
     style.configure(
+        "ModuleHelp.TButton",
+        background=colors["panel"],
+        foreground=colors["primary"],
+        font=("Microsoft YaHei UI", body_size, "bold"),
+        padding=(1, 0),
+    )
+    style.map(
+        "ModuleHelp.TButton",
+        background=[("active", colors["panel_alt"]), ("pressed", colors["panel_alt"])],
+        foreground=[("disabled", colors["muted"])],
+    )
+
+    style.configure(
         "Muted.TLabel",
         background=colors["panel"],
         foreground=colors["muted"],

@@ -1211,6 +1211,13 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             button = ttk.Button(preset_frame, style="Bg.TButton", state="disabled")
             button.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 6, 0))
             self._buttons[key] = button
+        self.make_module_help_button(
+            preset_frame,
+            "awp1221_help_presets",
+            row=0,
+            column=len(preset_keys),
+            sticky="e",
+        )
 
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
@@ -1227,10 +1234,16 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         left.columnconfigure(0, weight=1)
         yield
         self._build_chip_en_section(left, row=0)
-        _adc_title_row, adc_title = self.make_module_title_row(
-            left, "awp1221_adc", row=1, columnspan=1, pady=(0, 10)
+        _adc_title_row, _adc_title = self.make_module_title_row(
+            left,
+            "awp1221_adc",
+            step=3,
+            step_total=4,
+            help_key="awp1221_help_adc_params",
+            row=1,
+            columnspan=1,
+            pady=(0, 10),
         )
-        self._labels["awp1221_adc"] = adc_title
 
         stage_selector = ttk.Frame(left, style="Panel.TFrame")
         stage_selector.grid(row=2, column=0, sticky="ew", pady=(0, 8))
@@ -1257,9 +1270,17 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             yield from self._build_adc_stage_steps(stage, stage_index)
 
         yield from self._build_adc_settings_steps(left, row=4)
-        yield from self._build_control_buttons_steps(left, row=5)
+        self.make_module_title_row(
+            left,
+            "awp1221_control_buttons",
+            step=4,
+            step_total=4,
+            help_key="awp1221_help_switches",
+            row=5,
+        )
+        yield from self._build_control_buttons_steps(left, row=6)
         yield
-        self._build_gpio_settings(left, row=6)
+        self._build_gpio_settings(left, row=7)
 
         right = ttk.Frame(body, style="Panel.TFrame", padding=10)
         right.grid(row=0, column=1, sticky="nsew")
@@ -1267,10 +1288,16 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         right.rowconfigure(1, weight=3)
         right.rowconfigure(2, weight=2)
         yield
-        _basic_title_row, basic_title = self.make_module_title_row(
-            right, "awp1221_basic_parameters", row=0, padx=4, pady=(4, 10)
+        _basic_title_row, _basic_title = self.make_module_title_row(
+            right,
+            "awp1221_basic_parameters",
+            step=2,
+            step_total=4,
+            help_key="awp1221_help_waveform",
+            row=0,
+            padx=4,
+            pady=(4, 10),
         )
-        self._labels["awp1221_basic_parameters"] = basic_title
 
         self.tools_notebook = ttk.Notebook(right)
         self.tools_notebook.grid(row=1, column=0, sticky="nsew")
@@ -1308,7 +1335,27 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         body.bind("<Configure>", self._queue_communication_log_layout)
         yield
 
-        waveform_section, waveform = self._button_section(body, "awp1221_button_wave_settings", row=0)
+        en_section, en = self._button_section(
+            body,
+            "awp1221_chip_en_title",
+            row=0,
+            step=1,
+            step_total=4,
+            help_key="awp1221_help_chip_en",
+        )
+        self._button_en_section = en_section
+        self._build_chip_en_section(en, row=0)
+        yield
+
+        waveform_section, waveform = self._button_section(
+            body,
+            "awp1221_button_wave_settings",
+            row=1,
+            step=2,
+            step_total=4,
+            help_key="awp1221_help_waveform",
+        )
+        self._button_waveform_section = waveform_section
         waveform.columnconfigure(0, weight=1)
         selector_holder = ttk.Frame(waveform, style="Panel.TFrame", height=520)
         selector_holder.grid(row=0, column=0, sticky="ew")
@@ -1339,12 +1386,20 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._compact_button_waveform_form()
 
         middle = ttk.Frame(body, style="App.TFrame")
-        middle.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        middle.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         self._register_module_spacing_widget(middle, before=True, after=False)
         yield
         middle.columnconfigure(0, weight=2, uniform="button_adc_panels")
         middle.columnconfigure(1, weight=3, uniform="button_adc_panels")
-        diagram_section, diagram = self._button_section(middle, "awp1221_adc_diagram", row=0)
+        diagram_section, diagram = self._button_section(
+            middle,
+            "awp1221_adc_diagram",
+            row=0,
+            step=3,
+            step_total=4,
+            role="reference",
+            help_key="awp1221_help_adc_legend",
+        )
         diagram_section.grid_configure(column=0, sticky="nsew", padx=(0, 10))
         diagram.columnconfigure(0, weight=1)
         diagram.rowconfigure(0, weight=1)
@@ -1353,7 +1408,14 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                                              highlightthickness=0)
         self._button_adc_canvas.grid(row=0, column=0, sticky="nsew")
         self._button_adc_canvas.bind("<Configure>", lambda _event: self._schedule_button_adc_diagram())
-        adc_panel_section, adc_panel = self._button_section(middle, "awp1221_button_adc_settings", row=0)
+        adc_panel_section, adc_panel = self._button_section(
+            middle,
+            "awp1221_button_adc_settings",
+            row=0,
+            step=3,
+            step_total=4,
+            help_key="awp1221_help_adc_params",
+        )
         adc_panel_section.grid_configure(column=1, sticky="nsew")
         adc_panel.columnconfigure(0, weight=1)
         yield
@@ -1361,7 +1423,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         yield from self._build_adc_settings_steps(adc_panel, row=2)
 
         lower = ttk.Frame(body, style="App.TFrame")
-        lower.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        lower.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         self._register_module_spacing_widget(lower, before=True, after=False)
         lower.columnconfigure(1, weight=3)
         lower.columnconfigure(2, weight=2)
@@ -1369,9 +1431,15 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         left_status = ttk.Frame(lower, style="App.TFrame")
         left_status.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         left_status.columnconfigure(0, weight=1)
-        en_section, en = self._button_section(left_status, "awp1221_chip_en_title", row=0)
-        self._build_chip_en_section(en, row=0)
-        pressure_section, pressure = self._button_section(left_status, "sense_status_title", row=1)
+        pressure_section, pressure = self._button_section(
+            left_status,
+            "sense_status_title",
+            row=0,
+            step=4,
+            step_total=4,
+            role="feedback",
+            help_key="awp1221_help_sense_status",
+        )
         yield
         pressure_section.grid_configure(pady=(8, 0), sticky="nsew")
         pressure.columnconfigure(0, weight=1)
@@ -1384,19 +1452,34 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._tooltips.append(SimpleTooltip(self._pressure_status_label,
             lambda: self.tr("awp1221_pressure_status_tip")))
         self._set_pressure_status("idle")
-        readings_section, readings = self._button_section(lower, "awp1221_adc_readings", row=0)
+        readings_section, readings = self._button_section(
+            lower,
+            "awp1221_adc_readings",
+            row=0,
+            step=3,
+            step_total=4,
+            role="verify",
+            help_key="awp1221_help_adc_readings",
+        )
         readings_section.grid_configure(column=1, sticky="nsew", padx=(0, 10))
         readings.columnconfigure(0, weight=1)
         yield
         yield from self._build_adc_readout_steps(readings, row=0)
-        switches_section, switches = self._button_section(lower, "awp1221_control_buttons", row=0)
+        switches_section, switches = self._button_section(
+            lower,
+            "awp1221_control_buttons",
+            row=0,
+            step=4,
+            step_total=4,
+            help_key="awp1221_help_switches",
+        )
         switches_section.grid_configure(column=2, sticky="nsew")
         switches.columnconfigure(0, weight=1)
         yield from self._build_control_buttons_steps(switches, row=0)
 
         details = ttk.Frame(body, style="Panel.TFrame", padding=10)
         yield
-        details.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        details.grid(row=4, column=0, sticky="ew", pady=(10, 0))
         self._register_module_spacing_widget(details, before=True, after=False)
         details.columnconfigure(0, weight=1)
         extra = ttk.Frame(details, style="Panel.TFrame")
@@ -1478,7 +1561,17 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         except tk.TclError:
             self._comm_log_scroll_job = None
 
-    def _button_section(self, parent: tk.Misc, key: str, *, row: int) -> tuple[ttk.Frame, ttk.Frame]:
+    def _button_section(
+        self,
+        parent: tk.Misc,
+        key: str,
+        *,
+        row: int,
+        step: int | None = None,
+        step_total: int | None = None,
+        role: str | None = None,
+        help_key: str | None = None,
+    ) -> tuple[ttk.Frame, ttk.Frame]:
         return self.make_module_section(
             parent,
             key,
@@ -1486,6 +1579,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             column=0,
             sticky="ew",
             padding=10,
+            step=step,
+            step_total=step_total,
+            role=role,
+            help_key=help_key,
         )
 
     def _select_button_wave_tab(self, key: str) -> None:
@@ -1876,6 +1973,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         title_row, title = self.make_module_title_row(
             self._waveform_selector_shell,
             "awp1221_rom_selector_title",
+            step=2,
+            step_total=4,
+            help_key="awp1221_help_waveform",
             row=0,
             columnspan=2,
             pady=(0, 10),
@@ -2506,6 +2606,14 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                         lambda preset_index=column: self._software_preset_tooltip_text(preset_index),
                     )
                 )
+
+        self.make_module_help_button(
+            preset_frame,
+            "awp1221_help_presets",
+            row=0,
+            column=len(first_row_keys),
+            sticky="e",
+        )
 
         slot_cell = ttk.Frame(preset_frame, style="App.TFrame")
         slot_cell.grid(row=1, column=0, sticky="ew", pady=(self._module_spacing(), 0))
@@ -5023,6 +5131,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 sticky="ew",
                 padding=10,
                 register_spacing=True,
+                step=1,
+                step_total=4,
+                help_key="awp1221_help_chip_en",
             )
         section.columnconfigure(1, weight=1)
         if self.mode_key == "button_mode":
@@ -5079,6 +5190,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             register_spacing=True,
             spacing_before=True,
             spacing_after=True,
+            role="advanced",
+            help_key="awp1221_help_gpio",
         )
         section.columnconfigure(1, weight=1)
         for index, (name, pin) in enumerate(AWP1221_GPIO_PINS):
@@ -5197,6 +5310,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 register_spacing=True,
                 spacing_before=True,
                 spacing_after=False,
+                step=3,
+                step_total=4,
+                help_key="awp1221_help_adc_params",
             )
         section.columnconfigure(1, weight=1)
         section.columnconfigure(3, weight=1)
@@ -6679,8 +6795,6 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 sram_editor.refresh_language()
             self._sync_sram_editor_visibility()
             return
-        self._labels["awp1221_basic_parameters"].configure(text=self.tr("awp1221_basic_parameters"))
-        self._labels["awp1221_adc"].configure(text=self.tr("awp1221_adc"))
         sram_editor = self._sram_editor
         if sram_editor is not None:
             sram_editor.refresh_language()

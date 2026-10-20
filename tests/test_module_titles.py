@@ -8,7 +8,7 @@ from tkinter import ttk
 import unittest
 
 from app.application import PiezoApplication
-from pages.base_page import BasePage
+from pages.base_page import BasePage, hide_scroll_chrome
 from styles.theme import apply_theme
 
 
@@ -97,4 +97,91 @@ class ModuleTitleTests(unittest.TestCase):
         self.assertIs(body.master, section)
         self.assertEqual(body.cget("style"), "Panel.TFrame")
         self.assertGreaterEqual(section._module_help_slot.winfo_reqwidth(), 26)
+
+    def test_step_and_role_title_refreshes_after_language_change(self) -> None:
+        colors = apply_theme(self.root, "light", 10, 1.0)
+        context = SimpleNamespace(
+            colors=colors,
+            state=SimpleNamespace(language="en", theme="light"),
+        )
+        self.page = BasePage(self.root, context)
+        self.page.pack(fill="both", expand=True)
+        _row, title = self.page.make_module_title_row(
+            self.page,
+            "awp1221_adc_diagram",
+            step=3,
+            step_total=4,
+            role="verify",
+        )
+        self.assertEqual(title.cget("text"), "Step 3 verification · ADC Diagram")
+
+        context.state.language = "zh"
+        self.page.refresh_language()
+        self.assertEqual(title.cget("text"), "第3步验证 · ADC 图例")
+
+    def test_module_help_hover_pin_escape_and_destroy(self) -> None:
+        colors = apply_theme(self.root, "light", 10, 1.0)
+        context = SimpleNamespace(
+            colors=colors,
+            state=SimpleNamespace(language="en", theme="light"),
+        )
+        self.page = BasePage(self.root, context)
+        self.page.pack(fill="both", expand=True)
+        self.root.geometry("500x300+20+20")
+        self.root.deiconify()
+        section, _body = self.page.make_module_section(
+            self.page,
+            "awp1221_chip_en_title",
+            row=0,
+            column=0,
+            sticky="ew",
+            step=1,
+            step_total=4,
+            help_key="awp1221_help_chip_en",
+        )
+        self.root.update()
+
+        controller = section._module_title_row._module_help_controller
+        button = section._module_title_row._module_help_button
+        self.assertEqual(button.cget("text"), "?")
+        self.assertTrue(button.cget("takefocus"))
+
+        controller.tooltip._show(None)
+        self.root.update()
+        self.assertIsNotNone(controller.tooltip.tip)
+        tooltip_label = controller.tooltip.tip.winfo_children()[0]
+        context_help = self.page.tr("awp1221_help_chip_en")
+        self.assertEqual(tooltip_label.cget("text"), context_help)
+
+        button.invoke()
+        self.root.update()
+        self.assertIs(controller, controller.__class__._active)
+        self.assertIsNotNone(controller.window)
+        self.assertEqual(controller.window._module_help_body.cget("text"), context_help)
+        button.event_generate("<Leave>")
+        self.root.update()
+        self.assertIsNotNone(controller.window)
+
+        # Headless Tk often leaves focus unset after Leave; force focus so the
+        # button/window Escape binding can dismiss the pinned panel.
+        button.focus_force()
+        self.root.update()
+        button.event_generate("<KeyPress-Escape>")
+        self.root.update()
+        self.assertIsNone(controller.__class__._active)
+        self.assertIsNone(controller.window)
+
+        button.invoke()
+        self.root.update()
+        hide_scroll_chrome()
+        self.root.update()
+        self.assertIsNone(controller.__class__._active)
+        self.assertIsNone(controller.window)
+
+        button.invoke()
+        self.root.update()
+        button.destroy()
+        self.root.update()
+        self.assertIsNone(controller.__class__._active)
+        self.assertIsNone(controller.window)
 

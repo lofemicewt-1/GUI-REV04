@@ -1319,6 +1319,8 @@ class AWP1018NormalModePage(BasePage):
         yield
 
         row = 0
+        yield from self._build_adc_channel_selector_steps(left, row)
+        row += 1
         row = self._add_section_title(left, row, "awp1018_adc_threshold_detection")
         yield from self._build_stage_selector_steps(left, row)
         row += 1
@@ -1332,8 +1334,6 @@ class AWP1018NormalModePage(BasePage):
         row += 1
 
         row = self._add_section_title(left, row, "full_mode_adc")
-        yield from self._build_adc_channel_selector_steps(left, row)
-        row += 1
         yield
         yield from self._build_adc_timing_row_steps(left, row)
         row += 1
@@ -1354,6 +1354,17 @@ class AWP1018NormalModePage(BasePage):
         self._checks["awp1018_interrupt_enable"] = interrupt_check
         row += 1
 
+        self.make_module_title_row(
+            left,
+            "awp1018_function_controls",
+            step=4,
+            step_total=4,
+            help_key="awp1018_help_function_control",
+            row=row,
+            columnspan=4,
+            pady=(10 if row else 0, 4),
+        )
+        row += 1
         yield from self._build_control_buttons_steps(left, row)
         row += 1
         if self.diff_mode:
@@ -1366,7 +1377,7 @@ class AWP1018NormalModePage(BasePage):
         self.tabs.grid(row=0, column=0, sticky="nsew")
 
         selector_tab = ttk.Frame(self.tabs, style="Panel.TFrame", padding=14)
-        selector_tab.rowconfigure(2, weight=1)
+        selector_tab.rowconfigure(1, weight=1)
         selector_tab.columnconfigure(0, weight=1)
         yield from self._build_rom_selector_steps(selector_tab)
         yield
@@ -1438,12 +1449,18 @@ class AWP1018NormalModePage(BasePage):
             pass
 
     def _build_adc_channel_selector_steps(self, parent: tk.Misc, row: int) -> Iterator[None]:
-        label = ttk.Label(parent, style="Panel.TLabel")
-        label.grid(row=row, column=0, sticky="nw", pady=7, padx=(0, 8))
-        self._labels["awp1018_channel_select"] = label
-
-        frame = ttk.Frame(parent, style="Panel.TFrame")
-        frame.grid(row=row, column=1, columnspan=3, sticky="ew", pady=4)
+        section = ttk.Frame(parent, style="Panel.TFrame")
+        section.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(4, 8))
+        title_row, _title = self.make_module_title_row(
+            section,
+            "awp1018_channel_select",
+            step=1,
+            step_total=4,
+            help_key="awp1018_help_full_channel",
+        )
+        title_row.grid_configure(columnspan=4, pady=(0, 4))
+        frame = ttk.Frame(section, style="Panel.TFrame")
+        frame.grid(row=1, column=0, columnspan=4, sticky="ew")
         for index, variable in enumerate(self.channel_vars):
             frame.columnconfigure(index % 4, weight=1)
             check = ttk.Checkbutton(
@@ -2398,6 +2415,21 @@ class AWP1018NormalModePage(BasePage):
             pass
 
     def _build_rom_selector_steps(self, parent: tk.Misc) -> Iterator[None]:
+        selector_body = ttk.Frame(parent, style="Panel.TFrame")
+        selector_body.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        parent.rowconfigure(1, weight=1)
+        title_row, _title = self.make_module_title_row(
+            parent,
+            "awp1018_waveform_selector",
+            step=2,
+            step_total=4,
+            help_key="awp1018_help_button_waveform",
+            row=0,
+            columnspan=2,
+            pady=(0, 8),
+        )
+        title_row.grid_configure(sticky="ew")
+        parent = selector_body
         parent.columnconfigure(0, weight=0, minsize=280 if self.diff_mode else 340)
         parent.columnconfigure(1, weight=1)
         parent.rowconfigure(0, weight=1)
@@ -3037,14 +3069,52 @@ class AWP1018NormalModePage(BasePage):
             self.rom_frequency_var.set(self.tr("awp1018_diff_frequency", period=f"{period_us:.0f}", frequency=f"{frequency_hz:.3f}"))
 
     def _add_section_title(self, parent: tk.Misc, row: int, key: str) -> int:
-        _title_row, label = self.make_module_title_row(
+        is_full = self.page_name == "full_mode"
+        title_options = {
+            "awp1018_adc_threshold_detection": {
+                "step": 3,
+                "step_total": 4,
+                "help_key": "awp1018_help_full_adc" if is_full else "awp1018_help_button_detection",
+            },
+            "full_mode_adc": {
+                "step": 3,
+                "step_total": 4,
+                "help_key": "awp1018_help_full_adc" if is_full else "awp1018_help_button_adc",
+            },
+            "awp1018_waveform_selector": {
+                "step": 2,
+                "step_total": 4,
+                "help_key": "awp1018_help_full_waveform" if is_full else "awp1018_help_button_waveform",
+            },
+            "full_mode_system": {
+                "step": 4,
+                "step_total": 4,
+                "role": "feedback",
+                "help_key": "awp1018_help_full_system",
+            },
+            "full_mode_memory": {
+                "role": "advanced",
+                "help_key": "awp1018_help_full_memory",
+            },
+            "awp1018_full_adc_readback": {
+                "step": 3,
+                "step_total": 4,
+                "role": "verify",
+                "help_key": "awp1018_help_full_adc_readback",
+            },
+            "full_mode_serial": {
+                "role": "advanced",
+                "help_key": "awp1018_help_full_serial",
+            },
+        }
+        _title_row, _label = self.make_module_title_row(
             parent,
             key,
+            **title_options.get(key, {}),
             row=row,
             columnspan=4,
             pady=(12 if row else 0, 4),
         )
-        self._labels[key] = label
         return row + 1
 
     def _add_entry(self, parent: tk.Misc, row: int, key: str, variable: tk.StringVar) -> None:
@@ -5731,6 +5801,8 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         left.columnconfigure(3, weight=2, minsize=145)
 
         row = 0
+        self._build_adc_channel_selector(left, row)
+        row += 1
         row = self._add_section_title(left, row, "awp1018_adc_threshold_detection")
         self._build_stage_selector(left, row)
         row += 1
@@ -5744,8 +5816,6 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         row += 1
 
         row = self._add_section_title(left, row, "full_mode_adc")
-        self._build_adc_channel_selector(left, row)
-        row += 1
         self._build_adc_timing_row(left, row)
         row += 1
         self._build_zero_return_bit_row(left, row)
@@ -5763,6 +5833,17 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         self._checks["awp1018_interrupt_enable"] = interrupt_check
         row += 1
 
+        self.make_module_title_row(
+            left,
+            "awp1018_function_controls",
+            step=4,
+            step_total=4,
+            help_key="awp1018_help_function_control",
+            row=row,
+            columnspan=4,
+            pady=(10 if row else 0, 4),
+        )
+        row += 1
         self._build_control_buttons(left, row)
         row += 1
         self._attach_gpio_controls(left, row)

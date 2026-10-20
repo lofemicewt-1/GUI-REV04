@@ -138,6 +138,17 @@ class Awp1221ButtonModeSramSwapTests(unittest.TestCase):
         self.addCleanup(self.page.destroy)
         self.page.update_idletasks()
 
+    def test_en_module_is_above_waveform_module(self) -> None:
+        en_section = self.page._button_en_section
+        waveform_section = self.page._button_waveform_section
+        self.assertIs(en_section.master, waveform_section.master)
+        self.assertEqual(int(en_section.grid_info()["row"]), 0)
+        self.assertEqual(int(waveform_section.grid_info()["row"]), 1)
+        self.assertLess(
+            int(en_section.grid_info()["row"]),
+            int(waveform_section.grid_info()["row"]),
+        )
+
     def test_default_rom_hides_sram_editor(self) -> None:
         self.assertIsInstance(self.page.sram_editor, AWP1221SramEditor)
         self.assertEqual(self.page.sram_editor.grid_info(), {})
