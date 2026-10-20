@@ -59,6 +59,7 @@ class FakePresetToolbar:
     def __init__(self, _parent, **options):
         self.callbacks = options["callbacks"]
         self.capabilities = options["capabilities"]
+        self.auxiliary_actions = tuple(options.get("auxiliary_actions", ()))
         self.slot_values = tuple(options["slot_values"])
         self.slot_callback = options["on_slot_selected"]
         self.slot_var = Value(str(options["selected_slot"]))
@@ -141,6 +142,9 @@ class Awp192xSettingsTests(unittest.TestCase):
             toolbar = FullModePage._create_preset_toolbar(page, object())
 
             self.assertEqual(set(toolbar.buttons), set(ButtonModePage.PRESET_ACTION_KEYS))
+            self.assertEqual(toolbar.auxiliary_actions, ("read_and_apply",))
+            self.assertIs(toolbar.callbacks["read_and_apply"], page.read_current_settings)
+            self.assertIsNot(toolbar.callbacks["read_and_apply"], toolbar.callbacks["apply_slot"])
             for button in toolbar.buttons.values():
                 self.assertEqual(button.state, "normal")
 

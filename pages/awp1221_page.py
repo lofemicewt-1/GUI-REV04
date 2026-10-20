@@ -1217,14 +1217,16 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-        header = self.make_title(self, self.mode_key, show_logo=False)
-        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
+        header = ttk.Frame(self, style="App.TFrame")
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        title_header = self.make_title(header, self.mode_key, show_logo=False)
+        title_header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
         yield
-        self.mode_title_label = header.grid_slaves(row=0, column=0)[0]
+        self.mode_title_label = title_header.grid_slaves(row=0, column=0)[0]
 
-        preset_frame = self.make_preset_frame(header)
+        self._build_preset_toolbar(header)
         yield
-        self._build_preset_toolbar(preset_frame)
 
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
@@ -2575,13 +2577,13 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             messagebox.showerror(self.tr("error"), str(exc))
 
     def _build_button_preset_header(self) -> None:
-        header = self.make_title(self, self.mode_key, show_logo=False)
-        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
-
-        self.mode_title_label = header.grid_slaves(row=0, column=0)[0]
-
-        preset_frame = self.make_preset_frame(header)
-        self._build_preset_toolbar(preset_frame)
+        header = ttk.Frame(self, style="App.TFrame")
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        title_header = self.make_title(header, self.mode_key, show_logo=False)
+        title_header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
+        self.mode_title_label = title_header.grid_slaves(row=0, column=0)[0]
+        self._build_preset_toolbar(header)
 
     def _build_preset_toolbar(self, parent: tk.Misc) -> None:
         model = self._settings_model
@@ -2615,7 +2617,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 "apply_slot": "awp1221_type4_apply_slot_tip",
             },
         )
-        self.preset_toolbar.grid(row=0, column=0, sticky="ew")
+        self.preset_toolbar.mount_header()
         # Keep the established AWP1221 button lookup names for page actions
         # and existing integrations while the toolbar owns the actual widgets.
         for legacy_name, action in (

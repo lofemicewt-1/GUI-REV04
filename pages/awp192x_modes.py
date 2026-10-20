@@ -538,15 +538,16 @@ class ButtonModePage(ButtonModeView, BasePage):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-        header = self.make_title(self, "button_mode", show_logo=False)
-        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
-        header.columnconfigure(0, weight=0)
-        header.columnconfigure(1, weight=1)
+        header = ttk.Frame(self, style="App.TFrame")
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        title_header = self.make_title(header, "button_mode", show_logo=False)
+        title_header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
+        self.mode_title_label = title_header.grid_slaves(row=0, column=0)[0]
         yield
 
-        preset_frame = self.make_preset_frame(header)
-        self.preset_toolbar = self._create_preset_toolbar(preset_frame)
-        self.preset_toolbar.grid(row=0, column=0, sticky="ew")
+        self.preset_toolbar = self._create_preset_toolbar(header)
+        self.preset_toolbar.mount_header()
         yield
 
         yield from self._build_button_body_steps()
@@ -592,7 +593,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         label_keys = {
             "set_active_slot": "preset_toolbar_set_active_slot",
             "apply_slot": "preset_toolbar_apply_slot",
-            "read_and_apply": "preset_toolbar_read_and_apply",
+            "read_and_apply": "r2b_aux_read_current_settings",
         }
         tooltip_keys = {
             "import_page_settings": "button_mode_import_page_settings_tooltip",
@@ -610,6 +611,7 @@ class ButtonModePage(ButtonModeView, BasePage):
             slot_values=(0, 1, 2),
             selected_slot=self.board_slot_var.get(),
             on_slot_selected=self._on_toolbar_slot_selected,
+            auxiliary_actions=("read_and_apply",),
         )
         self._buttons.update({
             "button_mode_preset_1": toolbar.buttons["software_preset_1"],
@@ -4468,11 +4470,13 @@ class FullModePage(ButtonModePage):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-        header = self.make_title(self, "full_mode", show_logo=False)
-        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
-        preset_frame = self.make_preset_frame(header)
-        self.preset_toolbar = self._create_preset_toolbar(preset_frame)
-        self.preset_toolbar.grid(row=0, column=0, sticky="ew")
+        header = ttk.Frame(self, style="App.TFrame")
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        title_header = self.make_title(header, "full_mode", show_logo=False)
+        title_header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
+        self.preset_toolbar = self._create_preset_toolbar(header)
+        self.preset_toolbar.mount_header()
 
         body = ttk.Frame(self, style="App.TFrame")
         yield
