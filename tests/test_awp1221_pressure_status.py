@@ -1,4 +1,4 @@
-"""Offline checks for target-bound 1221 press/release colors (no chip I/O)."""
+"""Offline checks for target-bound 1221 legend events (no chip I/O)."""
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 import unittest
@@ -29,13 +29,13 @@ class PressureStatusTests(unittest.TestCase):
         page.ctx = SimpleNamespace(state=SimpleNamespace(theme="light"),
                                    serial=SimpleNamespace(is_connected=True))
         page.tr = lambda key: key
-        page._pressure_status_label = Mock()
+        page.adc_legend = Mock()
         page._adc_detection_active = False
         page._shared_state_for = lambda *_: None
         page._shared_port_identity = lambda: "COM14"
         page.device_addr = lambda: 0x50
         self.jobs, self.cancelled = [], []
-        page.after = lambda delay, cb: self.jobs.append((delay, cb)) or len(self.jobs)
+        page.after = lambda delay, cb, *args: self.jobs.append((delay, cb, args)) or len(self.jobs)
         page.after_cancel = self.cancelled.append
         self.identity = cache.make_identity(0, 0x50, chip_type="1221")
         self.state = cache.SnapshotState([self.identity], session_id=7)
@@ -45,35 +45,57 @@ class PressureStatusTests(unittest.TestCase):
         self.state.apply_snapshot(snapshot(self.identity, raw, seq, **kwargs))
         self.page._apply_pressure_status_cache("COM14", self.state)
 
-    def color(self):
-        return self.page._pressure_status_label.configure.call_args.kwargs["bg"]
+    def live_state(self):
+        return self.page.adc_legend.set_live.call_args.args[0]
 
     def test_detection_command_and_stop_cancel_flash(self):
-        self.assertEqual(self.color(), "#E5E7EB")
+        self.assertEqual(self.live_state(), "idle")
         self.page._set_detection_state(True)
-        self.assertEqual(self.color(), "#FACC15")
+        self.assertEqual(self.live_state(), "detecting")
         self.apply(0x11)
-        self.assertEqual(self.color(), "#2563EB")
+        self.assertEqual(self.live_state(), "press")
         self.page._set_detection_state(False)
-        self.assertEqual(self.color(), "#E5E7EB")
+        self.assertEqual(self.live_state(), "idle")
         self.assertTrue(self.cancelled)
         self.assertIsNone(self.page._pressure_flash_job)
 
     def test_press_release_flash_then_restore_sensing(self):
-        for seq, raw, color in ((1, 0x11, "#2563EB"), (2, 0x12, "#9333EA")):
+        for seq, raw, expected in ((1, 0x11, "press"), (2, 0x12, "release")):
             self.apply(raw, seq)
-            self.assertEqual(self.color(), color)
+            self.assertEqual(self.live_state(), expected)
             self.assertEqual(self.jobs[-1][0], 180)
-            self.jobs[-1][1]()
-            self.assertEqual(self.color(), "#FACC15")
+            self.jobs[-1][1](*self.jobs[-1][2])
+            self.assertEqual(self.live_state(), "detecting")
+
+    def test_old_flash_cannot_replace_new_error_and_play_wording_survives(self):
+        self.apply(0x11)
+        delay, restore, args = self.jobs[-1]
+        self.assertEqual(delay, 180)
+        self.page._set_pressure_status("error")
+        restore(*args)
+        self.assertEqual(self.live_state(), "error")
+        self.page._set_pressure_status("play")
+        self.assertEqual(self.live_state(), "play")
+        self.assertEqual(self.page.adc_legend.set_live.call_args.args[1], "awp1221_pressure_play")
+
+    def test_target_change_invalidates_pending_event_restore(self):
+        self.apply(0x12)
+        delay, restore, args = self.jobs[-1]
+        self.assertEqual(delay, 180)
+        self.page._stop_adc_realtime = Mock()
+        self.page._refresh_adc_read_buttons = Mock()
+        self.page._on_adc_target_changed()
+        restore(*args)
+        self.assertEqual(self.live_state(), "idle")
+        self.page._stop_adc_realtime.assert_called_once_with()
 
     def test_fault_bits_and_read_error_are_red(self):
         for seq, bit in enumerate(range(10, 16), 1):
             self.apply(1 << bit, seq)
-            self.assertEqual(self.color(), "#DC2626")
+            self.assertEqual(self.live_state(), "error")
         self.apply(0, 7, flags=cache.FLAG_CONFIGURED | cache.FLAG_VALID | cache.FLAG_ERROR | cache.FLAG_MONITOR_ENABLED,
                    error=cache.ERROR_I2C_READ)
-        self.assertEqual(self.color(), "#DC2626")
+        self.assertEqual(self.live_state(), "error")
 
     def test_nonfault_bits_play_and_idle(self):
         for seq, raw, expected in ((1, 0x380, "idle"), (2, 8, "play"),
@@ -111,10 +133,10 @@ class PressureStatusTests(unittest.TestCase):
         self.page.tr = lambda key: "Release" if key.endswith("release") else key
         self.page.ctx.state.theme = "dark"
         self.page._refresh_pressure_status()
-        config = self.page._pressure_status_label.configure.call_args.kwargs
-        self.assertEqual(config, dict(text="Release", bg="#9333EA", fg="#FFFFFF"))
+        self.assertEqual(self.live_state(), "release")
+        self.assertEqual(self.page.adc_legend.set_live.call_args.args[1], "")
         self.page._set_pressure_status("idle")
-        self.assertEqual(self.color(), "#4B5563")
+        self.assertEqual(self.live_state(), "idle")
 
     def test_command_failure_is_red(self):
         self.page._set_start_detection_busy = Mock()
@@ -122,7 +144,7 @@ class PressureStatusTests(unittest.TestCase):
         with patch("pages.awp1221_page.messagebox.showerror"):
             self.page._finish_verified_command("start_detection", "read failed", started=False,
                                               device_addr=0x50, generation=2)
-        self.assertEqual(self.color(), "#DC2626")
+        self.assertEqual(self.live_state(), "error")
 
     def test_full_mode_does_not_create_status_or_timer(self):
         self.page.mode_key = "full_mode"
@@ -141,7 +163,7 @@ class PressureStatusTests(unittest.TestCase):
         self.page._shared_state_for = lambda *_: SimpleNamespace(detection_active=True,
             detection_device_addr=0x50, waveform_play_active=False)
         self.page._sync_local_activity()
-        self.assertEqual(self.color(), "#FACC15")
+        self.assertEqual(self.live_state(), "detecting")
 
     def test_home_forwards_only_accepted_current_session_samples(self):
         home = object.__new__(HomePage)
@@ -152,9 +174,9 @@ class PressureStatusTests(unittest.TestCase):
         home.ctx = SimpleNamespace(app=SimpleNamespace(navigation=SimpleNamespace(pages={
             "awp1221": SimpleNamespace(mode_pages={"button_mode": self.page})})))
         self.assertTrue(home._apply_status_snapshot("COM14", snapshot(self.identity, 0x11)))
-        self.assertEqual(self.color(), "#2563EB")
+        self.assertEqual(self.live_state(), "press")
         self.assertFalse(home._apply_status_snapshot("COM14", snapshot(self.identity, 0x12, 2, session=8)))
-        self.assertEqual(self.color(), "#2563EB")
+        self.assertEqual(self.live_state(), "press")
         home._set_status_error.assert_called_once()
 
 

@@ -1875,3 +1875,8 @@ def t(language: str, key: str, **kwargs: Any) -> str:
 from config.lang_r2_13 import install as _install_r2_13
 
 _install_r2_13(LANGUAGES)
+
+# Round-2 item 15 ADC legend strings stay isolated during the staged UI merge.
+from config.lang_r2_15 import install as _install_r2_15
+
+_install_r2_15(LANGUAGES)

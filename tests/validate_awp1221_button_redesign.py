@@ -93,7 +93,7 @@ def main():
                 realtime.invoke()
                 _flush(root)
                 assert not page._adc_realtime_active
-            diagram_width = page._button_adc_canvas.master.winfo_width()
+            diagram_width = page.adc_legend.winfo_width()
             settings_width = page._button_stage_buttons[0].master.master.winfo_width()
             assert .38 <= diagram_width / (diagram_width + settings_width) <= .42
             for name, target in (("waveform", page.rom_canvas),

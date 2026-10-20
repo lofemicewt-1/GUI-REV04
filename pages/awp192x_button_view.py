@@ -11,6 +11,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from pages.base_page import fit_toplevel_to_screen
+from pages.adc_legend import AdcLegend
 from pages.awp192x_realtime import AWP192xADCVoltageWindow
 from pages.waveform_generator import WaveformGeneratorPage, WAVEFORM_WRITE_POINT_OPTIONS
 from pages.waveform_preview import compact_preview, draw_omissions
@@ -438,21 +439,9 @@ class ButtonModeView:
         )
         diagram.columnconfigure(0, weight=1)
         yield
-        diagram.rowconfigure(1, weight=1)
-        selector = ttk.Frame(diagram, style="Panel.TFrame")
-        selector.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        self._button_adc_diagram_phase = "press"
-        self._button_adc_phase_buttons = {}
-        for column, phase in enumerate(("press", "release")):
-            selector.columnconfigure(column, weight=1, uniform="adc_diagram_phases")
-            button = ttk.Button(selector, command=lambda value=phase: self._show_button_adc_phase(value))
-            button.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 4, 0))
-            self.bind_text(button, f"awp1221_diagram_detect_{phase}")
-            self._button_adc_phase_buttons[phase] = button
-        yield
-        self.adc_diagram = tk.Canvas(diagram, height=200, width=280, highlightthickness=0)
-        self.adc_diagram.grid(row=1, column=0, sticky="nsew")
-        self.adc_diagram.bind("<Configure>", lambda _: self._draw_button_adc_diagram())
+        self.adc_legend = AdcLegend(diagram, self.tr, self.colors, stage_count=2)
+        self.adc_legend.grid(row=0, column=0, sticky="ew")
+        self._refresh_button_adc_legend_rules()
         params_section, params = self.make_module_section(
             middle,
             "awp1221_button_adc_settings",
@@ -494,37 +483,23 @@ class ButtonModeView:
         self.endless_hint_label = ttk.Label(params, style="Muted.TLabel", wraplength=430)
         yield
         self.endless_hint_label.grid(row=3, column=1, columnspan=3, sticky="w")
-        for variable in (self.press_threshold_var, self.release_threshold_var):
-            variable.trace_add("write", lambda *_: self._draw_button_adc_diagram())
+        for variable in (
+            self.press_threshold_var,
+            self.release_threshold_var,
+            self.press_waveform_var,
+            self.release_waveform_var,
+        ):
+            variable.trace_add("write", lambda *_: self._refresh_button_adc_legend_rules())
         lower = ttk.Frame(body, style="App.TFrame")
         lower.grid(row=2, column=0, sticky="ew")
-        lower.columnconfigure(1, weight=3)
-        lower.columnconfigure(2, weight=2)
+        lower.columnconfigure(0, weight=3)
+        lower.columnconfigure(1, weight=2)
         yield
-        status_section, status = self.make_module_section(
-            lower,
-            "sense_status_title",
-            row=0,
-            column=0,
-            sticky="nsew",
-            padx=(0, 10),
-            padding=8,
-            step=2,
-            step_total=3,
-            role="feedback",
-            help_key="awp192x_help_button_status",
-        )
-        self._sense_status_block = tk.Frame(status, width=72, height=28, bg=self.STATUS_IDLE_COLOR)
-        self._sense_status_block.grid(row=0, column=0, pady=10)
-        status_hint = ttk.Label(status, style="Muted.TLabel", wraplength=110)
-        yield
-        status_hint.grid(row=1, column=0)
-        self.bind_text(status_hint, "sense_status_hint")
         readings_section, readings = self.make_module_section(
             lower,
             "awp1221_adc_readings",
             row=0,
-            column=1,
+            column=0,
             sticky="nsew",
             padx=(0, 10),
             padding=8,
@@ -568,7 +543,7 @@ class ButtonModeView:
             lower,
             "awp1221_control_buttons",
             row=0,
-            column=2,
+            column=1,
             sticky="nsew",
             padding=8,
             step=3,
@@ -612,97 +587,6 @@ class ButtonModeView:
         widget.grid(row=1, column=0, sticky="w", pady=3)
         if value is not None:
             ttk.Label(cell, textvariable=value, style="Muted.TLabel").grid(row=2, column=0, sticky="w")
-
-    def _show_button_adc_phase(self, phase):
-        # Select the explanatory view without reconfiguring chip detection.
-        self._button_adc_diagram_phase = phase
-        self._draw_button_adc_diagram()
-
-    def _draw_button_adc_diagram(self):
-        canvas = getattr(self, "adc_diagram", None)
-        if canvas is None:
-            return
-        colors = self.colors
-        background, primary, muted = colors["canvas_bg"], colors["primary"], colors["muted"]
-        accent = "#E8833A"
-        selected = self._button_adc_diagram_phase
-        for phase, button in self._button_adc_phase_buttons.items():
-            button.configure(style="Selected.TButton" if phase == selected else "Secondary.TButton")
-        canvas.configure(bg=background)
-        canvas.delete("all")
-        width, height = max(260, canvas.winfo_width()), max(200, canvas.winfo_height())
-        left, right, band_top, top, bottom = 16, width-16, 24, 65, height-26
-        span_x = right-left
-        values = {}
-        for phase, variable in (("press", self.press_threshold_var), ("release", self.release_threshold_var)):
-            try:
-                value = float(variable.get())
-                if math.isfinite(value):
-                    values[phase] = value
-            except ValueError:
-                pass
-        low, high = min([0, *values.values()]), max([0, *values.values()])
-        span = max(high-low, 1)
-        base, peak = low-span*.08, high+span*.35
-        y_of = lambda value: bottom-(value-base)/(peak-base)*(bottom-top)
-        rise0, rise1 = left+span_x*.05, left+span_x*.32
-        fall0, fall1 = left+span_x*.60, left+span_x*.92
-        press_x = (rise0+(values["press"]-base)/(peak-base)*(rise1-rise0)
-                   if "press" in values else rise1)
-        release_x = (fall0+(peak-values["release"])/(peak-base)*(fall1-fall0)
-                     if "release" in values else fall1)
-
-        def tint(color, ratio):
-            fg, bg = canvas.winfo_rgb(color), canvas.winfo_rgb(background)
-            return "#{:02X}{:02X}{:02X}".format(*(int((f*ratio+b*(1-ratio))/257) for f,b in zip(fg,bg)))
-
-        for x0, x1, phase, color in ((left,press_x,"press",primary),
-                                    (press_x,release_x,"release",accent),
-                                    (release_x,right,"press",primary)):
-            canvas.create_rectangle(x0,band_top,x1,bottom,outline="",
-                fill=tint(color,.20 if phase == selected else .06),
-                tags=("adc_phase_band",f"adc_band_{phase}"))
-            if x1-x0 >= 80:
-                canvas.create_text((x0+x1)/2,band_top+5,anchor="n",
-                    text=self.tr(f"awp1221_diagram_detect_{phase}"),width=x1-x0-8,
-                    font=("Microsoft YaHei UI",9),fill=color if selected == phase else muted,
-                    tags=("adc_phase_caption",f"adc_caption_{phase}"))
-        canvas.create_line(left,y_of(base),rise0,y_of(base),rise1,y_of(peak),fall0,y_of(peak),
-            fall1,y_of(base),right,y_of(base),fill=primary,width=2,tags="adc_diagram_curve")
-        canvas.create_line(left,bottom,right,bottom,fill=colors["border"])
-        labels = []
-        for phase, x, color, target in (("press",press_x,primary,"release"),
-                                         ("release",release_x,accent,"press")):
-            if phase not in values:
-                continue
-            value, active = values[phase], phase == selected
-            y = y_of(value)
-            # Equal thresholds retain distinct colors on their respective halves.
-            x0,x1 = (left,(left+right)/2) if phase == "press" else ((left+right)/2,right)
-            canvas.create_line(x0,y,x1,y,fill=color,dash=(4,3),width=2 if active else 1,
-                               tags=("adc_threshold_line",f"adc_threshold_{phase}"))
-            canvas.create_line(x,band_top,x,bottom,fill=color,dash=(2,3))
-            radius = 5 if active else 3
-            canvas.create_oval(x-radius,y-radius,x+radius,y+radius,fill=color,outline=background,
-                               tags=("adc_threshold_marker",f"adc_marker_{phase}"))
-            label = canvas.create_text(left+3 if phase == "press" else right-3,y-4,
-                anchor="sw" if phase == "press" else "se",fill=color,
-                text=f"{self.tr('awp1221_diagram_'+phase)} {value:g} V",tags="adc_threshold_label")
-            labels.append(label)
-            canvas.create_text(left+3 if phase == "press" else right-3,top-5,
-                anchor="sw" if phase == "press" else "se",fill=color,font=("Microsoft YaHei UI",9),
-                text="→ "+self.tr(f"awp1221_diagram_detect_{target}"),tags="adc_phase_transition")
-        if len(labels) == 2:
-            first, second = (canvas.bbox(item) for item in labels)
-            if first and second and first[0]<second[2] and second[0]<first[2] and first[1]<second[3] and second[1]<first[3]:
-                canvas.move(labels[1],0,-(second[3]-first[1]+4))
-        for item in canvas.find_withtag("adc_threshold_label")+canvas.find_withtag("adc_phase_transition"):
-            box = canvas.bbox(item)
-            if box:
-                canvas.move(item,max(3-box[0],min(0,width-3-box[2])),max(3-box[1],min(0,height-3-box[3])))
-        canvas.create_text(left,6,text=self.tr("awp1221_adc_diagram_hint"),anchor="nw",fill=muted)
-        canvas.create_text(left,bottom+5,text=self.tr("awp1221_time_axis"),anchor="nw",fill=muted)
-        self._push_button_graph_thresholds()
 
     def _set_button_adc_display(self, value):
         code = value & 0xFFF
@@ -821,7 +705,7 @@ class ButtonModeView:
     def _refresh_button_view(self):
         if self.page_name != "button_mode":
             return
-        self._draw_button_adc_diagram()
+        self._refresh_button_adc_legend_rules()
         self._refresh_button_nibbles()
         self._draw_button_adc_graph()
 

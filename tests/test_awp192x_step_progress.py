@@ -176,12 +176,14 @@ class Awp192xButtonProgressTests(unittest.TestCase):
         progress = _Progress(("waveform", "config", "detection"))
         page = SimpleNamespace(
             page_name="button_mode",
+            STATUS_TIMEOUT_COLOR=ButtonModePage.STATUS_TIMEOUT_COLOR,
             step_progress=progress,
             _detect_generation=0,
             _direct_detection_active=False,
             _sync_button_step_progress_params=lambda: None,
             _reset_direct_detect_cycle=lambda: None,
             _set_button_selected=lambda *_args: None,
+            _set_sense_status_color=lambda _color: None,
             _set_sense_ready=lambda: None,
             _clear_sense_playback_registers=lambda **_kwargs: None,
             _finish_detection_stop_ui=lambda: None,

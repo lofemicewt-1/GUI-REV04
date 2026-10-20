@@ -502,9 +502,12 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._buttons: dict[str, ttk.Button] = {}
         self._checks: dict[str, ttk.Checkbutton] = {}
         self._repeat_entries: dict[str, ttk.Entry] = {}
-        self._sense_status_block: tk.Frame | None = None
+        self.adc_legend = None
         self._sense_status_active = False
         self._sense_timeout_mode = False
+        self._sense_live_state = "idle"
+        self._sense_live_detail = ""
+        self._sense_live_generation = 0
         self._sense_blink_job: str | None = None
         self._sense_ready_poll_job: str | None = None
         self._adc_realtime_active = False
@@ -523,6 +526,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._detect_await_adc_busy = False
         self._detect_adc_busy_tries = 0
         self._detect_poll_job: str | None = None
+        self._adc_legend_target_addr = getattr(self.ctx.state, "awp192x_device_addr", None)
         self._tooltips: list[SimpleTooltip] = []
         self._button_rom_reconcile_job: str | None = None
 
@@ -582,6 +586,13 @@ class ButtonModePage(ButtonModeView, BasePage):
         self.max_voltage_var.trace_add("write", lambda *_: self._on_voltage_changed())
         self.press_threshold_var.trace_add("write", lambda *_: self._on_button_runtime_threshold_changed())
         self.release_threshold_var.trace_add("write", lambda *_: self._on_button_runtime_threshold_changed())
+        for variable in (
+            self.press_threshold_var,
+            self.release_threshold_var,
+            self.press_waveform_var,
+            self.release_waveform_var,
+        ):
+            variable.trace_add("write", lambda *_: self._refresh_button_adc_legend_rules())
         self.button_adc_pol_var.trace_add("write", lambda *_: self._on_button_adc_pol_changed())
         yield
         self.button_adc_gain_var.trace_add("write", lambda *_: self._on_button_adc_gain_changed())
@@ -591,6 +602,8 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._refresh_threshold_register_value_labels()
         self._on_endless_play_changed()
         self._initialize_awp192x_settings_model()
+        self._refresh_button_adc_legend_rules()
+        self._refresh_sense_legend()
         self._attach_shared_settings_traces()
         self._mount_button_step_progress()
 
@@ -771,6 +784,9 @@ class ButtonModePage(ButtonModeView, BasePage):
                     if callable(capture_advanced):
                         capture_advanced()
             for mode_page in tuple(dict.values(host.mode_pages)):
+                reset_legend = getattr(mode_page, "_reset_adc_legend_lifecycle", None)
+                if callable(reset_legend):
+                    reset_legend()
                 select_model = getattr(mode_page, "_select_awp192x_settings_model", None)
                 if callable(select_model):
                     select_model()
@@ -812,6 +828,11 @@ class ButtonModePage(ButtonModeView, BasePage):
         )
 
     def _queue_device_model_sync(self) -> None:
+        current_address = getattr(self.ctx.state, "awp192x_device_addr", None)
+        previous_address = getattr(self, "_adc_legend_target_addr", current_address)
+        if current_address != previous_address:
+            self._adc_legend_target_addr = current_address
+            self._reset_adc_legend_lifecycle()
         try:
             self.after_idle(self._sync_awp192x_settings_from_model)
         except tk.TclError:
@@ -1682,23 +1703,30 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._update_period_hint()
         self._refresh_adc_read_buttons()
         self._refresh_button_view()
+        self._refresh_sense_legend()
+        if not self._awp192x_target_is_connected():
+            self._reset_adc_legend_lifecycle()
         attach_glossary_tooltips(self, self.tr, self._tooltips)
 
     def refresh_theme(self) -> None:
         super().refresh_theme()
         if hasattr(self, "waveform_page"):
             self.waveform_page.refresh_theme()
-        if self._sense_timeout_mode:
-            self._set_sense_status_color(self.STATUS_TIMEOUT_COLOR)
-        elif self._sense_status_active:
-            self._set_sense_status_color(self.STATUS_READY_COLOR)
-        else:
-            self._set_sense_status_color(self.STATUS_IDLE_COLOR)
+        legend = getattr(self, "adc_legend", None)
+        if legend is not None:
+            legend.refresh_style(self.colors)
+        self._refresh_sense_legend()
+        self._refresh_button_adc_legend_rules()
         self._refresh_preset_tooltip_theme()
         self._refresh_button_view()
 
     def destroy(self) -> None:
         self._button_adc_generation += 1
+        if hasattr(self, "_sense_live_generation"):
+            self._reset_adc_legend_lifecycle()
+        legend = getattr(self, "adc_legend", None)
+        if legend is not None:
+            legend.dispose()
         address_var = getattr(self, "_host_address_var", None)
         trace_id = getattr(self, "_host_address_trace_id", None)
         if address_var is not None and trace_id is not None:
@@ -3932,6 +3960,9 @@ class ButtonModePage(ButtonModeView, BasePage):
         def config_failed() -> None:
             if detect_generation != self._detect_generation:
                 return
+            setter = getattr(self, "_set_sense_status_color", None)
+            if callable(setter):
+                setter(self.STATUS_TIMEOUT_COLOR)
             if has_button_progress:
                 self._mark_button_progress_step("config", "error", config_token)
                 if detection_token is not None:
@@ -3972,6 +4003,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         )
         if not started:
             if detect_generation == self._detect_generation:
+                self._set_sense_status_color(self.STATUS_TIMEOUT_COLOR)
                 if has_button_progress:
                     self._mark_button_progress_step("detection", "error", detection_token)
             return
@@ -3984,12 +4016,61 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._set_button_selected("start_detection", True)
         self._set_sense_ready()
 
+    def _button_legend_wave_label(self, value: Any) -> str:
+        raw = str(value or "").strip()
+        key = {
+            "slice0": "adc_legend_wave_custom",
+            "0x1f": "adc_legend_wave_rom_sine",
+        }.get(raw.lower())
+        return self.tr(key) if key else raw
+
+    def _refresh_button_adc_legend_rules(self) -> None:
+        if self.page_name != "button_mode":
+            return
+        legend = getattr(self, "adc_legend", None)
+        if legend is None:
+            return
+        stage_data: list[dict[str, Any]] = []
+        for index, (condition, threshold_var, wave_var, target) in enumerate((
+            ("press", self.press_threshold_var, self.press_waveform_var, "Stage1"),
+            ("release", self.release_threshold_var, self.release_waveform_var, "Stage0"),
+        )):
+            raw_threshold = str(threshold_var.get()).strip()
+            try:
+                numeric = float(raw_threshold)
+                valid = math.isfinite(numeric)
+            except (TypeError, ValueError, OverflowError):
+                valid = False
+            stage_data.append({
+                "id": f"Stage{index}",
+                "condition": condition if valid else "unknown",
+                "comparator": ">=" if condition == "press" else "<=",
+                "threshold": raw_threshold if valid else None,
+                "unit": "V",
+                "waveform": self._button_legend_wave_label(wave_var.get()),
+                "target": target,
+                "unused": False,
+            })
+        legend.set_rules(stage_data, {"Stage0": []})
+
+    def on_hide(self) -> None:
+        if getattr(self, "_sense_blink_job", None) is not None:
+            try:
+                self.after_cancel(self._sense_blink_job)
+            except Exception:
+                pass
+            self._sense_blink_job = None
+        self._sense_live_generation = getattr(self, "_sense_live_generation", 0) + 1
+        self._sense_live_state = "detecting" if self._sense_status_active else "idle"
+        self._refresh_sense_legend()
+
     def stop_detection(self) -> None:
         status_token = _begin_status(self, "detection")
         self._invalidate_detect_session()
         success = self.write_reg(0x06, 0x0002)
         _finish_status(self, status_token, success=success, error="stop detection write failed" if not success else "")
         if not success:
+            self._set_sense_status_color(self.STATUS_TIMEOUT_COLOR)
             return
         if self.page_name == "button_mode" and self.step_progress is not None:
             self.step_progress.invalidate_from("detection")
@@ -4144,9 +4225,49 @@ class ButtonModePage(ButtonModeView, BasePage):
         return self.write_reg(0x0F, current & ~self.ADC_DETECT_ENABLE, show_error=show_error)
 
     def _set_sense_status_color(self, color: str) -> None:
-        if getattr(self, "_sense_status_block", None) is None:
-            return
-        self._sense_status_block.configure(bg=color, highlightbackground=self.colors["border"])
+        state = {
+            self.STATUS_IDLE_COLOR: "idle",
+            self.STATUS_READY_COLOR: "detecting",
+            self.STATUS_PRESS_COLOR: "press",
+            self.STATUS_RELEASE_COLOR: "release",
+            self.STATUS_TIMEOUT_COLOR: "error",
+        }.get(color, "idle")
+        self._sense_live_state = state
+        self._sense_live_generation = getattr(self, "_sense_live_generation", 0) + 1
+        self._refresh_sense_legend()
+
+    def _refresh_sense_legend(self) -> None:
+        legend = getattr(self, "adc_legend", None)
+        if legend is not None:
+            legend.set_live(
+                getattr(self, "_sense_live_state", "idle"),
+                getattr(self, "_sense_live_detail", ""),
+            )
+
+    def _reset_adc_legend_lifecycle(self) -> None:
+        self._invalidate_detect_session()
+        self._sense_timeout_mode = False
+        self._sense_status_active = False
+        self._sense_live_detail = ""
+        self._set_sense_status_color(self.STATUS_IDLE_COLOR)
+
+    def _awp192x_target_is_connected(self) -> bool:
+        serial = getattr(self.ctx, "serial", None)
+        host = self._awp192x_settings_host()
+        page_name = str(getattr(host, "page_name", "awp1921_1923"))
+        selector = getattr(serial, "selected_port_for_page", None)
+        if callable(selector):
+            try:
+                port = selector(page_name)
+            except TypeError:
+                port = selector()
+            checker = getattr(serial, "is_port_connected", None)
+            if port and callable(checker):
+                try:
+                    return bool(checker(port))
+                except Exception:
+                    pass
+        return bool(getattr(serial, "is_connected", False))
 
     def _set_sense_ready(self) -> None:
         self._sense_status_active = True
@@ -4155,6 +4276,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._set_sense_status_color(self.STATUS_READY_COLOR)
 
     def _cancel_sense_jobs(self) -> None:
+        self._sense_live_generation = getattr(self, "_sense_live_generation", 0) + 1
         for job in (
             getattr(self, "_sense_blink_job", None),
             getattr(self, "_sense_ready_poll_job", None),
@@ -4422,9 +4544,12 @@ class ButtonModePage(ButtonModeView, BasePage):
             except Exception:
                 pass
         self._set_sense_status_color(color)
-        self._sense_blink_job = self.after(180, self._restore_sense_ready_after_blink)
+        generation = self._sense_live_generation
+        self._sense_blink_job = self.after(180, self._restore_sense_ready_after_blink, generation)
 
-    def _restore_sense_ready_after_blink(self) -> None:
+    def _restore_sense_ready_after_blink(self, generation: int | None = None) -> None:
+        if generation is not None and generation != getattr(self, "_sense_live_generation", 0):
+            return
         self._sense_blink_job = None
         if self._sense_status_active and not self._sense_timeout_mode:
             self._set_sense_status_color(self.STATUS_READY_COLOR)
@@ -4439,6 +4564,7 @@ class ButtonModePage(ButtonModeView, BasePage):
     def _poll_sense_ready_from_reg(self) -> None:
         self._sense_ready_poll_job = None
         if not self.ctx.serial.is_connected:
+            self._reset_adc_legend_lifecycle()
             return
 
         value = self.read_reg(0x0F, show_error=False)

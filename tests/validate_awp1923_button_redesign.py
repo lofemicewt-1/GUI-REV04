@@ -64,15 +64,14 @@ def main():
             assert [w.cget("text").split("\n")[1] for w in page._adc_nibbles]==["11-8","7-4","3-0"]
             page.press_threshold_var.set("3")
             page.release_threshold_var.set("-0.2")
-            for phase in ("press","release"):
-                page._button_adc_phase_buttons[phase].invoke()
-                assert page._button_adc_diagram_phase==phase
-                assert page._button_adc_phase_buttons[phase].cget("style")=="Selected.TButton"
-                assert len(page.adc_diagram.find_withtag("adc_phase_band"))==3
-                host.mode_scroll.canvas.yview_moveto(1)
-                _flush(root)
-                assert _capture_window_bmp(root,out/f"{theme}-{language}-adc-{phase}.bmp") is None
-            page._button_adc_phase_buttons["press"].invoke()
+            page._refresh_button_adc_legend_rules()
+            assert len(page.adc_legend.canvas.find_withtag("stage_box"))==2
+            assert len(page.adc_legend.canvas.find_withtag("transition"))==2
+            waits=[page.adc_legend.canvas.itemcget(item,"text") for item in page.adc_legend.canvas.find_withtag("stage_wait")]
+            assert any("3" in text for text in waits) and any("0.2" in text for text in waits)
+            host.mode_scroll.canvas.yview_moveto(1)
+            _flush(root)
+            assert _capture_window_bmp(root,out/f"{theme}-{language}-adc-legend.bmp") is None
             realtime=page._buttons["adc_read_realtime"]
             graph=page._buttons["awp1221_adc_graph"]
             assert realtime.master is page._buttons["adc_read_current_value"].master

@@ -56,6 +56,7 @@ from pages.base_page import (
     attach_glossary_tooltips,
     fit_toplevel_to_screen,
 )
+from pages.adc_legend import AdcLegend
 from pages.button_mode_chrome import ResponsiveCardGrid
 from pages.chip_settings_model import ChipSettingsStore
 from pages.preset_toolbar import PresetToolbar
@@ -1410,6 +1411,13 @@ class AWP1018NormalModePage(BasePage):
         self._diff_sample_active = False
         self._diff_value_poll_job: str | None = None
         self._diff_status_blink_job: str | None = None
+        self._diff_legend_generation = 0
+        self._diff_channel_live_errors: set[int] = set()
+        self._diff_global_live_error = False
+        self._adc_legend_live_state = "idle"
+        self._adc_legend_trace_ids: list[tuple[tk.Variable, str]] = []
+        self._adc_legend_rules_job: str | None = None
+        self.adc_legend: AdcLegend | None = None
         self._diff_sample_cancel: threading.Event | None = None
         self._diff_sample_thread: threading.Thread | None = None
         self._diff_sample_channels_lock = threading.Lock()
@@ -1436,6 +1444,8 @@ class AWP1018NormalModePage(BasePage):
 
     def _initialize_steps(self) -> Iterator[None]:
         yield from self._build_ui_steps()
+        self._install_adc_legend_traces()
+        self._refresh_adc_legend_rules()
         self._preparing = False
         self.ctx.serial.add_log_listener(self._handle_serial_status_log)
         self._loading_settings = False
@@ -2117,91 +2127,108 @@ class AWP1018NormalModePage(BasePage):
             pady=(0, 6),
         )
         title_row.grid_configure(sticky="ew")
-        hint = ttk.Label(parent, style="Muted.TLabel", wraplength=240, justify="left")
-        hint.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 6))
-        self._labels["awp1221_adc_diagram_hint"] = hint
-        yield
-        canvas = tk.Canvas(
-            parent,
-            height=148,
-            background=self.colors["canvas_bg"],
-            highlightthickness=1,
-            highlightbackground=self.colors["border"],
-            borderwidth=0,
-        )
-        canvas.grid(row=2, column=0, columnspan=2, sticky="ew")
         parent.columnconfigure(0, weight=1)
-        self._adc_legend_canvas = canvas
-        canvas.bind("<Configure>", self._draw_adc_threshold_legend, add="+")
+        self.adc_legend = AdcLegend(parent, self.tr, self.colors, stage_count=4)
+        self.adc_legend.grid(row=1, column=0, columnspan=2, sticky="ew")
+        yield
 
-        self._adc_legend_swatches: dict[str, tk.Label] = {}
-        for row, key, color in (
-            (3, "awp1221_diagram_press", self.colors["primary"]),
-            (4, "awp1221_diagram_release", "#7c3aed"),
-        ):
-            swatch = tk.Label(parent, width=2, background=color, borderwidth=0)
-            swatch.grid(row=row, column=0, sticky="w", pady=(5, 0))
-            self._adc_legend_swatches[key] = swatch
-            label = ttk.Label(parent, style="Panel.TLabel")
-            label.grid(row=row, column=1, sticky="w", padx=(7, 0), pady=(5, 0))
-            self._labels[key] = label
-        self._draw_adc_threshold_legend()
+    def _install_adc_legend_traces(self) -> None:
+        variables: list[tk.Variable] = [*self.channel_vars, *self.channel_start_stage_vars]
+        for stage_vars in self.stage_vars.values():
+            variables.extend(
+                stage_vars[key]
+                for key in ("high", "low", "waveform", "jump_condition", "jump_target")
+                if key in stage_vars
+            )
+        for variable in variables:
+            try:
+                trace_id = variable.trace_add("write", self._queue_adc_legend_rules)
+                self._adc_legend_trace_ids.append((variable, trace_id))
+            except (tk.TclError, AttributeError):
+                continue
 
-    def _draw_adc_threshold_legend(self, _event: tk.Event | None = None) -> None:
-        canvas = getattr(self, "_adc_legend_canvas", None)
-        if canvas is None:
+    def _queue_adc_legend_rules(self, *_args: Any) -> None:
+        if self.adc_legend is None or self._adc_legend_rules_job is not None:
             return
         try:
-            width = max(180, int(canvas.winfo_width()))
-            height = max(110, int(canvas.winfo_height()))
-            canvas.delete("all")
-            left, right = 24, width - 16
-            top, bottom = 16, height - 22
-            canvas.create_line(left, top, left, bottom, fill=self.colors["border"])
-            canvas.create_line(
-                left,
-                bottom,
-                right,
-                bottom,
-                fill=self.colors["border"],
-                arrow=tk.LAST,
-            )
-            press_y = top + (bottom - top) * 0.36
-            release_y = top + (bottom - top) * 0.68
-            canvas.create_line(
-                left + 2,
-                press_y,
-                right,
-                press_y,
-                fill=self.colors["primary"],
-                width=2,
-                dash=(5, 3),
-            )
-            canvas.create_line(
-                left + 2,
-                release_y,
-                right,
-                release_y,
-                fill="#7c3aed",
-                width=2,
-                dash=(5, 3),
-            )
-            canvas.create_text(
-                left + 8,
-                press_y - 8,
-                anchor="sw",
-                text="P",
-                fill=self.colors["text"],
-            )
-            canvas.create_text(
-                left + 8,
-                release_y - 8,
-                anchor="sw",
-                text="R",
-                fill=self.colors["text"],
-            )
+            self._adc_legend_rules_job = self.after_idle(self._flush_adc_legend_rules)
         except tk.TclError:
+            self._adc_legend_rules_job = None
+
+    def _flush_adc_legend_rules(self) -> None:
+        self._adc_legend_rules_job = None
+        self._refresh_adc_legend_rules()
+
+    def _adc_legend_wave_label(self, value: Any) -> str:
+        raw = str(value or "").strip()
+        key = {
+            "serial1": "adc_legend_wave_normal",
+            "serial3": "adc_legend_wave_strong",
+            "slice0": "adc_legend_wave_custom",
+            "0x1f": "adc_legend_wave_rom_sine",
+        }.get(raw.lower())
+        return self.tr(key) if key else raw
+
+    def _adc_legend_start_markers(self) -> dict[str, list[str]]:
+        markers: dict[str, list[str]] = {}
+        for channel, enabled_var in enumerate(self.channel_vars):
+            if not bool(enabled_var.get()) or channel >= len(self.channel_start_stage_vars):
+                continue
+            stage = str(self.channel_start_stage_vars[channel].get()).strip()
+            if stage not in {"Stage0", "Stage1", "Stage2", "Stage3"}:
+                continue
+            channel_name = self.tr("awp1018_channel_label", index=channel)
+            marker = self.tr("adc_legend_start_group", group=channel_name)
+            markers.setdefault(stage, []).append(marker)
+        return markers
+
+    def _refresh_adc_legend_rules(self) -> None:
+        legend = getattr(self, "adc_legend", None)
+        if legend is None:
             return
+        stage_names = ("Stage0", "Stage1", "Stage2", "Stage3")
+        starts = self._adc_legend_start_markers()
+        reachable = set(starts)
+        pending = list(reachable)
+        targets: dict[str, str | None] = {}
+        stage_data: list[dict[str, Any]] = []
+        for stage in stage_names:
+            variables = self.stage_vars.get(stage, {})
+            condition = str(variables.get("jump_condition").get() if variables.get("jump_condition") else "").strip().lower()
+            target = str(variables.get("jump_target").get() if variables.get("jump_target") else "").strip()
+            targets[stage] = target or None
+
+        while pending:
+            stage = pending.pop()
+            target = targets.get(stage)
+            if target in stage_names and target not in reachable:
+                reachable.add(target)
+                pending.append(target)
+
+        for stage in stage_names:
+            variables = self.stage_vars.get(stage, {})
+            condition = str(variables.get("jump_condition").get() if variables.get("jump_condition") else "").strip().lower()
+            raw_threshold = str(variables.get("high" if condition == "press" else "low").get()
+                                if variables.get("high" if condition == "press" else "low") else "").strip()
+            try:
+                threshold = int(raw_threshold, 16) if raw_threshold.lower().startswith("0x") else int(raw_threshold, 10)
+                valid_threshold = 0 <= threshold <= 0x0FFF
+            except (TypeError, ValueError, OverflowError):
+                threshold = None
+                valid_threshold = False
+            valid_condition = condition in {"press", "release"} and valid_threshold
+            target = targets.get(stage)
+            stage_data.append({
+                "id": stage,
+                "condition": condition if valid_condition else "unknown",
+                "comparator": ">=" if condition == "press" else "<=" if condition == "release" else "?",
+                "threshold": threshold if valid_threshold else None,
+                "unit": "ADC",
+                "waveform": self._adc_legend_wave_label(variables.get("waveform").get() if variables.get("waveform") else ""),
+                "target": target,
+                "unused": target == stage and stage not in reachable,
+            })
+        legend.set_rules(stage_data, starts, preview_stage=str(self.active_stage.get()))
 
     def _build_button_adc_editor_steps(self, parent: tk.Misc) -> Iterator[None]:
         for column in (0, 2, 4):
@@ -2766,10 +2793,11 @@ class AWP1018NormalModePage(BasePage):
         yield
         for channel in range(self.channel_count):
             value_var = tk.StringVar(value="")
+            neutral = self.colors.get("panel", "#FFFFFF")
             box = tk.Frame(
                 card_grid,
                 height=54,
-                bg=self.STATUS_IDLE_COLOR,
+                bg=neutral,
                 highlightthickness=1,
                 highlightbackground=self.colors["border"],
             )
@@ -2779,14 +2807,14 @@ class AWP1018NormalModePage(BasePage):
             title = tk.Label(
                 box,
                 text=self.tr("awp1018_channel_label", index=channel),
-                bg=self.STATUS_IDLE_COLOR,
+                bg=neutral,
                 fg=self.colors["text"],
             )
             title.grid(row=0, column=0, sticky="s")
             value = tk.Label(
                 box,
                 textvariable=value_var,
-                bg=self.STATUS_IDLE_COLOR,
+                bg=neutral,
                 fg=self.colors["text"],
                 font=("Microsoft YaHei UI", 11, "bold"),
             )
@@ -2829,6 +2857,7 @@ class AWP1018NormalModePage(BasePage):
             self._stage_frames[stage].grid()
         for name, button in self._stage_buttons.items():
             button.configure(style="Selected.TButton" if name == stage else "Secondary.TButton")
+        self._queue_adc_legend_rules()
 
     def _on_stage_group_start_changed(self, stage: str, group: int) -> None:
         variables = self.stage_group_start_vars.get(stage)
@@ -5975,18 +6004,27 @@ class AWP1018NormalModePage(BasePage):
 
     def _set_diff_channel_color(self, channel: int, color: str) -> None:
         frame = self._diff_status_frames.get(channel)
-        if frame is None:
-            return
-        frame.configure(bg=color, highlightbackground=self.colors["border"])
-        for child in frame.winfo_children():
-            try:
-                child.configure(bg=color)
-            except Exception:
-                pass
+        neutral = self.colors.get("panel", "#FFFFFF")
+        if frame is not None:
+            frame.configure(bg=neutral, highlightbackground=self.colors["border"])
+            for child in frame.winfo_children():
+                try:
+                    child.configure(bg=neutral, fg=self.colors["text"])
+                except Exception:
+                    pass
+        if color == self.STATUS_TIMEOUT_COLOR:
+            self._diff_global_live_error = False
+            self._diff_channel_live_errors.add(channel)
+        elif color in {self.STATUS_IDLE_COLOR, self.STATUS_READY_COLOR}:
+            self._diff_channel_live_errors.discard(channel)
+        self._refresh_diff_legend_live()
 
     def _set_all_diff_channel_colors(self, color: str) -> None:
+        if color == self.STATUS_IDLE_COLOR:
+            self._diff_global_live_error = False
         for channel in range(4):
             self._set_diff_channel_color(channel, color)
+        self._refresh_diff_legend_live()
 
     def _enabled_diff_channels(self) -> list[int]:
         return [
@@ -5996,10 +6034,60 @@ class AWP1018NormalModePage(BasePage):
         ]
 
     def _set_diff_ready_colors(self) -> None:
+        self._diff_global_live_error = False
+        self._diff_channel_live_errors.clear()
         enabled = set(self._enabled_diff_channels())
         for channel in range(4):
             color = self.STATUS_READY_COLOR if channel in enabled else self.STATUS_IDLE_COLOR
-            self._set_diff_channel_color(channel, color)
+            frame = self._diff_status_frames.get(channel)
+            if frame is not None:
+                self._set_diff_channel_color(channel, color)
+        self._refresh_diff_legend_live()
+
+    def _set_adc_legend_live(
+        self,
+        state: str,
+        detail: str = "",
+        channel_states: dict[Any, Any] | None = None,
+    ) -> None:
+        self._adc_legend_live_state = state
+        if self.diff_mode:
+            if state == "error" and not channel_states:
+                self._diff_global_live_error = True
+            elif state in {"idle", "detecting"}:
+                self._diff_global_live_error = False
+        legend = getattr(self, "adc_legend", None)
+        if legend is not None:
+            legend.set_live(state, detail, channel_states=channel_states)
+
+    def _awp1018_target_is_connected(self) -> bool:
+        serial = getattr(self.ctx, "serial", None)
+        selector = getattr(serial, "selected_port_for_page", None)
+        if callable(selector):
+            try:
+                port = selector("awp1018")
+            except TypeError:
+                port = selector()
+            checker = getattr(serial, "is_port_connected", None)
+            if port and callable(checker):
+                try:
+                    return bool(checker(port))
+                except Exception:
+                    pass
+        return bool(getattr(serial, "is_connected", False))
+
+    def _refresh_diff_legend_live(self) -> None:
+        if self._diff_channel_live_errors:
+            channel_states = {
+                self.tr("awp1018_channel_label", index=channel): "error"
+                for channel in sorted(self._diff_channel_live_errors)
+            }
+            self._set_adc_legend_live("error", channel_states=channel_states)
+        elif self._diff_global_live_error:
+            self._set_adc_legend_live("error")
+        else:
+            state = "detecting" if self._diff_detect_active else "idle"
+            self._set_adc_legend_live(state)
 
     def _start_diff_status_monitor(self) -> None:
         if not self.diff_mode:
@@ -6051,7 +6139,8 @@ class AWP1018NormalModePage(BasePage):
         cancel = self._diff_sample_cancel
         if cancel is not None:
             cancel.set()
-        for job_attr in ("_diff_value_poll_job", "_diff_status_blink_job"):
+        self._cancel_diff_legend_pulse()
+        for job_attr in ("_diff_value_poll_job",):
             job = getattr(self, job_attr, None)
             if job is not None:
                 try:
@@ -6158,7 +6247,9 @@ class AWP1018NormalModePage(BasePage):
             generation, status, payload = latest
             if generation == self._diff_sample_generation:
                 if status == "disconnected":
+                    self._diff_detect_active = False
                     self.stop_realtime_display()
+                    self._set_all_diff_channel_colors(self.STATUS_IDLE_COLOR)
                     return
                 if status == "error":
                     for channel in self._enabled_diff_channels():
@@ -6224,10 +6315,11 @@ class AWP1018NormalModePage(BasePage):
     def _process_diff_status_log(self, line: str) -> None:
         text = line.upper()
         if "RELEASE TIMEOUT R" in text or "ERROR" in text:
+            self._cancel_diff_legend_pulse()
             for channel in self._enabled_diff_channels():
                 self._set_diff_channel_color(channel, self.STATUS_TIMEOUT_COLOR)
             return
-        if not self._diff_detect_active:
+        if not self._diff_detect_active or self._diff_channel_live_errors or self._diff_global_live_error:
             return
 
         payload = self._extract_mcu_text_payload(line)
@@ -6245,19 +6337,34 @@ class AWP1018NormalModePage(BasePage):
         return upper[index + len(marker):].strip()
 
     def _blink_diff_channel_status(self, color: str) -> None:
+        if self._diff_channel_live_errors:
+            return
         if self._diff_status_blink_job is not None:
             try:
                 self.after_cancel(self._diff_status_blink_job)
             except Exception:
                 pass
-        for channel in self._enabled_diff_channels():
-            self._set_diff_channel_color(channel, color)
-        self._diff_status_blink_job = self.after(180, self._restore_diff_ready_after_blink)
+        state = "press" if color == self.STATUS_PRESS_COLOR else "release"
+        self._diff_legend_generation += 1
+        generation = self._diff_legend_generation
+        self._set_adc_legend_live(state, self.tr("adc_legend_live_shared_event"))
+        self._diff_status_blink_job = self.after(180, self._restore_diff_ready_after_blink, generation)
 
-    def _restore_diff_ready_after_blink(self) -> None:
+    def _cancel_diff_legend_pulse(self) -> None:
+        self._diff_legend_generation += 1
+        job = self._diff_status_blink_job
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+            self._diff_status_blink_job = None
+
+    def _restore_diff_ready_after_blink(self, generation: int | None = None) -> None:
+        if generation is not None and generation != self._diff_legend_generation:
+            return
         self._diff_status_blink_job = None
-        if self._diff_detect_active or self._diff_sample_active:
-            self._set_diff_ready_colors()
+        self._refresh_diff_legend_live()
 
     def _sync_stage_defaults_before_run(self) -> bool:
         if not self._ensure_connected():
@@ -6333,6 +6440,7 @@ class AWP1018NormalModePage(BasePage):
         token = self._progress_token("detection", reuse=False)
         if not self._sync_stage_defaults_before_run():
             self._progress_mark("detection", "error", token)
+            self._set_adc_legend_live("error")
             return
         # Configuration is complete; make the actual start write the newest
         # status operation so its checked response owns the sidebar outcome.
@@ -6342,9 +6450,12 @@ class AWP1018NormalModePage(BasePage):
             if self.diff_mode:
                 self._diff_detect_active = True
                 self._set_diff_ready_colors()
+            else:
+                self._set_adc_legend_live("detecting")
             self._progress_mark("detection", "done", token)
         else:
             self._progress_mark("detection", "error", token)
+            self._set_adc_legend_live("error")
 
     def start_realtime_display(self) -> None:
         if not self.diff_mode:
@@ -6369,10 +6480,8 @@ class AWP1018NormalModePage(BasePage):
                 pass
             self._diff_value_poll_job = None
         self._set_button_selected("awp1018_realtime_display", False)
-        if self._diff_detect_active:
-            self._set_diff_ready_colors()
-        else:
-            self._set_all_diff_channel_colors(self.STATUS_IDLE_COLOR)
+        if not self._diff_channel_live_errors:
+            self._refresh_diff_legend_live()
 
     def stop_detection(self) -> None:
         if self.diff_mode:
@@ -6386,6 +6495,10 @@ class AWP1018NormalModePage(BasePage):
         if stopped:
             self._set_button_selected("start_detection", False)
             self._invalidate_detection_progress()
+            if not self.diff_mode:
+                self._set_adc_legend_live("idle")
+        else:
+            self._set_adc_legend_live("error")
 
     def start_play(self) -> None:
         if not self._ensure_connected():
@@ -6836,9 +6949,25 @@ class AWP1018NormalModePage(BasePage):
         self.save_button_draft()
         if self.diff_mode:
             self._stop_diff_status_monitor()
+        self._cancel_diff_legend_pulse()
+        self._set_adc_legend_live("idle")
 
     def destroy(self) -> None:
         self.on_hide()
+        if self._adc_legend_rules_job is not None:
+            try:
+                self.after_cancel(self._adc_legend_rules_job)
+            except tk.TclError:
+                pass
+            self._adc_legend_rules_job = None
+        for variable, trace_id in self._adc_legend_trace_ids:
+            try:
+                variable.trace_remove("write", trace_id)
+            except (tk.TclError, AttributeError):
+                pass
+        self._adc_legend_trace_ids.clear()
+        if self.adc_legend is not None:
+            self.adc_legend.dispose()
         if self._progress_update_job is not None:
             try:
                 self.after_cancel(self._progress_update_job)
@@ -6936,27 +7065,32 @@ class AWP1018NormalModePage(BasePage):
         if hasattr(self, "diff_serial4_segment_combos"):
             self._refresh_diff_waveform_controls()
         self._update_rom_metrics()
+        self._refresh_adc_legend_rules()
+        if self.adc_legend is not None:
+            self.adc_legend.refresh_style(self.colors)
+        if not self._awp1018_target_is_connected():
+            if self.diff_mode:
+                self._stop_diff_status_monitor()
+            else:
+                self._set_adc_legend_live("idle")
         attach_glossary_tooltips(self, self.tr, self._tooltips)
 
     def refresh_theme(self) -> None:
         super().refresh_theme()
-        legend = getattr(self, "_adc_legend_canvas", None)
+        legend = getattr(self, "adc_legend", None)
         if legend is not None:
-            legend.configure(
-                background=self.colors["canvas_bg"],
-                highlightbackground=self.colors["border"],
-            )
-            self._draw_adc_threshold_legend()
-        for key, swatch in getattr(self, "_adc_legend_swatches", {}).items():
-            color = self.colors["primary"] if key == "awp1221_diagram_press" else "#7c3aed"
-            swatch.configure(background=color)
+            legend.refresh_style(self.colors)
+        self._refresh_adc_legend_rules()
         for frame in self._diff_status_frames.values():
             frame.configure(highlightbackground=self.colors["border"])
+            frame.configure(bg=self.colors.get("panel", "#FFFFFF"))
             for child in frame.winfo_children():
                 try:
-                    child.configure(fg=self.colors["text"])
+                    child.configure(fg=self.colors["text"], bg=self.colors.get("panel", "#FFFFFF"))
                 except tk.TclError:
                     pass
+        if self.diff_mode:
+            self._refresh_diff_legend_live()
         if hasattr(self, "rom_canvas"):
             self.rom_canvas.configure(
                 bg=self.colors["canvas_bg"],

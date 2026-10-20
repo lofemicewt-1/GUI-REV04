@@ -23,7 +23,7 @@ def main():
         host = app.navigation.pages["awp1221"]
         host.show_mode("button_mode")
         page = host.mode_pages["button_mode"]
-        label = page._pressure_status_label
+        legend = page.adc_legend
         identity = cache.make_identity(0, 0x50, chip_type="1221")
         state = cache.SnapshotState([identity], session_id=7)
         sequence = 0
@@ -36,25 +36,27 @@ def main():
             root.geometry(size)
             _flush(root)
             area = host.mode_scroll
-            offset = label.master.winfo_rooty() - area.content.winfo_rooty()
+            offset = legend.winfo_rooty() - area.content.winfo_rooty()
             area.canvas.yview_moveto(max(0, offset - 15) / area.content.winfo_height())
             _flush(root)
-            assert label.winfo_ismapped()
-            assert label.winfo_rooty() >= area.canvas.winfo_rooty()
-            assert label.winfo_rooty() + label.winfo_height() <= area.canvas.winfo_rooty() + area.canvas.winfo_height()
-            for raw, status, color in ((0, "idle", "#4B5563" if theme == "dark" else "#E5E7EB"),
-                                       (0x10, "sense", "#FACC15"),
-                                       (0x11, "press", "#2563EB"),
-                                       (0x12, "release", "#9333EA"),
-                                       (0x400, "error", "#DC2626")):
+            assert legend.winfo_ismapped()
+            assert legend.winfo_rooty() >= area.canvas.winfo_rooty()
+            assert legend.winfo_rooty() + legend.winfo_height() <= area.canvas.winfo_rooty() + area.canvas.winfo_height()
+            for raw, status, state, color in ((0, "idle", "idle", "#4B5563" if theme == "dark" else "#E5E7EB"),
+                                              (0x10, "sense", "detecting", "#FACC15"),
+                                              (0x11, "press", "press", "#2563EB"),
+                                              (0x12, "release", "release", "#9333EA"),
+                                              (0x400, "error", "error", "#DC2626")):
                 sequence += 1
                 state.apply_snapshot(snapshot(identity, raw, sequence))
                 with patch.object(page, "_shared_port_identity", return_value="OFFLINE"), \
                      patch.object(page, "device_addr", return_value=0x50), \
                      patch.object(type(page.ctx.serial), "is_connected", new_callable=PropertyMock, return_value=True):
                     page._apply_pressure_status_cache("OFFLINE", state)
-                assert label.cget("background") == color
-                assert label.cget("text") == page.tr(f"awp1221_pressure_{status}")
+                assert legend._live_frame.cget("highlightbackground") == color
+                assert page._pressure_status == status
+                assert page.adc_legend._live_state == state
+                assert page.adc_legend._live_label.cget("text").endswith(page.tr(f"adc_legend_live_{state}"))
                 if status in {"press", "release"}:
                     # Freeze only the screenshot's blink; verify the real timer separately below.
                     page._cancel_idle_job("_pressure_flash_job")
@@ -84,7 +86,7 @@ def main():
         assert not errors, errors
     (out / "ui_validation.json").write_text(json.dumps(dict(status="PASS", checks=checks,
         callback_errors=errors, hardware="Offline synthetic status; transport forbidden"), indent=2), encoding="utf-8")
-    print(f"PASS: {len(checks)} color/theme/language/size cases; flash, hide, log scrolling checked")
+    print(f"PASS: {len(checks)} legend event/theme/language/size cases; flash, hide, log scrolling checked")
 
 
 if __name__ == "__main__":

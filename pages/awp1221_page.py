@@ -52,6 +52,7 @@ from core.base_tool import (
     run_async_write,
 )
 from pages.base_page import BasePage, SimpleTooltip, WrappingGroupBar, attach_glossary_tooltips
+from pages.adc_legend import AdcLegend
 from pages.step_progress import ProgressContext, StepSpec
 from pages.waveform_preview import PreviewSegment, compact_preview, draw_omissions
 from pages.awp1221_board_presets import AWP1221BoardPresetMixin
@@ -1413,10 +1414,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         diagram.columnconfigure(0, weight=1)
         diagram.rowconfigure(0, weight=1)
         yield
-        self._button_adc_canvas = tk.Canvas(diagram, width=260, height=200,
-                                             highlightthickness=0)
-        self._button_adc_canvas.grid(row=0, column=0, sticky="nsew")
-        self._button_adc_canvas.bind("<Configure>", lambda _event: self._schedule_button_adc_diagram())
+        self.adc_legend = AdcLegend(diagram, self.tr, self.colors, stage_count=2)
+        self.adc_legend.grid(row=0, column=0, sticky="ew")
+        self._refresh_button_adc_legend()
         adc_panel_section, adc_panel = self._button_section(
             middle,
             "awp1221_button_adc_settings",
@@ -1429,37 +1429,18 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         adc_panel.columnconfigure(0, weight=1)
         yield
         yield from self._build_button_adc_panel_steps(adc_panel, row=0)
+        self._refresh_button_adc_legend()
         yield from self._build_adc_settings_steps(adc_panel, row=2)
 
         lower = ttk.Frame(body, style="App.TFrame")
         lower.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         self._register_module_spacing_widget(lower, before=True, after=False)
-        lower.columnconfigure(1, weight=3)
-        lower.columnconfigure(2, weight=2)
+        lower.columnconfigure(0, weight=3)
+        lower.columnconfigure(1, weight=2)
         yield
-        left_status = ttk.Frame(lower, style="App.TFrame")
-        left_status.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        left_status.columnconfigure(0, weight=1)
-        pressure_section, pressure = self._button_section(
-            left_status,
-            "sense_status_title",
-            row=0,
-            step=4,
-            step_total=4,
-            role="feedback",
-            help_key="awp1221_help_sense_status",
-        )
+        # Keep prepare-step yield count after merging pressure block into AdcLegend live line.
         yield
-        pressure_section.grid_configure(pady=(8, 0), sticky="nsew")
-        pressure.columnconfigure(0, weight=1)
-        self._pressure_status_label = tk.Label(pressure, width=11, pady=5)
-        self._pressure_status_label.grid(row=0, column=0, sticky="ew")
-        hint = ttk.Label(pressure, style="Muted.TLabel", wraplength=135)
-        hint.grid(row=1, column=0, sticky="w", pady=(6, 0))
         yield
-        self._register_text(hint, "sense_status_hint")
-        self._tooltips.append(SimpleTooltip(self._pressure_status_label,
-            lambda: self.tr("awp1221_pressure_status_tip")))
         self._set_pressure_status("idle")
         readings_section, readings = self._button_section(
             lower,
@@ -1470,7 +1451,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             role="verify",
             help_key="awp1221_help_adc_readings",
         )
-        readings_section.grid_configure(column=1, sticky="nsew", padx=(0, 10))
+        readings_section.grid_configure(column=0, sticky="nsew", padx=(0, 10))
         readings.columnconfigure(0, weight=1)
         yield
         yield from self._build_adc_readout_steps(readings, row=0)
@@ -1482,7 +1463,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             step_total=4,
             help_key="awp1221_help_switches",
         )
-        switches_section.grid_configure(column=2, sticky="nsew")
+        switches_section.grid_configure(column=1, sticky="nsew")
         switches.columnconfigure(0, weight=1)
         yield from self._build_control_buttons_steps(switches, row=0)
 
@@ -1762,51 +1743,6 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             except tk.TclError:
                 pass
 
-    def _schedule_button_adc_diagram(self) -> None:
-        if getattr(self, "_button_adc_diagram_job", None) is not None:
-            return
-        def run() -> None:
-            self._button_adc_diagram_job = None
-            try:
-                if not self.winfo_ismapped():
-                    return
-                canvas = getattr(self, "_button_adc_canvas", None)
-                if canvas is not None and canvas.winfo_width() <= 1:
-                    retries = getattr(self, "_button_adc_diagram_retries", 0)
-                    if retries < 2:
-                        self._button_adc_diagram_retries = retries + 1
-                        self._schedule_button_adc_diagram()
-                    return
-                self._button_adc_diagram_retries = 0
-                self._draw_button_adc_diagram()
-            except tk.TclError:
-                pass
-        try:
-            self._button_adc_diagram_job = self.after_idle(run)
-        except tk.TclError:
-            self._button_adc_diagram_job = None
-
-    def _button_adc_diagram_signature(self):
-        canvas = getattr(self, "_button_adc_canvas", None)
-        if canvas is None:
-            return None
-        try:
-            size = (canvas.winfo_width(), canvas.winfo_height())
-        except tk.TclError:
-            return None
-        if size[0] <= 1 or size[1] <= 1:
-            return None
-        stages = tuple(
-            (variables["event_mode"].get(), variables["threshold"].get(), variables["jump_target"].get())
-            for variables in getattr(self, "_button_stage_vars", ())
-        )
-        colors = self.colors
-        return (
-            size, stages, getattr(self, "_visible_button_stage_index", 0),
-            colors.get("primary"), colors.get("canvas_bg"), colors.get("muted"), colors.get("border"),
-            getattr(self, "language", None),
-        )
-
     @staticmethod
     def _signed_threshold_value(text: Any) -> int | None:
         try:
@@ -1820,151 +1756,41 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         digits = "".join(ch for ch in str(text) if ch.isdigit())
         return int(digits) if digits else None
 
-    def _mix_canvas_color(self, canvas: tk.Canvas, color: str, background: str, ratio: float) -> str:
-        try:
-            fg = canvas.winfo_rgb(color)
-            bg = canvas.winfo_rgb(background)
-        except tk.TclError:
-            return background
-        mixed = (int((f * ratio + b * (1 - ratio)) / 257) for f, b in zip(fg, bg))
-        return "#{:02X}{:02X}{:02X}".format(*mixed)
+    def _button_legend_wave_label(self, value: Any) -> str:
+        raw = str(value or "").strip()
+        key = {
+            "serial1": "adc_legend_wave_normal",
+            "serial3": "adc_legend_wave_strong",
+            "slice0": "adc_legend_wave_custom",
+            "0x1f": "adc_legend_wave_rom_sine",
+        }.get(raw.lower())
+        return self.tr(key) if key else raw
 
-    def _draw_button_adc_diagram(self) -> None:
-        canvas = getattr(self, "_button_adc_canvas", None)
-        if canvas is None:
+    def _refresh_button_adc_legend(self) -> None:
+        legend = getattr(self, "adc_legend", None)
+        if legend is None or self.mode_key != "button_mode":
             return
-        signature = self._button_adc_diagram_signature()
-        if signature is None or signature == getattr(self, "_button_adc_diagram_drawn", None):
-            return
-        self._button_adc_diagram_drawn = signature
-        colors = self.colors
-        background = colors.get("canvas_bg", "#FFFFFF")
-        primary = colors.get("primary", "#2F6FDE")
-        accent = "#E8833A"
-        muted = colors.get("muted", "#6B7280")
-        canvas.configure(bg=background)
-        canvas.delete("all")
-        width, height = max(240, canvas.winfo_width()), max(200, canvas.winfo_height())
-        left, right = 16, width - 16
-        band_top, plot_top, plot_bottom = 24, 62, height - 26
-        plot_width = right - left
-
-        # Resolve which stage detects press / release from the live Stage settings.
-        stages = getattr(self, "_button_stage_vars", [])
-        press_stage = release_stage = None
-        for index, variables in enumerate(stages):
-            mode = variables["event_mode"].get()
-            if mode == "press" and press_stage is None:
-                press_stage = index
-            elif mode == "release" and release_stage is None:
-                release_stage = index
-        press_value = (self._signed_threshold_value(stages[press_stage]["threshold"].get())
-                       if press_stage is not None else None)
-        release_value = (self._signed_threshold_value(stages[release_stage]["threshold"].get())
-                         if release_stage is not None else None)
-
-        values = [value for value in (press_value, release_value) if value is not None]
-        low, high = min([0, *values]), max([0, *values])
-        span = max(high - low, 200)
-        base = low - span * 0.04
-        peak = high + span * 0.35
-
-        def y_of(value: float) -> float:
-            return plot_bottom - (value - base) / (peak - base) * (plot_bottom - plot_top)
-
-        # Trapezoid ADC curve: idle -> press ramp -> hold -> release ramp -> idle.
-        x_rise0, x_rise1 = left + plot_width * .05, left + plot_width * .32
-        x_fall0, x_fall1 = left + plot_width * .60, left + plot_width * .88
-        y_base, y_peak = y_of(base), y_of(peak)
-
-        def rise_x(value: float) -> float:
-            return x_rise0 + (value - base) / (peak - base) * (x_rise1 - x_rise0)
-
-        def fall_x(value: float) -> float:
-            return x_fall0 + (peak - value) / (peak - base) * (x_fall1 - x_fall0)
-
-        x_press = rise_x(press_value) if press_value is not None else x_rise1
-        x_release = fall_x(release_value) if release_value is not None else x_fall1
-
-        # Stage bands: idle stage -> (press) -> target stage -> (release) -> target stage.
-        def stage_target(stage_index: int | None) -> int | None:
-            if stage_index is None or stage_index >= len(stages):
-                return None
-            return self._stage_index_from_text(stages[stage_index]["jump_target"].get())
-
-        first_stage = press_stage if press_stage is not None else 0
-        middle_stage = stage_target(press_stage)
-        if middle_stage is None:
-            middle_stage = release_stage if release_stage is not None else 1
-        last_stage = stage_target(release_stage)
-        if last_stage is None:
-            last_stage = first_stage
-        visible = getattr(self, "_visible_button_stage_index", 0)
-        stage_colors = (primary, accent)
-
-        def stage_caption(stage_index: int) -> str:
-            mode = (stages[stage_index]["event_mode"].get()
-                    if 0 <= stage_index < len(stages) else "")
-            key = ("awp1221_diagram_detect_press" if mode == "press"
-                   else "awp1221_diagram_detect_release")
-            return f"Stage{stage_index}\n{self.tr(key)}"
-
-        bands = ((left, x_press, first_stage), (x_press, x_release, middle_stage),
-                 (x_release, right, last_stage))
-        for x0, x1, stage_index in bands:
-            if x1 - x0 < 1:
-                continue
-            color = stage_colors[stage_index % 2]
-            selected = stage_index == visible
-            canvas.create_rectangle(
-                x0, band_top, x1, plot_bottom, outline="",
-                fill=self._mix_canvas_color(canvas, color, background, .20 if selected else .07),
-            )
-            canvas.create_text(
-                (x0 + x1) / 2, band_top + 4, text=stage_caption(stage_index),
-                anchor="n", justify="center",
-                fill=color if selected else self._mix_canvas_color(canvas, color, background, .65),
-            )
-
-        canvas.create_line(left, plot_bottom, right, plot_bottom, fill=colors.get("border", muted))
-        canvas.create_line(left, y_base, x_rise0, y_base, x_rise1, y_peak, x_fall0, y_peak,
-                           x_fall1, y_base, right, y_base, fill=primary, width=2)
-
-        def keep_inside(item: int) -> None:
-            box = canvas.bbox(item)
-            if not box:
-                return
-            if box[2] > width - 4:
-                canvas.move(item, width - 4 - box[2], 0)
-            elif box[0] < 4:
-                canvas.move(item, 4 - box[0], 0)
-
-        markers = (
-            (press_value, x_press, middle_stage, "awp1221_diagram_press", primary, "se", -7, 0),
-            (release_value, x_release, last_stage, "awp1221_diagram_release", accent, "sw", 7, 16),
-        )
-        for value, x, target, key, color, anchor, dx, lift in markers:
-            if value is None:
-                continue
-            y = y_of(value)
-            canvas.create_line(left, y, right, y, fill=color, dash=(4, 3))
-            canvas.create_line(x, band_top, x, plot_bottom, fill=color, dash=(2, 3))
-            canvas.create_oval(x - 5, y - 5, x + 5, y + 5, fill=color, outline=background, width=2)
-            label = canvas.create_text(x + dx, y - 4, anchor=anchor, fill=color,
-                                       text=f"{self.tr(key)} {value}")
-            keep_inside(label)
-            # Jump marker under the plateau, where the curve leaves free space.
-            jump = canvas.create_text(
-                x + (4 if anchor == "se" else -4), plot_bottom - 4 - lift,
-                anchor="sw" if anchor == "se" else "se", fill=color,
-                text=f"\u2192 Stage{target}",
-            )
-            keep_inside(jump)
-
-        canvas.create_text(left, 6, text=self.tr("awp1221_adc_diagram_hint"),
-                           anchor="nw", fill=muted)
-        canvas.create_text(left, plot_bottom + 6, text=self.tr("awp1221_time_axis"),
-                           anchor="nw", fill=muted)
+        stage_data: list[dict[str, Any]] = []
+        for index, variables in enumerate(getattr(self, "_button_stage_vars", ())[:2]):
+            mode = str(variables["event_mode"].get()).strip().lower()
+            threshold = self._signed_threshold_value(variables["threshold"].get())
+            condition = mode if mode in {"press", "release"} and threshold is not None else "unknown"
+            target_index = self._stage_index_from_text(variables["jump_target"].get())
+            target = f"Stage{target_index}" if target_index in {0, 1} else None
+            precision_key = "adc_legend_precision_high" if variables["use_high_12_bits"].get() else "adc_legend_precision_low"
+            unit = f"ADC · {self.tr(precision_key)}"
+            stage_data.append({
+                "id": f"Stage{index}",
+                "condition": condition,
+                "comparator": ">=" if mode == "press" else "<=" if mode == "release" else "?",
+                "threshold": threshold,
+                "unit": unit,
+                "waveform": self._button_legend_wave_label(variables["wave"].get()),
+                "target": target,
+                "unused": False,
+            })
+        preview_index = getattr(self, "_visible_button_stage_index", 0)
+        legend.set_rules(stage_data, {"Stage0": []}, preview_stage=f"Stage{preview_index}")
 
     def _build_waveform_selector(self, parent: ttk.Frame) -> None:
         for _ in self._build_waveform_selector_steps(parent):
@@ -2264,8 +2090,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._button_stage_vars.append(variables)
         yield
         variables["use_high_12_bits"].trace_add("write", lambda *_: self._refresh_adc_bits())
-        for key in ("threshold", "event_mode", "jump_target"):
-            variables[key].trace_add("write", lambda *_: self._schedule_button_adc_diagram())
+        for key in ("threshold", "event_mode", "jump_target", "wave", "use_high_12_bits"):
+            variables[key].trace_add("write", lambda *_: self._refresh_button_adc_legend())
 
         commit_stage = lambda index=stage_index: self._commit_live_stage(index)
         self._form_label(parent, "awp1221_ovv_time", row=0, column=0)
@@ -2416,7 +2242,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._button_stage_frames[stage_index].grid()
         for index, button in self._button_stage_buttons.items():
             button.configure(style="Selected.TButton" if index == stage_index else "Secondary.TButton")
-        self._draw_button_adc_diagram()
+        self._refresh_button_adc_legend()
 
     def _read_adc_value(self, register: int, device_addr: int | None = None) -> int:
         address = self.device_addr() if device_addr is None else device_addr
@@ -4302,25 +4128,52 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if self.mode_key != "button_mode":
             return
         self._cancel_idle_job("_pressure_flash_job")
+        generation = getattr(self, "_pressure_status_generation", 0) + 1
+        self._pressure_status_generation = generation
         self._pressure_status = status
         self._refresh_pressure_status()
-        if status in {"press", "release"} and getattr(self, "_pressure_status_label", None) is not None:
-            self._pressure_flash_job = self.after(180, self._restore_pressure_status)
+        if status in {"press", "release"}:
+            self._pressure_flash_job = self.after(180, self._restore_pressure_status, generation)
 
-    def _restore_pressure_status(self) -> None:
+    def _restore_pressure_status(self, generation: int | None = None) -> None:
+        if generation is not None and generation != getattr(self, "_pressure_status_generation", 0):
+            return
         self._pressure_flash_job = None
         self._set_pressure_status("sense" if getattr(self, "_pressure_sensing", False) else "idle")
 
     def _refresh_pressure_status(self) -> None:
-        label = getattr(self, "_pressure_status_label", None)
-        if label is None:
+        legend = getattr(self, "adc_legend", None)
+        if legend is None:
             return
         status = getattr(self, "_pressure_status", "idle")
-        dark = self.ctx.state.theme == "dark"
-        colors = {"idle": "#4B5563" if dark else "#E5E7EB", "sense": "#FACC15",
-                  "press": "#2563EB", "release": "#9333EA", "error": "#DC2626", "play": "#FACC15"}
-        label.configure(text=self.tr(f"awp1221_pressure_{status}"), bg=colors[status],
-                        fg="#111827" if status in {"sense", "play"} or (status == "idle" and not dark) else "#FFFFFF")
+        live_state = {
+            "idle": "idle", "sense": "detecting", "press": "press",
+            "release": "release", "error": "error", "play": "play",
+        }.get(status, "idle")
+        detail = self.tr("awp1221_pressure_play") if status == "play" else ""
+        legend.set_live(live_state, detail)
+
+    def _on_adc_target_changed(self) -> None:
+        self._adc_lifecycle_generation = getattr(self, "_adc_lifecycle_generation", 0) + 1
+        self._stop_adc_realtime()
+        self._adc_trigger_read_active = False
+        self._adc_detection_active = False
+        self._adc_detection_device_addr = None
+        self._pressure_sensing = False
+        self._pressure_cache_key = None
+        self._set_pressure_status("idle")
+        self._refresh_adc_read_buttons()
+
+    def _adc_target_is_connected(self) -> bool:
+        serial = getattr(self.ctx, "serial", None)
+        port = self._shared_port_identity()
+        checker = getattr(serial, "is_port_connected", None)
+        if port is not None and callable(checker):
+            try:
+                return bool(checker(port))
+            except Exception:
+                pass
+        return bool(getattr(serial, "is_connected", False))
 
     def _apply_pressure_status_cache(self, port: str, state: chip_status_cache.SnapshotState) -> None:
         # Consume only validated, current target samples; do not add chip I/O.
@@ -6965,10 +6818,12 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             "_button_adc_reflow_job",
             "_comm_log_layout_job",
             "_comm_log_scroll_job",
-            "_button_adc_diagram_job",
             "_rom_preview_job",
         ):
             self._cancel_idle_job(name)
+        legend = getattr(self, "adc_legend", None)
+        if legend is not None:
+            legend.dispose()
         if not getattr(self, '_preparing', False):
             self.on_hide()
         try:
@@ -7817,7 +7672,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if self.preset_toolbar is not None:
             self.preset_toolbar.refresh_language()
         if self.mode_key == "button_mode":
+            if not self._adc_target_is_connected():
+                self._on_adc_target_changed()
             self._refresh_pressure_status()
+            self._refresh_button_adc_legend()
             for widget, key in self._translated_widgets:
                 widget.configure(text=self.tr(key))
             board_keys = {
@@ -7830,7 +7688,6 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self._refresh_adc_read_buttons()
             self._refresh_sinc_slice_time_labels()
             self._schedule_button_rom_preview()
-            self._schedule_button_adc_diagram()
             fields = getattr(self, "_button_adc_fields", ())
             if fields:
                 self._queue_button_adc_reflow(fields[0][0].master)
@@ -7858,8 +7715,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         super().refresh_theme()
         self._refresh_pressure_status()
         self._refresh_adc_bits()
-        self._button_adc_diagram_drawn = None
-        self._schedule_button_adc_diagram()
+        legend = getattr(self, "adc_legend", None)
+        if legend is not None:
+            legend.refresh_style(self.colors)
+        self._refresh_button_adc_legend()
         self._draw_button_en_switch()
         colors = self.ctx.colors
         canvas = getattr(self, "rom_canvas", None)
@@ -8485,7 +8344,7 @@ class AWP1221Page(BasePage):
             awp1221_en_high_load_value(current),
             address,
         )
-        for page in self.mode_pages.values():
+        for page in tuple(dict.values(self.mode_pages)):
             page.adc_ldo_var.set("160 uA")
             sync_load = getattr(page, "_sync_realtime_adc_load", None)
             if callable(sync_load):
@@ -8582,6 +8441,10 @@ class AWP1221Page(BasePage):
                 owner = getattr(self, "_shared_state_owner", None)
                 if owner is not None and getattr(self, "_shared_addr", None) is not None:
                     owner.invalidate_all()
+                for mode_page in tuple(dict.values(self.mode_pages)):
+                    reset_legend = getattr(mode_page, "_on_adc_target_changed", None)
+                    if callable(reset_legend):
+                        reset_legend()
                 self._set_en_state(None)
                 self._invalidate_gpio_settings()
                 self._shared_addr = address

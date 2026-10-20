@@ -130,61 +130,34 @@ class ButtonDisplayTests(unittest.TestCase):
 
 
 class TimingCanvasTests(unittest.TestCase):
-    def test_adc_diagram_switches_phase_and_keeps_threshold_markers_on_curve(self):
+    def test_adc_legend_renders_stage_row_rules_and_live_state(self):
         import tkinter as tk
-        from tkinter import ttk
+        from pages.adc_legend import AdcLegend
         from config.languages import t
         from styles.theme import get_colors
         root=tk.Tk()
         self.addCleanup(root.destroy)
-        canvas=tk.Canvas(root,highlightthickness=0)
-        canvas.pack(fill="both",expand=True)
-        page=SimpleNamespace(adc_diagram=canvas,colors=get_colors("light"),
-            tr=lambda key:t("zh",key),press_threshold_var=Value("3"),release_threshold_var=Value("-1"),
-            _button_adc_diagram_phase="press",
-            _button_adc_phase_buttons={phase:ttk.Button(root) for phase in ("press","release")})
-        page._draw_button_adc_diagram=lambda:ButtonModeView._draw_button_adc_diagram(page)
-        page._push_button_graph_thresholds=lambda:None
-        for width in (280,540):
-            root.geometry(f"{width}x240")
-            root.update()
-            for phase in ("press","release"):
-                ButtonModeView._show_button_adc_phase(page,phase)
-                self.assertEqual(page._button_adc_phase_buttons[phase].cget("style"),"Selected.TButton")
-                self.assertEqual(len(canvas.find_withtag("adc_phase_band")),3)
-                self.assertEqual(len(canvas.find_withtag("adc_phase_transition")),2)
-                selected=canvas.coords(canvas.find_withtag(f"adc_marker_{phase}")[0])
-                self.assertEqual(selected[2]-selected[0],10)
-                other="release" if phase=="press" else "press"
-                inactive=canvas.coords(canvas.find_withtag(f"adc_marker_{other}")[0])
-                self.assertEqual(inactive[2]-inactive[0],6)
-                curve=canvas.coords(canvas.find_withtag("adc_diagram_curve")[0])
-                for name,start,end in (("press",1,2),("release",3,4)):
-                    marker=canvas.coords(canvas.find_withtag(f"adc_marker_{name}")[0])
-                    x,y=(marker[0]+marker[2])/2,(marker[1]+marker[3])/2
-                    x0,y0,x1,y1=curve[start*2:start*2+2]+curve[end*2:end*2+2]
-                    expected=y0+(x-x0)/(x1-x0)*(y1-y0)
-                    self.assertAlmostEqual(y,expected)
-                annotations=canvas.find_withtag("adc_threshold_label")+canvas.find_withtag("adc_phase_transition")
-                for item in annotations:
-                    box=canvas.bbox(item)
-                    self.assertGreaterEqual(box[0],0)
-                    self.assertLessEqual(box[2],width)
-                for i,first in enumerate(annotations):
-                    a=canvas.bbox(first)
-                    for second in annotations[i+1:]:
-                        b=canvas.bbox(second)
-                        self.assertFalse(a[0]<b[2] and b[0]<a[2] and a[1]<b[3] and b[1]<a[3])
-        page.press_threshold_var.set("0")
-        page.release_threshold_var.set("0")
-        page._draw_button_adc_diagram()
-        labels=[canvas.bbox(item) for item in canvas.find_withtag("adc_threshold_label")]
-        a,b=labels
-        self.assertFalse(a[0]<b[2] and b[0]<a[2] and a[1]<b[3] and b[1]<a[3])
-        for text in ("", "-", "nan", "inf"):
-            page.press_threshold_var.set(text)
-            page._draw_button_adc_diagram()
-            self.assertEqual(len(canvas.find_withtag("adc_phase_band")),3)
+        root.geometry("820x520")
+        legend=AdcLegend(root,lambda key,**kw:t("zh",key,**kw),get_colors("light"),stage_count=2)
+        legend.pack(fill="x",expand=True)
+        legend.set_rules([
+            dict(id="Stage0",condition="press",comparator=">=",threshold="3.25",unit="V",
+                 waveform="自定义波形",target="Stage1"),
+            dict(id="Stage1",condition="release",comparator="<=",threshold="-1",unit="V",
+                 waveform="ROM 正弦",target="Stage0"),
+        ],{"Stage0":["组 CH1"]},preview_stage="Stage0")
+        root.update()
+        self.assertEqual(len(legend.canvas.find_withtag("stage_box")),2)
+        self.assertEqual(len(legend.canvas.find_withtag("transition")),2)
+        marker_text=legend.canvas.itemcget(legend.canvas.find_withtag("stage_marker")[0],"text")
+        self.assertIn("起始",marker_text)
+        self.assertIn("示意 Stage",marker_text)
+        self.assertIn("GUI 无法确定",legend._live_tip.cget("text"))
+        table_text=" ".join(child.cget("text") for child in legend._table.winfo_children())
+        self.assertIn("3.25 V",table_text)
+        self.assertIn("ROM 正弦",table_text)
+        legend.set_live("press")
+        self.assertIn("检测到按压",legend._live_label.cget("text"))
 
     def test_duration_cards_fit_wrapped_text_at_large_scaling(self):
         import tkinter as tk
