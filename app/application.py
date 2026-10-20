@@ -4613,6 +4613,9 @@ class PiezoApplication:
                 pass
 
         def apply(widget: tk.Misc) -> None:
+            refresh_canvas_titles = getattr(widget, "_refresh_canvas_titles", None)
+            if callable(refresh_canvas_titles):
+                refresh_canvas_titles()
             font: tuple[Any, ...] | None = None
             if isinstance(widget, (tk.Text, ttk.Label, tk.Label, tk.Button, tk.Entry, tk.Spinbox, tk.Checkbutton, tk.Radiobutton, ttk.Entry, ttk.Combobox, ttk.Spinbox)):
                 try:

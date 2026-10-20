@@ -61,6 +61,7 @@ from pages.button_mode_chrome import ResponsiveCardGrid
 from pages.chip_settings_model import ChipSettingsStore
 from pages.preset_toolbar import PresetToolbar
 from pages.waveform_preview import PreviewSegment, compact_preview, draw_omissions
+from pages.waveform_layout import WaveformWidthClamp
 from pages.gpio_controls import GpioControlGroup, GpioControlPanel, active_serial_identity
 from pages.step_progress import ProgressContext, StepSpec
 from styles.fonts import page_title_weight
@@ -3342,9 +3343,10 @@ class AWP1018NormalModePage(BasePage):
         parent = selector_body
         self._rom_selector_body = selector_body
         parent.columnconfigure(0, weight=0, minsize=280 if self.diff_mode else 340)
-        # Tk grid has no maxsize; waveform column expands within outer content cap.
-        parent.columnconfigure(1, weight=1)
+        parent.columnconfigure(1, weight=0)
+        parent.columnconfigure(2, weight=1)
         parent.rowconfigure(0, weight=1)
+        ttk.Frame(parent, style="Panel.TFrame").grid(row=0, column=2, sticky="nsew")
 
         controls = ttk.Frame(parent, style="Panel.TFrame")
         controls.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
@@ -3616,6 +3618,15 @@ class AWP1018NormalModePage(BasePage):
         self.rom_hint_label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 0))
 
         yield from self._build_rom_preview_steps(parent)
+        self._rom_selector_width_clamp = WaveformWidthClamp(
+            self,
+            parent,
+            self._rom_selector_preview,
+            reserved_width=lambda: max(
+                280 if self.diff_mode else 340,
+                int(controls.winfo_reqwidth()),
+            ) + 12,
+        )
         self._refresh_rom_depth_options()
 
     def _build_rom_preview(self, parent: tk.Misc) -> None:
@@ -3625,6 +3636,7 @@ class AWP1018NormalModePage(BasePage):
     def _build_rom_preview_steps(self, parent: tk.Misc) -> Iterator[None]:
         preview = ttk.Frame(parent, style="Panel.TFrame")
         preview.grid(row=0, column=1, sticky="nsew")
+        self._rom_selector_preview = preview
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(2, weight=1)
 
@@ -7116,7 +7128,9 @@ class AWP1018NormalModePage(BasePage):
 
     def refresh_layout(self) -> None:
         super().refresh_layout()
-        # Waveform column soft-capped by outer content max; Tk has no grid maxsize.
+        clamp = getattr(self, "_rom_selector_width_clamp", None)
+        if clamp is not None:
+            clamp.refresh()
 
 
 class AWP1018FullModePage(AWP1018NormalModePage):
@@ -7421,6 +7435,10 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         self._draw_rom_waveform()
 
     def _close_rom_selector_window(self) -> None:
+        clamp = getattr(self, "_rom_selector_width_clamp", None)
+        if clamp is not None:
+            clamp.close()
+            del self._rom_selector_width_clamp
         if self._rom_selector_window is not None:
             try:
                 self._rom_selector_window.destroy()

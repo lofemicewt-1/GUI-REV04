@@ -15,6 +15,7 @@ from pages.adc_legend import AdcLegend
 from pages.awp192x_realtime import AWP192xADCVoltageWindow
 from pages.waveform_generator import WaveformGeneratorPage, WAVEFORM_WRITE_POINT_OPTIONS
 from pages.waveform_preview import compact_preview, draw_omissions
+from pages.waveform_layout import WaveformWidthClamp
 from app.window_layout import scaled_waveform_max_width
 
 
@@ -138,8 +139,8 @@ class ButtonWaveformPage(WaveformGeneratorPage):
 
     def _build_ui(self):
         self.columnconfigure(0, weight=0, minsize=550)
-        # Tk grid has no maxsize; waveform column expands within outer content cap.
-        self.columnconfigure(1, weight=1, minsize=380)
+        self.columnconfigure(1, weight=0, minsize=380)
+        self.columnconfigure(2, weight=1, minsize=0)
         self.rowconfigure(0, weight=1)
         self.controls = ttk.Frame(self, style="Panel.TFrame", padding=8)
         self.controls.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
@@ -211,9 +212,19 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             btn.grid(row=i//3, column=i%3, sticky="ew", padx=(0,4), pady=3)
             self._buttons[key] = btn
         self.verify_waveform_button = self._buttons["verify_written_waveform"]
-        plot = ttk.Frame(self, style="Panel.TFrame", padding=8)
+        plot = ttk.Frame(self, style="Panel.TFrame", padding=8, width=380)
         self.plot_panel = plot
         plot.grid(row=0, column=1, sticky="nsew")
+        self._waveform_width_clamp = WaveformWidthClamp(
+            self,
+            self,
+            plot,
+            reserved_width=lambda: max(550, int(self.controls.winfo_reqwidth())) + 10
+            if getattr(self, "_button_side_by_side", True)
+            else 0,
+        )
+        self._waveform_width_spacer = ttk.Frame(self, style="App.TFrame")
+        self._waveform_width_spacer.grid(row=0, column=2, sticky="nsew")
         plot.columnconfigure(0, weight=1)
         plot.rowconfigure(1, weight=1)
         self.plot_toolbar = ttk.Frame(plot, style="Panel.TFrame")
@@ -267,26 +278,35 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             scale = float(getattr(self.ctx.state, "ui_scale", 1.0) or 1.0)
             side_by_side = available >= max(
                 900,
-                int(self.controls.winfo_reqwidth()) + int(self.plot_panel.winfo_reqwidth()) + 20,
+                max(550, int(self.controls.winfo_reqwidth()))
+                + max(380, int(self.plot_panel.winfo_reqwidth()))
+                + 20,
             )
             signature = (side_by_side, scaled_waveform_max_width(scale))
             if signature == self._button_layout_signature:
                 return
             self._button_layout_signature = signature
             if side_by_side:
+                self._button_side_by_side = True
                 self.columnconfigure(0, weight=0, minsize=550)
-                self.columnconfigure(1, weight=1, minsize=380)
+                self.columnconfigure(1, weight=0, minsize=380)
+                self.columnconfigure(2, weight=1, minsize=0)
                 self.rowconfigure(0, weight=1)
                 self.rowconfigure(1, weight=0)
                 self.controls.grid_configure(row=0, column=0, columnspan=1, sticky="nsew")
                 self.plot_panel.grid_configure(row=0, column=1, columnspan=1, sticky="nsew")
+                self._waveform_width_spacer.grid(row=0, column=2, sticky="nsew")
             else:
+                self._button_side_by_side = False
                 self.columnconfigure(0, weight=1, minsize=0)
                 self.columnconfigure(1, weight=0, minsize=0)
+                self.columnconfigure(2, weight=0, minsize=0)
                 self.rowconfigure(0, weight=0)
                 self.rowconfigure(1, weight=1)
-                self.controls.grid_configure(row=0, column=0, columnspan=2, sticky="ew")
-                self.plot_panel.grid_configure(row=1, column=0, columnspan=2, sticky="nsew")
+                self.controls.grid_configure(row=0, column=0, columnspan=3, sticky="ew")
+                self.plot_panel.grid_configure(row=1, column=0, columnspan=1, sticky="nw")
+                self._waveform_width_spacer.grid_remove()
+            self._waveform_width_clamp.refresh()
         except tk.TclError:
             return
 
@@ -294,6 +314,9 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         super().refresh_layout()
         self._button_layout_signature = None
         self._queue_button_layout()
+        clamp = getattr(self, "_waveform_width_clamp", None)
+        if clamp is not None:
+            clamp.refresh()
 
     def _on_param_changed(self) -> None:
         self._update_waveform_specific_fields()

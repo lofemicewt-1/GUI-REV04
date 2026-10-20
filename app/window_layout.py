@@ -28,3 +28,9 @@ def scaled_content_max_width(scale: float, available: int) -> int:
 
 def scaled_waveform_max_width(scale: float) -> int:
     return max(1, int(round(WAVEFORM_MAX_WIDTH * scale)))
+
+
+def clamped_waveform_width(scale: float, available: int, reserved: int = 0) -> int:
+    """Return a waveform column width bounded by its tier and free space."""
+    free_width = max(1, int(available) - max(0, int(reserved)))
+    return min(scaled_waveform_max_width(scale), free_width)

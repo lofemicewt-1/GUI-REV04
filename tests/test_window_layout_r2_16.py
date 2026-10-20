@@ -1,14 +1,44 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.window_layout import (
+    clamped_waveform_width,
     is_compact_window,
     scaled_content_max_width,
     scaled_waveform_max_width,
     ui_scale_for_width,
 )
+from pages.waveform_layout import WaveformWidthClamp
+
+
+class _GeometryWidget:
+    def __init__(self, width: int = 0) -> None:
+        self.width = width
+        self.propagation = None
+
+    def bind(self, _sequence, _callback, add=None):
+        self.add = add
+        return "binding"
+
+    def unbind(self, _sequence, _binding):
+        return None
+
+    def grid_propagate(self, enabled):
+        self.propagation = enabled
+
+    def winfo_width(self):
+        return self.width
+
+    def cget(self, key):
+        if key != "width":
+            raise KeyError(key)
+        return self.width
+
+    def configure(self, **kwargs):
+        self.width = kwargs["width"]
 
 
 class WindowLayoutTierTests(unittest.TestCase):
@@ -24,8 +54,52 @@ class WindowLayoutTierTests(unittest.TestCase):
         self.assertEqual(scaled_content_max_width(1.1, 1200), 1200)
         self.assertEqual(scaled_waveform_max_width(1.25), 1200)
 
+    def test_waveform_column_clamps_to_cap_and_free_width(self) -> None:
+        self.assertEqual(clamped_waveform_width(1.25, 2200, 700), 1200)
+        self.assertEqual(clamped_waveform_width(1.10, 1500, 400), 1056)
+        self.assertEqual(clamped_waveform_width(1.10, 900, 400), 500)
+        self.assertEqual(clamped_waveform_width(1.00, 300, 500), 1)
+
+    def test_waveform_width_manager_sets_fixed_frame_width(self) -> None:
+        owner = SimpleNamespace(ctx=SimpleNamespace(state=SimpleNamespace(ui_scale=1.25)))
+        container = _GeometryWidget(width=1800)
+        panel = _GeometryWidget()
+        clamp = WaveformWidthClamp(owner, container, panel, reserved_width=lambda: 600)
+        self.assertIs(panel.propagation, False)
+        self.assertEqual(panel.width, 1200)
+
+        container.width = 900
+        clamp.refresh()
+        self.assertEqual(panel.width, 300)
+        clamp.close()
+
 
 class WindowResizeLayoutTests(unittest.TestCase):
+    def test_resize_font_walk_refreshes_canvas_titles_in_hidden_page_tree(self) -> None:
+        from pages.base_page import BasePage, CanvasTitle
+        from tests.validate_responsive_layout import mocked_application
+
+        with mocked_application() as app:
+            home = dict.get(app.navigation.pages, "home")
+            hidden_page = BasePage(home, app.ctx)
+            hidden_page.grid()
+            title = CanvasTitle(hidden_page, text="Resize tier title")
+            title.grid()
+            hidden_page.grid_remove()
+            app.root.update_idletasks()
+            previous_font = title._font
+            previous_item_font = title.itemcget(title._item, "font")
+
+            app._apply_visual_settings(scale=1.25, refresh_navigation_theme=False)
+            scale_tier_font = title._font
+            app.state.font_size = 16
+            app._apply_visual_settings(scale=1.25, refresh_navigation_theme=False)
+
+            self.assertNotEqual(scale_tier_font, previous_font)
+            self.assertNotEqual(title._font, scale_tier_font)
+            self.assertNotEqual(title.itemcget(title._item, "font"), previous_item_font)
+            self.assertEqual(title._font[1], app.root._piezo_title_font_size)
+
     def test_resize_reuses_built_page_without_activation(self) -> None:
         from tests.test_motion import pump
         from tests.validate_responsive_layout import mocked_application

@@ -56,6 +56,7 @@ from pages.base_page import BasePage, SimpleTooltip, WrappingGroupBar, attach_gl
 from pages.adc_legend import AdcLegend
 from pages.step_progress import ProgressContext, StepSpec
 from pages.waveform_preview import PreviewSegment, compact_preview, draw_omissions
+from pages.waveform_layout import WaveformWidthClamp
 from pages.awp1221_board_presets import AWP1221BoardPresetMixin
 from pages.chip_settings_model import ChipSettingsModel, ChipSettingsStore
 from pages.preset_toolbar import PresetToolbar
@@ -1817,12 +1818,14 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         parent.rowconfigure(0, weight=1)
         self._waveform_selector_shell = ttk.Frame(parent, style="Panel.TFrame")
         self._waveform_selector_shell.grid(row=0, column=0, columnspan=2, sticky="nsew")
-        self._waveform_selector_shell.columnconfigure(0, weight=1)
-        # Tk grid has no maxsize; waveform column expands within outer content cap.
-        self._waveform_selector_shell.columnconfigure(1, weight=1)
+        self._waveform_selector_shell.columnconfigure(0, weight=0)
+        self._waveform_selector_shell.columnconfigure(1, weight=0)
+        self._waveform_selector_shell.columnconfigure(2, weight=1)
         yield
-        self._waveform_selector_shell.columnconfigure(1, weight=1)
         self._waveform_selector_shell.rowconfigure(1, weight=1)
+        ttk.Frame(self._waveform_selector_shell, style="Panel.TFrame").grid(
+            row=1, column=2, sticky="nsew"
+        )
         title_row, title = self.make_module_title_row(
             self._waveform_selector_shell,
             "awp1221_rom_selector_title",
@@ -2024,6 +2027,12 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         self.rom_canvas.grid(row=2, column=0, sticky="nsew")
         self.rom_canvas.bind("<Configure>", lambda _event: self._schedule_button_rom_preview())
+        self._waveform_selector_width_clamp = WaveformWidthClamp(
+            self,
+            self._waveform_selector_shell,
+            preview,
+            reserved_width=lambda: int(form_column.winfo_reqwidth()) + 18,
+        )
         self._bind_rom_preview_traces()
         yield
         for variable in (self.rom_micro_bias_var, self.rom_vpk_var):
@@ -8050,8 +8059,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
     def refresh_layout(self) -> None:
         super().refresh_layout()
-        # Waveform column width is soft-capped by the outer content max width;
-        # Tk grid_columnconfigure has no maxsize option.
+        clamp = getattr(self, "_waveform_selector_width_clamp", None)
+        if clamp is not None:
+            clamp.refresh()
 
 
 class AWP1221Page(BasePage):
