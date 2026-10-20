@@ -11,6 +11,18 @@ from tests.test_awp1018_show_io import SlowManager
 
 
 class RegisterSettingsQueueTests(unittest.TestCase):
+    def test_result_observer_runs_after_transport_and_queue_locks_are_released(self):
+        manager, tasks = SlowManager(0), RegisterSettingsQueue()
+        outcomes = []
+
+        def observe(outcome):
+            outcomes.append((outcome, manager.owns_snapshot_transaction(), tasks._lock.locked()))
+
+        tasks.submit("observed", RegisterSetting(manager, 0x48, 0x27, 3, None, lambda: True, observe))
+        self.assertTrue(tasks.wait_idle(1))
+        self.assertEqual(outcomes, [("completed", False, False)])
+        self.assertEqual([call[2] for call in manager.calls if call[0] == "write"], [0x27])
+
     def test_read_failure_or_malformed_echo_never_writes_and_later_setting_runs(self):
         for invalid in (False, True):
             with self.subTest(invalid=invalid):
@@ -94,6 +106,14 @@ class RoutedRegisterSettingsTests(unittest.TestCase):
         self.assertTrue(router._register_settings_queue.wait_idle(1))
         self.assertEqual(manager.registers[0x06],0x7FFF)
         self.assertFalse(other.calls)
+
+    def test_router_forwards_optional_result_observer(self):
+        router, manager, _state = self.make_router()
+        outcomes = []
+        router.queue_register_setting("awp1018", 0x48, 0x27, 5, on_result=outcomes.append)
+        self.assertTrue(router._register_settings_queue.wait_idle(1))
+        self.assertEqual(outcomes, ["completed"])
+        self.assertEqual([call[2] for call in manager.calls if call[0] == "write"], [0x27])
 
     def test_connection_replacement_generation_port_and_address_cancel_stale_rmw(self):
         for change in ("generation","generation_shadow","manager","port","address","disconnect"):

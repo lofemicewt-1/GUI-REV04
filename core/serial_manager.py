@@ -1520,6 +1520,7 @@ class SerialRouter:
     def queue_register_setting(
         self, page_name: str, address: int, register: int, value: int, *,
         clear_mask: int | None = None, address_state_key: str | None = None,
+        on_result: Callable[[str], Any] | None = None,
     ) -> None:
         """Capture a page's board/session on the UI thread, then queue pure I/O.
 
@@ -1530,6 +1531,11 @@ class SerialRouter:
         manager = self.manager_for_port(port)
         identity = self.connection_identity(port)
         if manager is None or identity is None:
+            if callable(on_result):
+                try:
+                    on_result("rejected")
+                except Exception:
+                    pass
             return
         address = int(address) & 0xFF
         manager_generation = getattr(manager, "connection_generation", None)
@@ -1550,7 +1556,7 @@ class SerialRouter:
         if tasks is None or tasks.closed:
             tasks = self._register_settings_queue = RegisterSettingsQueue()
         key = (identity, page_name, address, int(register), clear_mask)
-        setting = RegisterSetting(manager, address, int(register), int(value), clear_mask, valid)
+        setting = RegisterSetting(manager, address, int(register), int(value), clear_mask, valid, on_result)
         if not tasks.submit(key, setting):
             manager.emit_log("ERROR Register settings queue is full or closed")
 

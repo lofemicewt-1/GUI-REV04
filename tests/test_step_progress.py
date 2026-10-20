@@ -1,0 +1,326 @@
+from __future__ import annotations
+
+import gc
+import tkinter as tk
+from tkinter import ttk
+import threading
+import unittest
+
+from core.ui_dispatch import UiDispatcher
+from pages.base_page import BasePage
+from pages.step_progress import ProgressContext, StepSpec
+from styles.theme import apply_theme
+
+
+class StepProgressTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = tk.Tk()
+        self.root.geometry("900x680+10+10")
+        self.root.update_idletasks()
+        self.root.deiconify()
+        self.context = type("Context", (), {})()
+        self.context.colors = apply_theme(self.root, "light", 10, 1.0)
+        self.context.state = type("State", (), {"language": "en", "theme": "light"})()
+        self.context.serial = type("Serial", (), {})()
+
+        self.host = BasePage(self.root, self.context)
+        self.host.pack(fill="both", expand=True)
+        self.host.columnconfigure(0, weight=1)
+        self.host.rowconfigure(0, weight=1)
+        self.area, _content = self.host.make_vertical_scroll_area(self.host)
+        self.area.grid(row=0, column=0, sticky="nsew")
+        self.trapezoid = self.host.mount_trapezoid(
+            self._build_actions,
+            self._build_registers,
+            state_key="test_chip",
+            build_extra=self._build_extra,
+        )
+
+        self.page = BasePage(self.root, self.context)
+        self.page.pack(fill="both", expand=True)
+        self.page.make_module_section(
+            self.page,
+            "awp1221_button_wave_settings",
+            step=1,
+            step_total=3,
+            help_key="awp1221_help_waveform",
+            row=0,
+            column=0,
+            sticky="ew",
+        )
+        self.page.make_module_title_row(
+            self.page,
+            "awp1221_adc_diagram",
+            step=2,
+            step_total=3,
+            role="reference",
+            help_key="awp1221_help_adc_legend",
+        )
+        self.page.make_module_section(
+            self.page,
+            "awp1221_button_adc_settings",
+            step=2,
+            step_total=3,
+            help_key="awp1221_help_adc_params",
+            row=2,
+            column=0,
+            sticky="ew",
+        )
+        self.page.make_module_section(
+            self.page,
+            "awp1221_control_buttons",
+            step=3,
+            step_total=3,
+            help_key="awp1221_help_switches",
+            row=3,
+            column=0,
+            sticky="ew",
+        )
+        self.context_value = ProgressContext(("COM1", 123, 4), 0x50, "button")
+        self.bar = self.page.mount_step_progress(
+            host=self.host,
+            steps=(
+                StepSpec("waveform", 1, "step_done_1221_waveform"),
+                StepSpec("adc", 2, "step_done_1221_adc", ("settings", "stage0")),
+                StepSpec("detection", 3, "step_done_1221_detection"),
+            ),
+            context=lambda: self.context_value,
+        )
+        self.host.show_step_chrome(self.page)
+        self.root.update()
+
+    def _build_actions(self, parent: ttk.Frame) -> None:
+        ttk.Button(parent, text="Shutdown").grid(row=0, column=0)
+
+    def _build_registers(self, bar) -> None:
+        group = bar.add_group()
+        ttk.Entry(group).grid(row=0, column=0)
+
+    def _build_extra(self, panel: ttk.Frame) -> None:
+        ttk.Label(panel, text="Detailed register controls").grid(row=2, column=0, sticky="w")
+
+    def tearDown(self) -> None:
+        for widget in (self.page, self.host):
+            try:
+                widget.destroy()
+            except tk.TclError:
+                pass
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
+        gc.collect()
+
+    def flush(self) -> None:
+        self.root.update()
+
+    def test_aggregate_receipts_invalidation_retention_and_badge(self) -> None:
+        self.bar.update_params("adc", {"settings": 1, "stage0": 10})
+        self.bar.update_params("detection", {"start": 1})
+        adc = self.bar.begin("adc")
+        self.bar.mark_part("adc", "settings", "done", adc)
+        self.flush()
+        self.assertEqual(self.bar.snapshot()["adc"]["state"], "running")
+        self.assertEqual(self.bar.snapshot()["adc"]["parts"], {"settings": 1})
+        self.bar.mark_part("adc", "stage0", "done", adc)
+        self.flush()
+        self.assertEqual(self.bar.snapshot()["adc"]["state"], "done")
+
+        detection = self.bar.begin("detection")
+        self.bar.mark("detection", "done", detection)
+        self.flush()
+        self.assertEqual(self.bar.snapshot()["detection"]["state"], "done")
+
+        self.bar.update_params("adc", {"settings": 1, "stage0": 11})
+        snapshot = self.bar.snapshot()
+        self.assertEqual(snapshot["adc"]["state"], "idle")
+        self.assertEqual(snapshot["adc"]["parts"], {"settings": 1})
+        self.assertEqual(snapshot["detection"]["state"], "idle")
+
+        waveform = self.bar.begin("waveform")
+        self.bar.mark("waveform", "done", waveform)
+        self.flush()
+        self.bar.collapse()
+        self.flush()
+        self.assertEqual(self.bar.badge.cget("text"), "1/3")
+        self.bar.expand()
+        self.flush()
+        self.assertTrue(self.bar._cells_frame.winfo_ismapped())
+
+    def test_newer_operation_overtakes_old_and_idle_is_cancellation(self) -> None:
+        old = self.bar.begin("waveform")
+        current = self.bar.begin("waveform")
+        self.bar.mark("waveform", "done", old)
+        self.flush()
+        self.assertEqual(self.bar.snapshot()["waveform"]["state"], "running")
+        self.bar.mark("waveform", "done", current)
+        self.flush()
+        self.assertEqual(self.bar.snapshot()["waveform"]["state"], "done")
+
+        cancelled = self.bar.begin("waveform")
+        self.bar.mark("waveform", "idle", cancelled)
+        self.flush()
+        self.assertEqual(self.bar.snapshot()["waveform"]["state"], "idle")
+
+    def test_context_parameter_epoch_activation_and_destroy_fence_tokens(self) -> None:
+        original = ProgressContext(("COM1", 123, 4), 0x50, "button")
+        mismatches = (
+            ProgressContext(("COM2", 123, 4), 0x50, "button"),
+            ProgressContext(("COM1", 124, 4), 0x50, "button"),
+            ProgressContext(("COM1", 123, 5), 0x50, "button"),
+            ProgressContext(original.port_session, 0x51, "button"),
+            ProgressContext(original.port_session, 0x50, "full"),
+            ProgressContext(None, 0x50, "button"),
+        )
+        for mismatched in mismatches:
+            with self.subTest(context=mismatched):
+                self.context_value = original
+                self.bar.activate()
+                token = self.bar.begin("waveform")
+                self.context_value = mismatched
+                self.bar.mark("waveform", "done", token)
+                self.flush()
+                self.assertEqual(self.bar.snapshot()["waveform"]["state"], "idle")
+
+        self.context_value = original
+        self.bar.activate()
+        self.bar.update_params("waveform", {"shape": 1})
+        stale_params = self.bar.begin("waveform")
+        self.bar.update_params("waveform", {"shape": 2})
+        self.bar.mark("waveform", "done", stale_params)
+        self.flush()
+        self.assertEqual(self.bar.snapshot()["waveform"]["state"], "idle")
+
+        stale_operation = self.bar.begin("waveform")
+        self.bar.begin("waveform")
+        self.bar.mark("waveform", "done", stale_operation)
+        self.flush()
+        self.assertEqual(self.bar.snapshot()["waveform"]["state"], "running")
+
+        stale_epoch = self.bar.begin("waveform")
+        self.bar.reset_all()
+        self.bar.mark("waveform", "done", stale_epoch)
+        self.flush()
+        self.assertEqual(self.bar.snapshot()["waveform"]["state"], "idle")
+
+        stale_activation = self.bar.begin("waveform")
+        self.host.show_step_chrome(None)
+        self.bar.mark("waveform", "done", stale_activation)
+        self.flush()
+        self.assertEqual(self.bar.snapshot()["waveform"]["state"], "idle")
+
+        self.host.show_step_chrome(self.page)
+        destroyed_token = self.bar.begin("waveform")
+        self.page.destroy()
+        self.assertFalse(self.bar.accepts(destroyed_token))
+
+    def test_tooltip_translation_duplicate_primary_and_role_exclusion(self) -> None:
+        target = self.bar._metadata[1]
+        self.assertEqual(target["title_key"], "awp1221_button_wave_settings")
+        # The verify/reference duplicate at ordinal 2 is ignored in favor of
+        # the first ordinary primary module.
+        self.assertEqual(self.bar._metadata[2]["title_key"], "awp1221_button_adc_settings")
+        token = self.bar.begin("waveform")
+        self.bar.mark("waveform", "error", token, detail="write rejected")
+        self.flush()
+        tooltip = self.bar.tooltip_text("waveform")
+        self.assertIn("Step 2 of 4", tooltip)
+        self.assertIn("Completion condition:", tooltip)
+        self.assertIn("Failed", tooltip)
+        self.assertIn("write rejected", tooltip)
+
+        self.context.state.language = "zh"
+        self.page.refresh_language()
+        tooltip = self.bar.tooltip_text("waveform")
+        self.assertIn("完成条件：", tooltip)
+        self.assertIn("失败", tooltip)
+
+    def test_worker_result_is_delivered_through_the_ui_dispatcher(self) -> None:
+        dispatcher = UiDispatcher(self.root, interval_ms=10000).start()
+        self.addCleanup(dispatcher.close)
+        token = self.bar.begin("waveform")
+        worker = threading.Thread(target=lambda: self.bar.mark("waveform", "done", token))
+        worker.start()
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(self.bar.snapshot()["waveform"]["state"], "running")
+        self.assertEqual(dispatcher.pending(), 1)
+        dispatcher.drain()
+        self.assertEqual(self.bar.snapshot()["waveform"]["state"], "done")
+
+    def test_floating_group_is_viewport_pinned_and_panel_stays_inside_bounds(self) -> None:
+        self.root.update()
+        group = self.trapezoid.floating_group
+        canvas = self.area.canvas
+        self.assertIs(group.master, canvas)
+        self.assertEqual(group.winfo_manager(), "place")
+        first = (group.winfo_rootx(), group.winfo_rooty())
+        self.area.canvas.yview_scroll(10, "units")
+        self.root.update()
+        self.assertEqual((group.winfo_rootx(), group.winfo_rooty()), first)
+        self.assertGreater(self.area.scroll_region_extra, 16)
+
+        self.trapezoid.set_expanded(True, persist=False)
+        self.root.update()
+        outer = self.trapezoid._panel_outer
+        top = outer.winfo_rooty()
+        bottom = top + outer.winfo_height()
+        view_top = canvas.winfo_rooty()
+        view_bottom = view_top + canvas.winfo_height()
+        self.assertGreaterEqual(top, view_top)
+        self.assertLessEqual(bottom, view_bottom)
+        self.assertLess(
+            bottom,
+            self.bar._cells["waveform"].winfo_rooty(),
+            "the expanded panel must open above the progress cells",
+        )
+
+    def test_cell_navigation_scrolls_owning_canvas_without_changing_horizontal_view(self) -> None:
+        page = BasePage(self.root, self.context)
+        page.pack(fill="both", expand=True)
+        page.columnconfigure(0, weight=1)
+        page.rowconfigure(0, weight=1)
+        area, content = page.make_vertical_scroll_area(page)
+        area.grid(row=0, column=0, sticky="nsew")
+        content.columnconfigure(0, weight=1)
+        for row in range(28):
+            ttk.Label(content, text=f"filler {row}").grid(row=row, column=0, sticky="w", pady=8)
+        section, _body = page.make_module_section(
+            content,
+            "awp1221_control_buttons",
+            step=1,
+            step_total=1,
+            help_key="awp1221_help_switches",
+            row=30,
+            column=0,
+            sticky="ew",
+        )
+        bar = page.mount_step_progress(
+            host=self.host,
+            steps=(StepSpec("target", 1, "step_done_1221_detection"),),
+            context=lambda: self.context_value,
+        )
+        self.host.show_step_chrome(page)
+        self.root.update()
+        self.assertGreater(section.winfo_rooty(), area.canvas.winfo_rooty())
+        before_x = area.canvas.xview()
+        bar.scroll_to_step("target")
+        self.root.update()
+        self.assertGreater(area.canvas.yview()[0], 0.0)
+        self.assertEqual(area.canvas.xview(), before_x)
+        page.destroy()
+
+    def test_trapezoid_only_host_has_no_automatic_progress_bar(self) -> None:
+        self.assertEqual(len(self.host._step_progress_bars), 1)
+        other = BasePage(self.root, self.context)
+        other.pack()
+        trap = other.mount_trapezoid(self._build_actions, self._build_registers, state_key="full_only")
+        self.root.update()
+        self.assertIsNotNone(trap)
+        self.assertEqual(other._step_progress_bars, [])
+        self.assertFalse(any(isinstance(child, ttk.Button) for child in trap.progress_slot.winfo_children()))
+        other.destroy()
+
+
+if __name__ == "__main__":
+    unittest.main()

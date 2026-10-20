@@ -6,7 +6,7 @@ import tkinter as tk
 import threading
 import webbrowser
 from tkinter import filedialog, font as tkfont, messagebox, ttk
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from config.app_info import CHIP_WEBSITE_URLS
 from config.languages import t
@@ -15,6 +15,9 @@ from core import animation as anim
 from styles.fonts import sidebar_brand_font_spec, page_title_weight
 from styles.theme import get_colors
 from app.viewport_presentation import ViewportCanvas
+
+if TYPE_CHECKING:
+    from pages.step_progress import ProgressContext, StepProgressBar, StepSpec, Trapezoid
 
 
 def fit_toplevel_to_screen(
@@ -1382,6 +1385,16 @@ class BasePage(ttk.Frame):
         self._serial_selectors: list[dict[str, Any]] = []
         self._module_title_bindings: list[dict[str, Any]] = []
         self._module_help_controls: list[PinnedModuleHelp] = []
+        # Metadata is inert until a chip page explicitly mounts shared step
+        # chrome.  Keeping it here lets both title construction paths feed the
+        # same navigation map without changing existing page layouts.
+        self._module_step_metadata: list[dict[str, Any]] = []
+        self.step_progress: Any = None
+        self.trapezoid: Any = None
+        self._step_progress_bars: list[Any] = []
+        self._active_step_page: Any = None
+        self._floating_group: ttk.Frame | None = None
+        self._pending_module_step_target: tk.Misc | None = None
 
     @property
     def language(self) -> str:
@@ -1442,6 +1455,17 @@ class BasePage(ttk.Frame):
             "role": role,
         })
         self._refresh_module_title(self._module_title_bindings[-1])
+        if step is not None:
+            metadata_target = self._pending_module_step_target
+            self._module_step_metadata.append({
+                "page": self,
+                "ordinal": int(step),
+                "step_total": step_total,
+                "title_key": title_key,
+                "help_key": help_key,
+                "role": role,
+                "target": metadata_target if metadata_target is not None else title_row,
+            })
 
         help_slot = ttk.Frame(title_row, style="ModuleTitleRow.TFrame", width=26, height=24)
         help_slot.grid(row=0, column=1, sticky="e", padx=(8, 0))
@@ -1539,14 +1563,18 @@ class BasePage(ttk.Frame):
         section.grid(**grid_options)
         section.columnconfigure(0, weight=1)
         section.rowconfigure(1, weight=1)
-        title_row, title_label = self.make_module_title_row(
-            section,
-            title_key,
-            step=step,
-            step_total=step_total,
-            role=role,
-            help_key=help_key,
-        )
+        self._pending_module_step_target = section
+        try:
+            title_row, title_label = self.make_module_title_row(
+                section,
+                title_key,
+                step=step,
+                step_total=step_total,
+                role=role,
+                help_key=help_key,
+            )
+        finally:
+            self._pending_module_step_target = None
         title_row.grid_configure(sticky="ew")
 
         body = ttk.Frame(section, style="Panel.TFrame")
@@ -1589,6 +1617,14 @@ class BasePage(ttk.Frame):
                 continue
         self._module_help_controls = live_help_controls
         self._refresh_serial_selectors()
+        progress = getattr(self, "step_progress", None)
+        if progress is not None:
+            progress.refresh_language()
+        for bar in list(self._step_progress_bars):
+            bar.refresh_language()
+        trapezoid = getattr(self, "trapezoid", None)
+        if trapezoid is not None:
+            trapezoid.refresh_language()
         self._sync_mode_headers()
         self._queue_header_layout()
         try:
@@ -1627,6 +1663,14 @@ class BasePage(ttk.Frame):
         self._refresh_serial_log_theme()
         for area in self._vertical_scroll_areas:
             area.refresh_theme()
+        progress = getattr(self, "step_progress", None)
+        if progress is not None:
+            progress.refresh_theme()
+        for bar in list(self._step_progress_bars):
+            bar.refresh_theme()
+        trapezoid = getattr(self, "trapezoid", None)
+        if trapezoid is not None:
+            trapezoid.refresh_theme()
 
     def _refresh_canvas_titles(self) -> None:
         live: list[CanvasTitle] = []
@@ -1707,6 +1751,125 @@ class BasePage(ttk.Frame):
         binder = getattr(self.ctx.serial, "set_page_port", None)
         if callable(binder):
             binder(control["page_name"], port)
+
+    def _progress_viewport_canvas(self) -> tk.Misc:
+        """Choose this host's viewport, never its scrolling content window."""
+        live_areas = []
+        mapped_areas = []
+        for area in self._vertical_scroll_areas:
+            try:
+                if int(area.winfo_exists()):
+                    live_areas.append(area)
+                    if int(area.winfo_ismapped()):
+                        mapped_areas.append(area)
+            except tk.TclError:
+                continue
+        candidates = mapped_areas or live_areas
+        if candidates:
+            def viewport_area_size(area: VerticalScrollArea) -> int:
+                try:
+                    width = max(int(area.canvas.winfo_width()), int(area.canvas.winfo_reqwidth()))
+                    height = max(int(area.canvas.winfo_height()), int(area.canvas.winfo_reqheight()))
+                    return width * height
+                except tk.TclError:
+                    return 0
+            return max(candidates, key=viewport_area_size).canvas
+        parent: tk.Misc | None = getattr(self, "master", None)
+        while parent is not None:
+            if isinstance(parent, tk.Canvas):
+                return parent
+            parent = getattr(parent, "master", None)
+        return self
+
+    def mount_trapezoid(
+        self,
+        build_state_actions: Callable[[ttk.Frame], Any],
+        build_register_bar: Callable[[Any], Any],
+        *,
+        state_key: str,
+        build_extra: Callable[[ttk.Frame], Any] | None = None,
+    ) -> Trapezoid:
+        """Mount the optional viewport-pinned advanced tools panel once."""
+        if self.trapezoid is not None:
+            return self.trapezoid
+        from pages.step_progress import Trapezoid
+
+        viewport = self._progress_viewport_canvas()
+        floating = ttk.Frame(viewport, style="Panel.TFrame", padding=(8, 0, 8, 0))
+        floating.columnconfigure(0, weight=1)
+        self._floating_group = floating
+        self.trapezoid = Trapezoid(
+            self,
+            viewport,
+            floating,
+            build_state_actions=build_state_actions,
+            build_register_bar=build_register_bar,
+            state_key=state_key,
+            build_extra=build_extra,
+        )
+        try:
+            self.trapezoid._viewport_bind_id = viewport.bind(
+                "<Configure>", self.trapezoid._on_viewport_configure, add="+",
+            )
+        except tk.TclError:
+            pass
+        self.trapezoid._queue_layout()
+        return self.trapezoid
+
+    def mount_step_progress(
+        self,
+        *,
+        host: Any,
+        steps: Sequence[StepSpec],
+        context: Callable[[], ProgressContext],
+    ) -> StepProgressBar:
+        """Create this page's progress state and bind its stable step keys."""
+        if self.step_progress is not None:
+            return self.step_progress
+        if getattr(host, "trapezoid", None) is None:
+            raise RuntimeError("mount_trapezoid must be called on the chip host first")
+        from pages.step_progress import StepProgressBar
+
+        bar = StepProgressBar(self, host, host.trapezoid.progress_slot, steps, context)
+        bar.grid(row=0, column=0, sticky="ew")
+        bar.grid_remove()
+        self.step_progress = bar
+        host._step_progress_bars.append(bar)
+        host.trapezoid._reserve_scroll_clearance(extra_height=int(bar.winfo_reqheight()))
+        return bar
+
+    def show_step_chrome(self, page_or_none: Any) -> None:
+        """Select a page's bar; passing None preserves the shared trapezoid."""
+        previous_page = self._active_step_page
+        previous_bar = getattr(previous_page, "step_progress", None) if previous_page is not None else None
+        if previous_bar is not None:
+            previous_bar.deactivate()
+            previous_bar.grid_remove()
+        self._active_step_page = None
+        if page_or_none is None:
+            if self.trapezoid is not None:
+                self.trapezoid._reserve_scroll_clearance()
+            return
+        bar = getattr(page_or_none, "step_progress", None)
+        if bar is None or getattr(bar, "host", None) is not self:
+            return
+        self._active_step_page = page_or_none
+        bar.grid()
+        bar.activate()
+        try:
+            self.update_idletasks()
+        except tk.TclError:
+            pass
+        self.trapezoid._reserve_scroll_clearance()
+        self.trapezoid._on_viewport_configure()
+
+    def _forget_step_progress(self, bar: Any) -> None:
+        try:
+            self._step_progress_bars.remove(bar)
+        except ValueError:
+            pass
+        if getattr(self._active_step_page, "step_progress", None) is bar:
+            self._active_step_page = None
 
     def enable_pinned_footer_layout(self) -> None:
         self.pin_window_footer = True
@@ -2405,6 +2568,23 @@ class BasePage(ttk.Frame):
         if self._serial_log_clear_listener is not None:
             self.ctx.serial.remove_log_clear_listener(self._serial_log_clear_listener)
             self._serial_log_clear_listener = None
+        progress = getattr(self, "step_progress", None)
+        if progress is not None:
+            try:
+                progress.destroy()
+            except tk.TclError:
+                pass
+            self.step_progress = None
+        for bar in list(self._step_progress_bars):
+            try:
+                bar.destroy()
+            except tk.TclError:
+                pass
+        self._step_progress_bars.clear()
+        trapezoid = getattr(self, "trapezoid", None)
+        if trapezoid is not None:
+            trapezoid.destroy()
+            self.trapezoid = None
         super().destroy()
 
     def _refresh_serial_log_theme(self) -> None:

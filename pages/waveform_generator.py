@@ -151,6 +151,7 @@ class WaveformGeneratorPage(BasePage):
         self._chip_voltages: list[float | None] = []
         self._chip_values_cache: list[int | None] | None = None
         self._waveform_write_busy = False
+        self._waveform_write_observer: tuple[Any, Any] | None = None
 
         self._labels: dict[str, ttk.Label] = {}
         self._field_widgets: dict[str, list[tk.Widget]] = {}
@@ -1291,6 +1292,43 @@ class WaveformGeneratorPage(BasePage):
         self._preview_imported_waveform = True
         self._write_current_waveform(use_imported=True)
 
+    def set_write_observer(self, token_factory: Any, on_result: Any) -> None:
+        """Observe connected write outcomes without changing waveform I/O.
+
+        ``token_factory()`` runs on the UI thread before connected work starts.
+        ``on_result`` is called as ``(token, outcome, device_addr, slice)`` on
+        completion.  The token is opaque to this component and is carried
+        independently from the hardware write data.
+        """
+        self._waveform_write_observer = (token_factory, on_result) if callable(token_factory) and callable(on_result) else None
+
+    def _capture_write_observation(self, device_addr: int, slice_index: int) -> tuple[Any, Any] | None:
+        observer = self._waveform_write_observer
+        if observer is None:
+            return None
+        token_factory, on_result = observer
+        try:
+            return on_result, token_factory()
+        except Exception:
+            # Instrumentation must never prevent a pre-existing hardware write.
+            return None
+
+    @staticmethod
+    def _report_write_observation(
+        observation: tuple[Any, Any] | None,
+        outcome: str,
+        device_addr: int,
+        slice_index: int,
+    ) -> None:
+        if observation is None:
+            return
+        callback, token = observation
+        try:
+            callback(token, outcome, int(device_addr), int(slice_index))
+        except Exception:
+            # An observer is informational and cannot alter UI/storage results.
+            pass
+
     def _write_current_waveform(self, *, use_imported: bool) -> None:
         if self._waveform_write_busy:
             return
@@ -1320,9 +1358,10 @@ class WaveformGeneratorPage(BasePage):
         if self.ctx.serial.is_connected:
             self._set_waveform_write_busy(True)
             dev = self.ctx.state.awp192x_device_addr
+            observation = self._capture_write_observation(dev, slice_index)
             threading.Thread(
                 target=self._prepare_waveform_write_worker,
-                args=(write_data, dev),
+                args=(write_data, dev, observation),
                 daemon=True,
             ).start()
             return
@@ -1374,6 +1413,7 @@ class WaveformGeneratorPage(BasePage):
             Awp192xWaveformRecipe | Awp192xSineWaveformRecipe | None,
         ],
         dev: int,
+        observation: tuple[Any, Any] | None = None,
     ) -> None:
         analyzed: list[tuple[int, int, int]] | None = None
         try:
@@ -1388,7 +1428,7 @@ class WaveformGeneratorPage(BasePage):
             analyzed = None
 
         try:
-            self.after(0, self._handle_waveform_write_ready, write_data, dev, analyzed)
+            self.after(0, self._handle_waveform_write_ready, write_data, dev, analyzed, observation)
         except tk.TclError:
             pass
 
@@ -1405,6 +1445,7 @@ class WaveformGeneratorPage(BasePage):
         ],
         dev: int,
         analyzed: list[tuple[int, int, int]] | None,
+        observation: tuple[Any, Any] | None = None,
     ) -> None:
         values, voltages, slice_index, start_addr, end_addr, waveform_type, _recipe = write_data
 
@@ -1420,16 +1461,18 @@ class WaveformGeneratorPage(BasePage):
             )
             if not ok:
                 self._set_waveform_write_busy(False)
+                self._report_write_observation(observation, "cancelled", dev, slice_index)
                 return
 
         if not self.ctx.serial.is_connected:
             self._set_waveform_write_busy(False)
             messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
+            self._report_write_observation(observation, "cancelled", dev, slice_index)
             return
 
         threading.Thread(
             target=self._write_waveform_worker,
-            args=(write_data, dev),
+            args=(write_data, dev, observation),
             daemon=True,
         ).start()
 
@@ -1445,11 +1488,12 @@ class WaveformGeneratorPage(BasePage):
             Awp192xWaveformRecipe | Awp192xSineWaveformRecipe | None,
         ],
         dev: int,
+        observation: tuple[Any, Any] | None = None,
     ) -> None:
         values, _voltages, slice_index, start_addr, end_addr, _waveform_type, _recipe = write_data
         error = self._write_waveform_to_device(dev, values, slice_index, start_addr, end_addr)
         try:
-            self.after(0, self._finish_waveform_write, write_data, dev, error)
+            self.after(0, self._finish_waveform_write, write_data, dev, error, observation)
         except tk.TclError:
             pass
 
@@ -1567,11 +1611,14 @@ class WaveformGeneratorPage(BasePage):
         ],
         dev: int,
         error: str | None,
+        observation: tuple[Any, Any] | None = None,
     ) -> None:
         self._set_waveform_write_busy(False)
         values, voltages, slice_index, start_addr, end_addr, waveform_type, power_on_recipe = write_data
 
         if error:
+            outcome = "cancelled" if not self.ctx.serial.is_connected else "error"
+            self._report_write_observation(observation, outcome, dev, slice_index)
             messagebox.showerror(self.tr("error"), error)
             return
 
@@ -1595,6 +1642,7 @@ class WaveformGeneratorPage(BasePage):
         self._sync_read_slices_text()
         self._notify_metrics_changed()
         self._preview_waveform()
+        self._report_write_observation(observation, "done", dev, slice_index)
         messagebox.showinfo(self.tr("info"), self.tr("write_success"))
 
     def _set_waveform_write_busy(self, busy: bool) -> None:

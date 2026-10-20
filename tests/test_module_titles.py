@@ -119,6 +119,44 @@ class ModuleTitleTests(unittest.TestCase):
         self.page.refresh_language()
         self.assertEqual(title.cget("text"), "第3步验证 · ADC 图例")
 
+    def test_step_metadata_comes_from_both_title_entry_points_without_duplicates(self) -> None:
+        colors = apply_theme(self.root, "light", 10, 1.0)
+        context = SimpleNamespace(
+            colors=colors,
+            state=SimpleNamespace(language="en", theme="light"),
+        )
+        self.page = BasePage(self.root, context)
+        self.page.pack(fill="both", expand=True)
+
+        direct, _label = self.page.make_module_title_row(
+            self.page,
+            "awp1221_chip_en_title",
+            step=1,
+            step_total=4,
+            help_key="awp1221_help_chip_en",
+        )
+        section, _body = self.page.make_module_section(
+            self.page,
+            "awp1221_button_wave_settings",
+            row=1,
+            column=0,
+            step=2,
+            step_total=4,
+            help_key="awp1221_help_waveform",
+        )
+        self.page.make_module_title_row(
+            self.page,
+            "awp1221_adc_diagram",
+            step=1,
+            step_total=4,
+            role="reference",
+        )
+
+        self.assertEqual(len(self.page._module_step_metadata), 3)
+        self.assertIs(self.page._module_step_metadata[0]["target"], direct)
+        self.assertIs(self.page._module_step_metadata[1]["target"], section)
+        self.assertEqual(self.page._module_step_metadata[1]["ordinal"], 2)
+
     def test_module_help_hover_pin_escape_and_destroy(self) -> None:
         colors = apply_theme(self.root, "light", 10, 1.0)
         context = SimpleNamespace(

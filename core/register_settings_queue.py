@@ -16,6 +16,7 @@ class RegisterSetting:
     value: int
     clear_mask: int | None
     valid: Callable[[], bool]
+    on_result: Callable[[str], Any] | None = None
 
 
 class RegisterSettingsQueue:
@@ -41,19 +42,31 @@ class RegisterSettingsQueue:
         return self._closed.is_set()
 
     def submit(self, key, setting: RegisterSetting) -> bool:
+        displaced: RegisterSetting | None = None
+        accepted = False
         with self._lock:
             if self.closed:
-                return False
-            if key in self._pending:
+                outcome = "rejected"
+            elif key in self._pending:
+                displaced = self._pending[key]
                 self.coalesced += 1
+                outcome = "coalesced"
             elif len(self._pending) >= self.capacity:
-                return False
-            self._pending[key] = setting
-            self._idle.clear()
-            if self._thread is None:
-                self._thread = threading.Thread(target=self._run, name="register-settings", daemon=True)
-                self._thread.start()
-            return True
+                outcome = "rejected"
+            else:
+                outcome = ""
+            if not outcome or outcome == "coalesced":
+                self._pending[key] = setting
+                accepted = True
+                self._idle.clear()
+                if self._thread is None:
+                    self._thread = threading.Thread(target=self._run, name="register-settings", daemon=True)
+                    self._thread.start()
+        if displaced is not None:
+            self._notify(displaced, "coalesced")
+        if outcome == "rejected":
+            self._notify(setting, "rejected")
+        return accepted
 
     def busy_for(self, manager: Any, address: int) -> bool:
         """Non-blocking gate for legacy actions that must follow mode setup."""
@@ -74,12 +87,16 @@ class RegisterSettingsQueue:
 
     def close(self) -> None:
         """Cancel pending settings without joining a potentially slow command."""
+        cancelled: list[RegisterSetting] = []
         with self._lock:
             self._closed.set()
             self.cancelled += len(self._pending)
+            cancelled = list(self._pending.values())
             self._pending.clear()
             if self._thread is None:
                 self._idle.set()
+        for setting in cancelled:
+            self._notify(setting, "cancelled")
 
     def wait_idle(self, timeout: float) -> bool:
         """Test/diagnostic synchronization; never called by the Tk UI."""
@@ -105,6 +122,18 @@ class RegisterSettingsQueue:
             with self._lock:
                 setattr(self, outcome, getattr(self, outcome)+1)
                 self._active = None
+            self._notify(setting, outcome)
+
+    @staticmethod
+    def _notify(setting: RegisterSetting, outcome: str) -> None:
+        callback = setting.on_result
+        if callback is None:
+            return
+        try:
+            callback(outcome)
+        except Exception:
+            # Observers cannot change queue progress or transport execution.
+            pass
 
     def _execute(self, setting: RegisterSetting) -> str:
         def current():
