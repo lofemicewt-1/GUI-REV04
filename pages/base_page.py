@@ -1152,6 +1152,85 @@ class BasePage(ttk.Frame):
         except Exception:
             pass
 
+    def make_module_title_row(
+        self,
+        parent: tk.Misc,
+        title_key: str,
+        *,
+        row: int = 0,
+        column: int = 0,
+        columnspan: int = 1,
+        sticky: str = "ew",
+        padx: Any = 0,
+        pady: Any = 0,
+    ) -> tuple[ttk.Frame, ttk.Label]:
+        """Create a consistent module heading with a reserved future help slot."""
+        title_row = ttk.Frame(parent, style="ModuleTitleRow.TFrame")
+        title_row.grid(
+            row=row,
+            column=column,
+            columnspan=columnspan,
+            sticky=sticky,
+            padx=padx,
+            pady=pady,
+        )
+        title_row.columnconfigure(0, weight=1)
+
+        title = ttk.Label(title_row, style="ModuleTitle.TLabel", anchor="w", justify="left")
+        title.grid(row=0, column=0, sticky="ew")
+        self.bind_text(title, title_key)
+
+        help_slot = ttk.Frame(title_row, style="ModuleTitleRow.TFrame", width=26, height=24)
+        help_slot.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        help_slot.grid_propagate(False)
+        title_row._module_help_slot = help_slot
+        title_row._module_title_label = title
+
+        def fit_title(event: tk.Event) -> None:
+            available = max(1, int(event.width) - int(help_slot.winfo_reqwidth()) - 8)
+            try:
+                if int(title.cget("wraplength")) != available:
+                    title.configure(wraplength=available)
+            except (tk.TclError, TypeError, ValueError):
+                pass
+
+        title_row.bind("<Configure>", fit_title, add="+")
+        return title_row, title
+
+    def make_module_section(
+        self,
+        parent: tk.Misc,
+        title_key: str,
+        *,
+        padding: int | tuple[int, ...] = 10,
+        title_gap: int = 6,
+        register_spacing: bool = False,
+        spacing_before: bool = False,
+        spacing_after: bool = True,
+        **grid_options: Any,
+    ) -> tuple[ttk.Frame, ttk.Frame]:
+        """Build a bordered module with an independent title row and content area."""
+        section = ttk.Frame(parent, style="Module.TFrame", padding=padding)
+        section.grid(**grid_options)
+        section.columnconfigure(0, weight=1)
+        section.rowconfigure(1, weight=1)
+        title_row, title_label = self.make_module_title_row(section, title_key)
+        title_row.grid_configure(sticky="ew")
+
+        body = ttk.Frame(section, style="Panel.TFrame")
+        body.grid(row=1, column=0, sticky="nsew", pady=(title_gap, 0))
+        section._module_title_row = title_row
+        section._module_title_label = title_label
+        section._module_help_slot = getattr(title_row, "_module_help_slot", None)
+        section._module_body = body
+        if register_spacing:
+            self._register_module_spacing_widget(
+                section,
+                before=spacing_before,
+                after=spacing_after,
+            )
+        return section, body
+
     def refresh_language(self) -> None:
         for widget, key in self._text_widgets:
             try:
@@ -1803,9 +1882,7 @@ class BasePage(ttk.Frame):
         toolbar = WrappingGroupBar(frame)
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         title_group = toolbar.add_group()
-        title = ttk.Label(title_group, style="SectionTitle.TLabel")
-        title.grid(row=0, column=0, sticky="w")
-        self.bind_text(title, "serial_log")
+        _title_row, _title = self.make_module_title_row(title_group, "serial_log")
 
         clear_group = toolbar.add_group()
         clear_btn = ttk.Button(clear_group, style="Secondary.TButton", command=self.clear_serial_log)

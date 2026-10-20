@@ -3037,8 +3037,13 @@ class AWP1018NormalModePage(BasePage):
             self.rom_frequency_var.set(self.tr("awp1018_diff_frequency", period=f"{period_us:.0f}", frequency=f"{frequency_hz:.3f}"))
 
     def _add_section_title(self, parent: tk.Misc, row: int, key: str) -> int:
-        label = ttk.Label(parent, style="SectionTitle.TLabel")
-        label.grid(row=row, column=0, columnspan=4, sticky="w", pady=(12 if row else 0, 4))
+        _title_row, label = self.make_module_title_row(
+            parent,
+            key,
+            row=row,
+            columnspan=4,
+            pady=(12 if row else 0, 4),
+        )
         self._labels[key] = label
         return row + 1
 
@@ -5308,6 +5313,9 @@ class AWP1018NormalModePage(BasePage):
     def _restore_scaled_fonts(self) -> None:
         root = self.winfo_toplevel()
         body = int(getattr(root, "_piezo_body_font_size", 12))
+        module_title = int(
+            getattr(root, "_piezo_module_title_font_size", max(body + 1, int(round(body * 1.15))))
+        )
         prominent = int(getattr(root, "_piezo_prominent_title_font_size", body + 9))
         title = int(getattr(root, "_piezo_title_font_size", body + 8))
         mono = int(getattr(root, "_piezo_mono_font_size", 9))
@@ -5338,6 +5346,8 @@ class AWP1018NormalModePage(BasePage):
                 font = (family, title, weight)
             elif style == "PanelTitle.TLabel":
                 font = (family, title, "bold")
+            elif style == "ModuleTitle.TLabel":
+                font = (family, module_title, "bold")
             elif style == "SectionTitle.TLabel":
                 font = (family, body, "bold")
             elif style == "SidebarTitle.TLabel":

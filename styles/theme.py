@@ -812,6 +812,7 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
     scale = max(0.75, min(1.35, window_scale))
     base_font_size = max(8, min(18, int(font_size)))
     body_size = max(8, min(24, _scaled(base_font_size, scale)))
+    module_title_size = max(body_size + 1, int(round(body_size * 1.15)))
     title_size = max(14, min(34, _scaled(base_font_size + 8, scale)))
     prominent_size = min(36, title_size + 3)
     chip_title_size = min(40, max(prominent_size + 6, _scaled(base_font_size + 16, scale)))
@@ -832,6 +833,7 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
 
     setattr(root, "_piezo_font_family", "Microsoft YaHei UI")
     setattr(root, "_piezo_body_font_size", body_size)
+    setattr(root, "_piezo_module_title_font_size", module_title_size)
     setattr(root, "_piezo_title_font_size", title_size)
     setattr(root, "_piezo_prominent_title_font_size", prominent_size)
     setattr(root, "_piezo_chip_title_font_size", chip_title_size)
@@ -869,6 +871,21 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
         background=colors["panel"],
         relief="flat",
         borderwidth=1,
+    )
+
+    style.configure(
+        "Module.TFrame",
+        background=colors["panel"],
+        relief="solid",
+        borderwidth=1,
+        bordercolor=colors["border"],
+        lightcolor=colors["border"],
+        darkcolor=colors["border"],
+    )
+
+    style.configure(
+        "ModuleTitleRow.TFrame",
+        background=colors["panel"],
     )
 
     style.configure(
@@ -948,6 +965,13 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
         background=colors["panel"],
         foreground=colors["text"],
         font=("Microsoft YaHei UI", body_size, "bold"),
+    )
+
+    style.configure(
+        "ModuleTitle.TLabel",
+        background=colors["panel"],
+        foreground=colors["text"],
+        font=("Microsoft YaHei UI", module_title_size, "bold"),
     )
 
     style.configure(

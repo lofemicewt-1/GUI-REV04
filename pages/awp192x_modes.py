@@ -3416,8 +3416,13 @@ class FullModePage(ButtonModePage):
         self._on_endless_play_changed()
 
     def _add_section_title(self, parent: tk.Misc, row: int, key: str) -> int:
-        label = ttk.Label(parent, style="SectionTitle.TLabel")
-        label.grid(row=row, column=0, columnspan=6, sticky="w", pady=(10 if row else 0, 4))
+        _title_row, label = self.make_module_title_row(
+            parent,
+            key,
+            row=row,
+            columnspan=6,
+            pady=(10 if row else 0, 4),
+        )
         self._labels[key] = label
         return row + 1
 

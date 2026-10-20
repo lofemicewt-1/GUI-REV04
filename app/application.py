@@ -4207,13 +4207,16 @@ class PiezoApplication:
 
     def _refresh_widget_fonts(self, start: tk.Misc | None = None) -> None:
         body_size = int(getattr(self.root, "_piezo_body_font_size", self.state.font_size))
+        module_title_size = int(
+            getattr(self.root, "_piezo_module_title_font_size", max(body_size + 1, int(round(body_size * 1.15))))
+        )
         title_size = int(getattr(self.root, "_piezo_title_font_size", self.state.font_size + 8))
         small_size = max(7, body_size - 1)
         mono_size = int(getattr(self.root, "_piezo_mono_font_size", 9))
         prominent_size = int(getattr(self.root, "_piezo_prominent_title_font_size", title_size + 1))
         sidebar_title_size = int(getattr(self.root, "_piezo_sidebar_title_font_size", title_size))
         title_weight = page_title_weight(self.root)
-        size_gen = (body_size, title_size, small_size, mono_size, prominent_size, sidebar_title_size)
+        size_gen = (body_size, module_title_size, title_size, small_size, mono_size, prominent_size, sidebar_title_size)
         generation = (size_gen, title_weight)
 
         flags_cache: dict[tuple[str, ...], tuple[bool, bool]] = {}
@@ -4258,6 +4261,9 @@ class PiezoApplication:
                 if style_name == "PanelTitle.TLabel":
                     _, underline = current_font_flags(parts, spec)
                     return ("Microsoft YaHei UI", title_size, "bold", *(() if not underline else ("underline",)))
+                if style_name == "ModuleTitle.TLabel":
+                    _, underline = current_font_flags(parts, spec)
+                    return ("Microsoft YaHei UI", module_title_size, "bold", *(() if not underline else ("underline",)))
                 if style_name == "SectionTitle.TLabel":
                     _, underline = current_font_flags(parts, spec)
                     return ("Microsoft YaHei UI", body_size, "bold", *(() if not underline else ("underline",)))

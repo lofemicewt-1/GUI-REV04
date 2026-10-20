@@ -354,9 +354,9 @@ class ButtonModeView:
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
-        waveform = ttk.LabelFrame(body, text=self.tr("awp1221_button_wave_settings"), padding=8)
-        waveform.grid(row=0, column=0, sticky="ew")
-        self.bind_text(waveform, "awp1221_button_wave_settings")
+        waveform_section, waveform = self.make_module_section(
+            body, "awp1221_button_wave_settings", row=0, column=0, sticky="ew", padding=8
+        )
         yield
         waveform.columnconfigure(0, weight=1)
         yield
@@ -371,9 +371,9 @@ class ButtonModeView:
         yield
         middle.columnconfigure(0, weight=2, uniform="adc_sections")
         middle.columnconfigure(1, weight=3, uniform="adc_sections")
-        diagram = ttk.LabelFrame(middle, padding=8)
-        diagram.grid(row=0, column=0, sticky="nsew", padx=(0,10))
-        self.bind_text(diagram, "awp1221_adc_diagram")
+        diagram_section, diagram = self.make_module_section(
+            middle, "awp1221_adc_diagram", row=0, column=0, sticky="nsew", padx=(0, 10), padding=8
+        )
         diagram.columnconfigure(0, weight=1)
         yield
         diagram.rowconfigure(1, weight=1)
@@ -391,9 +391,9 @@ class ButtonModeView:
         self.adc_diagram = tk.Canvas(diagram, height=200, width=280, highlightthickness=0)
         self.adc_diagram.grid(row=1, column=0, sticky="nsew")
         self.adc_diagram.bind("<Configure>", lambda _: self._draw_button_adc_diagram())
-        params = ttk.LabelFrame(middle, padding=8)
-        params.grid(row=0, column=1, sticky="nsew")
-        self.bind_text(params, "awp1221_button_adc_settings")
+        params_section, params = self.make_module_section(
+            middle, "awp1221_button_adc_settings", row=0, column=1, sticky="nsew", padding=8
+        )
         yield
         for col in range(4):
             params.columnconfigure(col, weight=1)
@@ -431,18 +431,18 @@ class ButtonModeView:
         lower.columnconfigure(1, weight=3)
         lower.columnconfigure(2, weight=2)
         yield
-        status = ttk.LabelFrame(lower, padding=8)
-        status.grid(row=0, column=0, sticky="nsew", padx=(0,10))
-        self.bind_text(status, "sense_status_title")
+        status_section, status = self.make_module_section(
+            lower, "sense_status_title", row=0, column=0, sticky="nsew", padx=(0, 10), padding=8
+        )
         self._sense_status_block = tk.Frame(status, width=72, height=28, bg=self.STATUS_IDLE_COLOR)
         self._sense_status_block.grid(row=0, column=0, pady=10)
         status_hint = ttk.Label(status, style="Muted.TLabel", wraplength=110)
         yield
         status_hint.grid(row=1, column=0)
         self.bind_text(status_hint, "sense_status_hint")
-        readings = ttk.LabelFrame(lower, padding=8)
-        readings.grid(row=0, column=1, sticky="nsew", padx=(0,10))
-        self.bind_text(readings, "awp1221_adc_readings")
+        readings_section, readings = self.make_module_section(
+            lower, "awp1221_adc_readings", row=0, column=1, sticky="nsew", padx=(0, 10), padding=8
+        )
         readings.columnconfigure(0, weight=1)
         yield
         top = ttk.Frame(readings, style="Panel.TFrame")
@@ -474,9 +474,9 @@ class ButtonModeView:
             button.grid(row=0, column=i, sticky="ew", padx=(0,4))
             self._buttons[key] = button
         yield
-        switches = ttk.LabelFrame(lower, padding=8)
-        switches.grid(row=0, column=2, sticky="nsew")
-        self.bind_text(switches, "awp1221_control_buttons")
+        switches_section, switches = self.make_module_section(
+            lower, "awp1221_control_buttons", row=0, column=2, sticky="nsew", padding=8
+        )
         for col in range(2):
             switches.columnconfigure(col, weight=1)
         for i, (key, command) in enumerate((("start_detection", self.start_detection), ("stop_detection", self.stop_detection),

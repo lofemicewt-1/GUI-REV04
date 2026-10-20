@@ -13,7 +13,8 @@ class ContentSurfaceTests(unittest.TestCase):
                     style=ttk.Style(root)
                     for role in ('panel','canvas_bg'):
                         self.assertEqual(colors[role],colors['bg'])
-                    for name in ('App.TFrame','Panel.TFrame','TLabelframe','Panel.TLabel','Muted.TLabel','SectionTitle.TLabel'):
+                    for name in ('App.TFrame','Panel.TFrame','Module.TFrame','ModuleTitleRow.TFrame',
+                                 'TLabelframe','Panel.TLabel','Muted.TLabel','SectionTitle.TLabel','ModuleTitle.TLabel'):
                         self.assertEqual(style.lookup(name,'background'),colors['bg'],name)
                     if theme == 'light':
                         for role in ('bg', 'panel', 'panel_alt', 'canvas_bg', 'field'):
