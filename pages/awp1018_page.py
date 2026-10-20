@@ -52,6 +52,7 @@ from pages.base_page import (
     BasePage,
     SimpleTooltip,
     VerticalScrollArea,
+    WrappingGroupBar,
     attach_glossary_tooltips,
     fit_toplevel_to_screen,
 )
@@ -60,6 +61,7 @@ from pages.chip_settings_model import ChipSettingsStore
 from pages.preset_toolbar import PresetToolbar
 from pages.waveform_preview import PreviewSegment, compact_preview, draw_omissions
 from pages.gpio_controls import GpioControlGroup, GpioControlPanel, active_serial_identity
+from pages.step_progress import ProgressContext, StepSpec
 from styles.fonts import page_title_weight
 
 
@@ -119,22 +121,17 @@ class AWP1018Page(BasePage):
         self.mode_container.rowconfigure(0, weight=1)
         self.mode_container.columnconfigure(0, weight=1)
 
-        self.footer_scroll, footer_content = self.make_vertical_scroll_area(
-            self, horizontal=False, reserve_vertical_gutter=True
+        self.mount_trapezoid(
+            self._build_state_actions,
+            self._build_register_bar,
+            state_key="awp1018",
         )
-        self.footer_scroll.grid(row=2, column=0, sticky="ew", pady=(12, 0))
-        footer_content.columnconfigure(0, weight=1)
-        yield
-        footer, actions, reg_panel, identity = self.make_merged_footer(footer_content)
-        footer.grid(row=0, column=0, sticky="ew")
-        self._footer_panel = footer
-        self._footer_fit_job = None
-        footer.bind("<Configure>", self._queue_footer_fit)
-        self.bind("<Configure>", self._queue_footer_fit, add="+")
-        yield
-        yield from self._build_state_actions_steps(actions)
-        reg_panel.columnconfigure(8, weight=1)
-        yield from self._build_register_bar_steps(reg_panel)
+        identity_frame = ttk.Frame(self, style="Panel.TFrame", padding=(12, 6))
+        identity_frame.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        identity_frame.columnconfigure(0, weight=1)
+        identity = WrappingGroupBar(identity_frame)
+        identity.grid(row=0, column=0, sticky="ew")
+        self.identity_bar = identity
         yield from self._build_identity_bar_steps(identity)
 
         self.mode_pages.register("awp1018_normal_mode", lambda defer_build=False: AWP1018NormalModePage(
@@ -149,6 +146,7 @@ class AWP1018Page(BasePage):
             on_board_slot_selected=self._on_button_board_slot_selected,
             on_gpio_mode_success=self._on_gpio_mode_success,
             on_gpio_mode_failure=self._on_gpio_mode_failure,
+            progress_host=self,
             defer_build=defer_build,
         ), staged=True)
         self.mode_pages.register("awp1018_diff_mode", lambda defer_build=False: AWP1018NormalModePage(
@@ -164,6 +162,7 @@ class AWP1018Page(BasePage):
             on_board_slot_selected=self._on_button_board_slot_selected,
             on_gpio_mode_success=self._on_gpio_mode_success,
             on_gpio_mode_failure=self._on_gpio_mode_failure,
+            progress_host=self,
             defer_build=defer_build,
         ), staged=True)
         yield
@@ -194,21 +193,21 @@ class AWP1018Page(BasePage):
         if callable(refresh):
             refresh(page)
 
-    def _queue_footer_fit(self, _event=None) -> None:
-        if self._footer_fit_job is None:
-            self._footer_fit_job = self.after(0, self._fit_footer_height)
-
-    def _fit_footer_height(self) -> None:
-        self._footer_fit_job = None
-        try:
-            if self.winfo_height() <= 1:
-                return
-            available = max(96, int(self.winfo_height() * .35))
-            desired = min(self._footer_panel.winfo_reqheight() + 16, available)
-            if self.footer_scroll.canvas.winfo_reqheight() != desired:
-                self.footer_scroll.canvas.configure(height=desired)
-        except tk.TclError:
+    def _build_register_bar(self, parent: Any) -> None:
+        parent.columnconfigure(8, weight=1)
+        for _ in self._build_register_bar_steps(parent):
             pass
+
+    def _progress_context(self) -> ProgressContext:
+        return ProgressContext(
+            active_serial_identity(self.ctx, self.page_name),
+            self._addr(),
+            self.current_mode,
+        )
+
+    def _reset_step_progress(self) -> None:
+        for bar in list(self._step_progress_bars):
+            bar.reset_all()
 
     def _build_state_actions(self, parent: tk.Misc) -> None:
         for _ in self._build_state_actions_steps(parent):
@@ -318,6 +317,7 @@ class AWP1018Page(BasePage):
         except (TypeError, ValueError):
             previous_addr = addr
         if previous_addr != addr:
+            self._reset_step_progress()
             current_page = dict.get(self.mode_pages, self.current_mode)
             on_hide = getattr(current_page, "on_hide", None)
             if callable(on_hide):
@@ -443,7 +443,8 @@ class AWP1018Page(BasePage):
         )
 
     def reset_chip(self) -> None:
-        self._write_reg(0x01, 0x5283)
+        if self._write_reg(0x01, 0x5283):
+            self._reset_step_progress()
 
     def sleep_chip(self) -> None:
         self._write_reg(0x01, 0x5350)
@@ -871,6 +872,7 @@ class AWP1018Page(BasePage):
         previous_mode = self.current_mode
         previous_page = self.mode_pages.get(previous_mode)
         if previous_mode != mode and previous_page is not None:
+            self._reset_step_progress()
             on_hide = getattr(previous_page, "on_hide", None)
             if callable(on_hide):
                 on_hide()
@@ -891,6 +893,7 @@ class AWP1018Page(BasePage):
             activate_draft()
         if update_chip and mode != "awp1018_diff_mode" and hasattr(page, "on_show"):
             page.on_show()
+        self.show_step_chrome(page if mode in {"awp1018_normal_mode", "awp1018_diff_mode"} else None)
         self._sync_mode_button_styles()
         # Each mode has a different requested height.  Recompute the outer
         # canvas after Tk has processed the new grid request so a short Full
@@ -999,6 +1002,7 @@ class AWP1018Page(BasePage):
             sync_mode(None)
 
     def _on_serial_selector_changed(self, control: dict[str, Any]) -> None:
+        previous_identity = active_serial_identity(self.ctx, self.page_name)
         current_page = dict.get(self.mode_pages, self.current_mode)
         on_hide = getattr(current_page, "on_hide", None)
         if callable(on_hide):
@@ -1008,6 +1012,8 @@ class AWP1018Page(BasePage):
             if callable(save_draft):
                 save_draft()
         super()._on_serial_selector_changed(control)
+        if active_serial_identity(self.ctx, self.page_name) != previous_identity:
+            self._reset_step_progress()
         gpio_controls = getattr(self, "gpio_controls", None)
         if gpio_controls is not None:
             gpio_controls.invalidate_modes()
@@ -1025,6 +1031,9 @@ class AWP1018Page(BasePage):
             gpio_controls.invalidate_modes()
         self._on_addr_changed()
         page = self.mode_pages.get(self.current_mode)
+        self.show_step_chrome(
+            page if self.current_mode in {"awp1018_normal_mode", "awp1018_diff_mode"} else None
+        )
         activate_draft = getattr(page, "activate_button_draft", None)
         if callable(activate_draft):
             activate_draft()
@@ -1032,6 +1041,7 @@ class AWP1018Page(BasePage):
             page.on_show()
 
     def on_hide(self) -> None:
+        self.show_step_chrome(None)
         for page in self.mode_pages.built_values():
             on_hide = getattr(page, "on_hide", None)
             if callable(on_hide):
@@ -1206,6 +1216,21 @@ class AWP1018NormalModePage(BasePage):
         "button_mode_import_user_preset": "button_mode_import_page_settings_tooltip",
         "button_mode_export_user_preset": "button_mode_export_page_settings_tooltip",
     }
+    PROGRESS_ADC_PART_KEYS = (
+        "zero_time",
+        "dac_rate",
+        "debounce",
+        "sample_update",
+        "return_bits",
+        "arbitration",
+        "zps",
+        "interrupt",
+        "group_start",
+        "stage0",
+        "stage1",
+        "stage2",
+        "stage3",
+    )
 
     def __init__(
         self,
@@ -1225,9 +1250,14 @@ class AWP1018NormalModePage(BasePage):
         on_board_slot_selected: Callable[[str, int | str], None] | None = None,
         on_gpio_mode_success: Callable[[str, str], None] | None = None,
         on_gpio_mode_failure: Callable[[str], None] | None = None,
+        progress_host: AWP1018Page | None = None,
         defer_build: bool = False,
     ) -> None:
         super().__init__(parent, ctx)
+        self._progress_host = progress_host
+        self._progress_tokens: dict[str, Any] = {}
+        self._progress_trace_ids: list[tuple[tk.Variable, str]] = []
+        self._progress_update_job: str | None = None
         self.diff_mode = diff_mode
         self.import_page_settings = import_page_settings or (lambda: None)
         self.export_page_settings = export_page_settings or (lambda: None)
@@ -1357,6 +1387,236 @@ class AWP1018NormalModePage(BasePage):
         self._preparing = False
         self.ctx.serial.add_log_listener(self._handle_serial_status_log)
         self._loading_settings = False
+        self._mount_awp1018_step_progress()
+
+    def _mount_awp1018_step_progress(self) -> None:
+        host = self._progress_host
+        if host is None or self.page_name == "full_mode":
+            return
+        self.mount_step_progress(
+            host=host,
+            steps=(
+                StepSpec("channels", 1, "step_done_1018_channels", ("mask", "mapping")),
+                StepSpec("waveform", 2, "step_done_1018_waveform"),
+                StepSpec("adc", 3, "step_done_1018_adc", self.PROGRESS_ADC_PART_KEYS),
+                StepSpec("detection", 4, "step_done_1018_detection"),
+            ),
+            context=host._progress_context,
+        )
+        self._refresh_step_progress_params()
+        self._install_step_progress_traces()
+
+    @staticmethod
+    def _progress_value(variable: tk.Variable) -> Any:
+        try:
+            value = variable.get()
+        except (tk.TclError, AttributeError):
+            return None
+        if isinstance(value, (bool, int, float, str)) or value is None:
+            return value
+        return str(value)
+
+    def _progress_fingerprints(self) -> dict[str, dict[str, Any]]:
+        channel_values = tuple(bool(self._progress_value(variable)) for variable in self.channel_vars)
+        mapping_values = tuple(
+            str(self._progress_value(variable)) for variable in self.channel_start_stage_vars
+        )
+        waveform_vars = (
+            self.rom_waveform_var,
+            self.rom_slice_var,
+            self.rom_infinite_loop_var,
+            self.rom_depth_var,
+            self.rom_point_time_var,
+            self.rom_slowup_var,
+            self.rom_slowdown_var,
+            self.rom_repeat_var,
+            self.rom_offset_var,
+            self.rom_amplitude_var,
+        )
+        if self.diff_mode:
+            waveform_vars += (
+                self.diff_sinc_max_voltage_var,
+                self.diff_sinc_min_voltage_var,
+                self.diff_sinc_time1_var,
+                self.diff_sinc_time2_var,
+                self.diff_sinc_time3_var,
+                self.diff_play_count_var,
+                self.diff_auto_serial_var,
+                self.diff_serial_var,
+                self.diff_sinc_slice_group_var,
+                self.diff_single_waveform_var,
+                *self.diff_serial4_segment_vars,
+            )
+        pending_descriptors = tuple(
+            (int(slice_index), tuple(item.get("words", ())))
+            for slice_index, item in sorted(self._pending_import_slice_definitions.items())
+        )
+        waveform = {
+            "selection": tuple(self._progress_value(variable) for variable in waveform_vars),
+            "descriptors": pending_descriptors,
+        }
+        adc: dict[str, Any] = {
+            "zero_time": str(self._progress_value(self.zero_time_var)),
+            "dac_rate": str(self._progress_value(self.dac_sample_rate_var)),
+            "debounce": str(self._progress_value(self.debounce_time_var)),
+            "sample_update": str(self._progress_value(self.adc_sample_update_var)),
+            "return_bits": (
+                bool(self._progress_value(self.return_bit_press_enable_var)),
+                bool(self._progress_value(self.return_bit_release_enable_var)),
+                bool(self._progress_value(self.return_bit_release_time_enhance_var)),
+                str(self._progress_value(self.return_bit_time_var)),
+            ),
+            "arbitration": int(self.arbitration_mode_code),
+            "zps": bool(self._progress_value(self.zps_enable_var)),
+            "interrupt": bool(self._progress_value(self.interrupt_enable_var)),
+            "group_start": mapping_values,
+        }
+        for index, stage in enumerate(("Stage0", "Stage1", "Stage2", "Stage3")):
+            variables = self.stage_vars.get(stage, {})
+            adc[f"stage{index}"] = tuple(
+                (name, self._progress_value(variables[name])) for name in sorted(variables)
+            )
+        return {
+            "channels": {"mask": channel_values, "mapping": mapping_values},
+            "waveform": waveform,
+            "adc": adc,
+            "detection": {"command": "start"},
+        }
+
+    def _refresh_step_progress_params(self) -> None:
+        bar = getattr(self, "step_progress", None)
+        if bar is None:
+            return
+        for step_key, fingerprints in self._progress_fingerprints().items():
+            bar.update_params(step_key, fingerprints)
+
+    def _schedule_step_progress_params(self, *_args: Any) -> None:
+        if self.step_progress is None or self._loading_settings or self._preparing:
+            return
+        if self._progress_update_job is None:
+            try:
+                self._progress_update_job = self.after_idle(self._flush_step_progress_params)
+            except tk.TclError:
+                self._progress_update_job = None
+
+    def _flush_step_progress_params(self) -> None:
+        self._progress_update_job = None
+        if self.step_progress is not None and not self._loading_settings and not self._preparing:
+            self._refresh_step_progress_params()
+
+    def _install_step_progress_traces(self) -> None:
+        variables: list[tk.Variable] = [
+            *self.channel_vars,
+            *self.channel_start_stage_vars,
+            self.rom_waveform_var,
+            self.rom_slice_var,
+            self.rom_infinite_loop_var,
+            self.rom_depth_var,
+            self.rom_point_time_var,
+            self.rom_slowup_var,
+            self.rom_slowdown_var,
+            self.rom_repeat_var,
+            self.rom_offset_var,
+            self.rom_amplitude_var,
+            self.zero_time_var,
+            self.dac_sample_rate_var,
+            self.debounce_time_var,
+            self.adc_sample_update_var,
+            self.return_bit_press_enable_var,
+            self.return_bit_release_enable_var,
+            self.return_bit_release_time_enhance_var,
+            self.return_bit_time_var,
+            self.arbitration_mode_var,
+            self.zps_enable_var,
+            self.interrupt_enable_var,
+        ]
+        if self.diff_mode:
+            variables.extend(
+                (
+                    self.diff_sinc_max_voltage_var,
+                    self.diff_sinc_min_voltage_var,
+                    self.diff_sinc_time1_var,
+                    self.diff_sinc_time2_var,
+                    self.diff_sinc_time3_var,
+                    self.diff_play_count_var,
+                    self.diff_auto_serial_var,
+                    self.diff_serial_var,
+                    self.diff_sinc_slice_group_var,
+                    self.diff_single_waveform_var,
+                    *self.diff_serial4_segment_vars,
+                )
+            )
+        for stage_vars in self.stage_vars.values():
+            variables.extend(stage_vars.values())
+        for variable in variables:
+            try:
+                trace_id = variable.trace_add("write", self._schedule_step_progress_params)
+                self._progress_trace_ids.append((variable, trace_id))
+            except (tk.TclError, AttributeError):
+                continue
+
+    def _progress_token(self, step_key: str, *, reuse: bool = True) -> Any:
+        bar = getattr(self, "step_progress", None)
+        if (
+            bar is None
+            or self._loading_settings
+            or self._preparing
+        ):
+            return None
+        self._refresh_step_progress_params()
+        current = self._progress_tokens.get(step_key)
+        if reuse and current is not None and bar.accepts(current):
+            return current
+        token = bar.begin(step_key)
+        self._progress_tokens[step_key] = token
+        return token
+
+    def _progress_mark(self, step_key: str, state: str, token: Any, *, detail: str = "") -> None:
+        if token is None or self._loading_settings or self._preparing:
+            return
+        bar = getattr(self, "step_progress", None)
+        if bar is not None:
+            bar.mark(step_key, state, token, detail=detail)
+
+    def _progress_mark_part(
+        self,
+        step_key: str,
+        part_key: str,
+        state: str,
+        token: Any,
+    ) -> None:
+        if token is None or self._loading_settings or self._preparing:
+            return
+        bar = getattr(self, "step_progress", None)
+        if bar is not None:
+            bar.mark_part(step_key, part_key, state, token)
+
+    def _handle_queued_general_setting_result(
+        self,
+        part_key: str,
+        fingerprint: Any,
+        outcome: str,
+        submitted_context: ProgressContext | None,
+    ) -> None:
+        if outcome not in {"completed", "failed", "rejected"}:
+            return
+        if self.step_progress is None or self._loading_settings or self._preparing:
+            return
+        host = self._progress_host
+        if host is None or submitted_context != host._progress_context():
+            return
+        self._refresh_step_progress_params()
+        current = self._progress_fingerprints()["adc"].get(part_key)
+        if current != fingerprint:
+            return
+        token = self._progress_token("adc")
+        self._progress_mark_part("adc", part_key, "done" if outcome == "completed" else "error", token)
+
+    def _invalidate_detection_progress(self) -> None:
+        bar = getattr(self, "step_progress", None)
+        if bar is not None:
+            bar.invalidate_from("detection")
+        self._progress_tokens.pop("detection", None)
 
     def _trace_stage_threshold(self, stage: str, kind: str, variable: tk.StringVar) -> None:
         variable.trace_add("write", lambda *_args, s=stage, k=kind: self._on_stage_threshold_changed(s, k))
@@ -2920,15 +3180,31 @@ class AWP1018NormalModePage(BasePage):
             return tuple(range(28, 31))
         return ()
 
-    def _write_group_start_register(self, *, show_error: bool = True) -> bool:
+    def _write_group_start_register(
+        self,
+        *,
+        show_error: bool = True,
+        progress_channels_token: Any = None,
+        progress_adc_token: Any = None,
+    ) -> bool:
+        if progress_channels_token is None:
+            progress_channels_token = self._progress_token("channels")
+        if progress_adc_token is None:
+            progress_adc_token = self._progress_token("adc")
         current = self.read_reg(0x0D, show_error=show_error)
         if current is None:
+            self._progress_mark_part("channels", "mapping", "error", progress_channels_token)
+            self._progress_mark_part("adc", "group_start", "error", progress_adc_token)
             return False
         value = current
         for group, stage_index in enumerate(self._group_start_stage_indices()):
             shift = group * 2
             value = (value & ~(0b11 << shift)) | ((stage_index & 0b11) << shift)
-        return self.write_reg(0x0D, value, show_error=show_error)
+        success = self.write_reg(0x0D, value, show_error=show_error)
+        state = "done" if success else "error"
+        self._progress_mark_part("channels", "mapping", state, progress_channels_token)
+        self._progress_mark_part("adc", "group_start", state, progress_adc_token)
+        return success
 
     def _build_rom_selector(self, parent: tk.Misc) -> None:
         for _ in self._build_rom_selector_steps(parent):
@@ -4368,6 +4644,7 @@ class AWP1018NormalModePage(BasePage):
         return success and restored
 
     def _write_imported_settings_to_chip(self) -> bool:
+        adc_token = self._progress_token("adc")
         if not self._write_imported_slice_definitions():
             return False
         if not self.apply_rom_waveform_selection(show_success=False):
@@ -4375,17 +4652,25 @@ class AWP1018NormalModePage(BasePage):
 
         reg05 = self.read_reg(0x05)
         if reg05 is None:
+            self._progress_mark_part("adc", "arbitration", "error", adc_token)
             return False
         reg05 = (reg05 & ~((0b11 << 2) | (1 << 6))) | ((self.arbitration_mode_code & 0b11) << 2)
         if self.diff_mode and self.diff_auto_serial_var.get():
             reg05 |= 1 << 6
         if not self.write_reg(0x05, reg05):
+            self._progress_mark_part("adc", "arbitration", "error", adc_token)
             return False
+        self._progress_mark_part("adc", "arbitration", "done", adc_token)
 
         zero_code = self.ZERO_TIME_CODES[self.zero_time_var.get()]
         reg06 = self.read_reg(0x06)
-        if reg06 is None or not self.write_reg(0x06, (reg06 & ~(0b11 << 14)) | (zero_code << 14)):
+        if reg06 is None:
+            self._progress_mark_part("adc", "zero_time", "error", adc_token)
             return False
+        if not self.write_reg(0x06, (reg06 & ~(0b11 << 14)) | (zero_code << 14)):
+            self._progress_mark_part("adc", "zero_time", "error", adc_token)
+            return False
+        self._progress_mark_part("adc", "zero_time", "done", adc_token)
 
         channel_mask = 0
         for index, variable in enumerate(self.channel_vars):
@@ -4401,23 +4686,40 @@ class AWP1018NormalModePage(BasePage):
             reg07 |= 1 << 13
         if self.zps_enable_var.get():
             reg07 |= 0b11 << 14
+        channels_token = self._progress_token("channels")
         if not self.write_reg(0x07, reg07):
+            self._progress_mark_part("channels", "mask", "error", channels_token)
+            self._progress_mark_part("adc", "return_bits", "error", adc_token)
+            self._progress_mark_part("adc", "zps", "error", adc_token)
             return False
+        self._progress_mark_part("channels", "mask", "done", channels_token)
+        self._progress_mark_part("adc", "return_bits", "done", adc_token)
+        self._progress_mark_part("adc", "zps", "done", adc_token)
 
         debounce_ms = int(self.debounce_time_var.get().strip(), 0)
         debounce_code = round(debounce_ms * 0x03FF / 1024) if debounce_ms else 0
         sample_code = self.ADC_SAMPLE_UPDATE_OPTIONS.index(self.adc_sample_update_var.get())
         reg22 = self.read_reg(0x22)
         if reg22 is None:
+            self._progress_mark_part("adc", "debounce", "error", adc_token)
+            self._progress_mark_part("adc", "sample_update", "error", adc_token)
             return False
         reg22 = (reg22 & ~0x0FFF) | (debounce_code & 0x03FF) | ((sample_code & 0b11) << 10)
         if not self.write_reg(0x22, reg22):
+            self._progress_mark_part("adc", "debounce", "error", adc_token)
+            self._progress_mark_part("adc", "sample_update", "error", adc_token)
             return False
+        self._progress_mark_part("adc", "debounce", "done", adc_token)
+        self._progress_mark_part("adc", "sample_update", "done", adc_token)
 
         if not self.write_reg(0x27, int(self.dac_sample_rate_var.get().strip(), 0)):
+            self._progress_mark_part("adc", "dac_rate", "error", adc_token)
             return False
+        self._progress_mark_part("adc", "dac_rate", "done", adc_token)
         if not self._configure_interrupt(bool(self.interrupt_enable_var.get())):
+            self._progress_mark_part("adc", "interrupt", "error", adc_token)
             return False
+        self._progress_mark_part("adc", "interrupt", "done", adc_token)
         return self._sync_stage_defaults_before_run()
 
     def _build_normal_waveform_descriptor(self) -> tuple[int, tuple[int, int, int, int]]:
@@ -4449,6 +4751,17 @@ class AWP1018NormalModePage(BasePage):
     def apply_rom_waveform_selection(self, *, show_success: bool = True) -> bool:
         if self.diff_mode:
             return self._apply_diff_sinc_waveform_selection(show_success=show_success)
+
+        token = self._progress_token("waveform", reuse=False)
+        try:
+            success = self._apply_normal_rom_waveform_selection(show_success=show_success)
+        except Exception:
+            self._progress_mark("waveform", "error", token)
+            raise
+        self._progress_mark("waveform", "done" if success else "error", token)
+        return success
+
+    def _apply_normal_rom_waveform_selection(self, *, show_success: bool = True) -> bool:
 
         try:
             slice_index, words = self._build_normal_waveform_descriptor()
@@ -4493,6 +4806,16 @@ class AWP1018NormalModePage(BasePage):
         return True
 
     def _apply_diff_sinc_waveform_selection(self, *, show_success: bool = True) -> bool:
+        token = self._progress_token("waveform", reuse=False)
+        try:
+            success = self._apply_diff_sinc_waveform_selection_impl(show_success=show_success)
+        except Exception:
+            self._progress_mark("waveform", "error", token)
+            raise
+        self._progress_mark("waveform", "done" if success else "error", token)
+        return success
+
+    def _apply_diff_sinc_waveform_selection_impl(self, *, show_success: bool = True) -> bool:
         if self._diff_serial4_selected():
             if not self._ensure_connected():
                 return False
@@ -4925,10 +5248,7 @@ class AWP1018NormalModePage(BasePage):
 
         def worker() -> None:
             resp = self.ctx.serial.write_register_value(dev, reg, value, bits=16)
-            try:
-                self.after(0, finish, resp.ok, resp.error)
-            except tk.TclError:
-                pass
+            post_to_ui(self, finish, resp.ok, resp.error)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -5145,15 +5465,45 @@ class AWP1018NormalModePage(BasePage):
 
         self._start_board_preset_operation("read", worker)
 
-    def _queue_general_setting(self, register: int, value: int, clear_mask: int | None = None) -> bool:
+    def _queue_general_setting(
+        self,
+        register: int,
+        value: int,
+        clear_mask: int | None = None,
+        *,
+        progress_part: str | None = None,
+    ) -> bool:
         # Standalone editors/legacy transports retain their existing synchronous
         # contract. The application's router can pin the board for worker I/O.
         if not callable(getattr(type(self.ctx.serial), "queue_register_setting", None)):
             return False
         if not self._loading_settings:
+            on_result = None
+            if progress_part is not None and self.step_progress is not None and not self._preparing:
+                token = self._progress_token("adc")
+                fingerprint = self._progress_fingerprints()["adc"].get(progress_part)
+                submitted_context = token.context if token is not None else None
+
+                def observe(
+                    outcome: str,
+                    part=progress_part,
+                    submitted=fingerprint,
+                    context=submitted_context,
+                ) -> None:
+                    post_to_ui(
+                        self,
+                        self._handle_queued_general_setting_result,
+                        part,
+                        submitted,
+                        outcome,
+                        context,
+                    )
+
+                on_result = observe
             self.ctx.serial.queue_register_setting(
                 "awp1018", self._device_addr(), register, value, clear_mask=clear_mask,
                 address_state_key="awp1018_device_addr",
+                on_result=on_result,
             )
         return True
 
@@ -5161,13 +5511,21 @@ class AWP1018NormalModePage(BasePage):
         code = self.ZERO_TIME_CODES.get(self.zero_time_var.get())
         if code is None:
             return
-        if self._queue_general_setting(0x06, (code & 0b11) << 14, 0b11 << 14):
+        token = self._progress_token("adc")
+        if self._queue_general_setting(
+            0x06,
+            (code & 0b11) << 14,
+            0b11 << 14,
+            progress_part="zero_time",
+        ):
             return
         current = self.read_reg(0x06, show_error=False)
         if current is None:
+            self._progress_mark_part("adc", "zero_time", "error", token)
             return
         value = (current & ~(0b11 << 14)) | ((code & 0b11) << 14)
-        self.write_reg(0x06, value, show_error=False)
+        success = self.write_reg(0x06, value, show_error=False)
+        self._progress_mark_part("adc", "zero_time", "done" if success else "error", token)
 
     def _on_dac_sample_rate_changed(self) -> None:
         try:
@@ -5178,9 +5536,11 @@ class AWP1018NormalModePage(BasePage):
             return
 
         self.ctx.state.single_point_duration_us = value
-        if self._queue_general_setting(0x27, value):
+        token = self._progress_token("adc")
+        if self._queue_general_setting(0x27, value, progress_part="dac_rate"):
             return
-        self.write_reg(0x27, value, show_error=False)
+        success = self.write_reg(0x27, value, show_error=False)
+        self._progress_mark_part("adc", "dac_rate", "done" if success else "error", token)
 
     def _on_debounce_time_changed(self) -> None:
         try:
@@ -5193,13 +5553,16 @@ class AWP1018NormalModePage(BasePage):
         code = round(time_value * 0x03FF / 1024) if time_value else 0
         code = max(0, min(0x03FF, code))
 
-        if self._queue_general_setting(0x22, code, 0x03FF):
+        token = self._progress_token("adc")
+        if self._queue_general_setting(0x22, code, 0x03FF, progress_part="debounce"):
             return
         current = self.read_reg(0x22, show_error=False)
         if current is None:
+            self._progress_mark_part("adc", "debounce", "error", token)
             return
         value = (current & ~0x03FF) | code
-        self.write_reg(0x22, value, show_error=False)
+        success = self.write_reg(0x22, value, show_error=False)
+        self._progress_mark_part("adc", "debounce", "done" if success else "error", token)
 
     def _on_diff_auto_serial_changed(self) -> None:
         self._refresh_diff_waveform_controls()
@@ -5216,15 +5579,24 @@ class AWP1018NormalModePage(BasePage):
         except ValueError:
             return
 
-        if self._queue_general_setting(0x22, (code & 0b11) << 10, 0b11 << 10):
+        token = self._progress_token("adc")
+        if self._queue_general_setting(
+            0x22,
+            (code & 0b11) << 10,
+            0b11 << 10,
+            progress_part="sample_update",
+        ):
             return
         current = self.read_reg(0x22, show_error=False)
         if current is None:
+            self._progress_mark_part("adc", "sample_update", "error", token)
             return
         value = (current & ~(0b11 << 10)) | ((code & 0b11) << 10)
-        self.write_reg(0x22, value, show_error=False)
+        success = self.write_reg(0x22, value, show_error=False)
+        self._progress_mark_part("adc", "sample_update", "done" if success else "error", token)
 
     def _on_channel_select_changed(self) -> None:
+        token = self._progress_token("channels")
         mask = 0
         for index, variable in enumerate(self.channel_vars):
             if variable.get():
@@ -5232,9 +5604,11 @@ class AWP1018NormalModePage(BasePage):
 
         current = self.read_reg(0x07, show_error=False)
         if current is None:
+            self._progress_mark_part("channels", "mask", "error", token)
             return
         value = (current & ~0x00FF) | (mask & 0x00FF)
-        self.write_reg(0x07, value, show_error=False)
+        success = self.write_reg(0x07, value, show_error=False)
+        self._progress_mark_part("channels", "mask", "done" if success else "error", token)
         if self.diff_mode and self._diff_detect_active:
             self._set_diff_ready_colors()
         if self.diff_mode and self._diff_sample_active:
@@ -5242,6 +5616,7 @@ class AWP1018NormalModePage(BasePage):
             self._set_diff_ready_colors()
 
     def _on_return_bit_config_changed(self) -> None:
+        token = self._progress_token("adc")
         try:
             time_code = self.RETURN_BIT_TIME_OPTIONS.index(self.return_bit_time_var.get())
         except ValueError:
@@ -5249,6 +5624,7 @@ class AWP1018NormalModePage(BasePage):
 
         current = self.read_reg(0x07, show_error=False)
         if current is None:
+            self._progress_mark_part("adc", "return_bits", "error", token)
             return
 
         value = current & ~((1 << 13) | (1 << 12) | (1 << 11) | (0b111 << 8))
@@ -5259,7 +5635,8 @@ class AWP1018NormalModePage(BasePage):
         if self.return_bit_release_time_enhance_var.get():
             value |= 1 << 11
         value |= (time_code & 0b111) << 8
-        self.write_reg(0x07, value, show_error=False)
+        success = self.write_reg(0x07, value, show_error=False)
+        self._progress_mark_part("adc", "return_bits", "done" if success else "error", token)
 
     def _arbitration_mode_options(self) -> list[str]:
         return [self.tr(key) for key in self.ARBITRATION_MODE_KEYS]
@@ -5272,25 +5649,34 @@ class AWP1018NormalModePage(BasePage):
             return
 
         self.arbitration_mode_code = code
+        token = self._progress_token("adc")
         current = self.read_reg(0x05, show_error=False)
         if current is None:
+            self._progress_mark_part("adc", "arbitration", "error", token)
             return
         value = (current & ~(0b11 << 2)) | ((code & 0b11) << 2)
-        self.write_reg(0x05, value, show_error=False)
+        success = self.write_reg(0x05, value, show_error=False)
+        self._progress_mark_part("adc", "arbitration", "done" if success else "error", token)
 
     def _on_zps_enable_changed(self) -> None:
+        token = self._progress_token("adc")
         current = self.read_reg(0x07, show_error=False)
         if current is None:
+            self._progress_mark_part("adc", "zps", "error", token)
             return
 
         value = current & ~(0b11 << 14)
         if self.zps_enable_var.get():
             value |= 0b11 << 14
-        self.write_reg(0x07, value, show_error=False)
+        success = self.write_reg(0x07, value, show_error=False)
+        self._progress_mark_part("adc", "zps", "done" if success else "error", token)
 
     def _on_interrupt_enable_changed(self) -> None:
         enabled = bool(self.interrupt_enable_var.get())
-        if not self._configure_interrupt(enabled):
+        token = self._progress_token("adc")
+        success = self._configure_interrupt(enabled)
+        self._progress_mark_part("adc", "interrupt", "done" if success else "error", token)
+        if not success:
             if enabled:
                 self.interrupt_enable_var.set(False)
 
@@ -5782,16 +6168,32 @@ class AWP1018NormalModePage(BasePage):
         if not self._ensure_connected():
             return False
 
-        if not self._write_group_start_register():
+        adc_token = self._progress_token("adc")
+        channels_token = self._progress_token("channels")
+        if not self._write_group_start_register(
+            progress_channels_token=channels_token,
+            progress_adc_token=adc_token,
+        ):
             return False
 
         for stage in ("Stage0", "Stage1", "Stage2", "Stage3"):
-            if not self._sync_stage_to_chip(stage):
+            if not self._sync_stage_to_chip(stage, progress_token=adc_token):
                 return False
 
         return True
 
-    def _sync_stage_to_chip(self, stage: str) -> bool:
+    def _sync_stage_to_chip(self, stage: str, *, progress_token: Any = None) -> bool:
+        token = progress_token if progress_token is not None else self._progress_token("adc")
+        success = self._sync_stage_to_chip_impl(stage)
+        self._progress_mark_part(
+            "adc",
+            f"stage{int(stage[-1])}" if stage.startswith("Stage") and stage[-1:].isdigit() else stage,
+            "done" if success else "error",
+            token,
+        )
+        return success
+
+    def _sync_stage_to_chip_impl(self, stage: str) -> bool:
         control_reg = self.STAGE_JUMP_CONTROL_REGS.get(stage)
         press_reg = self.STAGE_PRESS_THRESHOLD_REGS.get(stage)
         release_reg = self.STAGE_RELEASE_THRESHOLD_REGS.get(stage)
@@ -5830,13 +6232,18 @@ class AWP1018NormalModePage(BasePage):
         )
 
     def start_detection(self) -> None:
+        token = self._progress_token("detection", reuse=False)
         if not self._sync_stage_defaults_before_run():
+            self._progress_mark("detection", "error", token)
             return
         if self.write_reg(0x02, 0x0001):
             self._set_button_selected("start_detection", True)
             if self.diff_mode:
                 self._diff_detect_active = True
                 self._set_diff_ready_colors()
+            self._progress_mark("detection", "done", token)
+        else:
+            self._progress_mark("detection", "error", token)
 
     def start_realtime_display(self) -> None:
         if not self.diff_mode:
@@ -5871,6 +6278,7 @@ class AWP1018NormalModePage(BasePage):
             self._stop_diff_status_monitor()
         if self.write_reg(0x02, 0x0002):
             self._set_button_selected("start_detection", False)
+            self._invalidate_detection_progress()
 
     def start_play(self) -> None:
         self.write_reg_async(0x02, 0x0004)
@@ -5881,17 +6289,26 @@ class AWP1018NormalModePage(BasePage):
     def stop_all(self) -> None:
         if self.diff_mode:
             self._stop_diff_status_monitor()
+        host = self._progress_host
+        submitted_context = host._progress_context() if host is not None else None
+
+        def on_stopped() -> None:
+            self._set_button_selected("start_detection", False)
+            self._set_button_selected("awp1018_realtime_display", False)
+            if host is not None and submitted_context == host._progress_context():
+                self._invalidate_detection_progress()
+
         self.write_reg_async(
             0x02,
             0x0010,
-            on_success=lambda: (
-                self._set_button_selected("start_detection", False),
-                self._set_button_selected("awp1018_realtime_display", False),
-            ),
+            on_success=on_stopped,
         )
 
     def reset_chip(self) -> None:
-        self.write_reg(0x01, 0x5283)
+        if self.write_reg(0x01, 0x5283):
+            host = self._progress_host
+            if host is not None:
+                host._reset_step_progress()
 
     def sleep_chip(self) -> None:
         self.write_reg(0x01, 0x5350)
@@ -6296,6 +6713,18 @@ class AWP1018NormalModePage(BasePage):
 
     def destroy(self) -> None:
         self.on_hide()
+        if self._progress_update_job is not None:
+            try:
+                self.after_cancel(self._progress_update_job)
+            except tk.TclError:
+                pass
+            self._progress_update_job = None
+        for variable, trace_id in self._progress_trace_ids:
+            try:
+                variable.trace_remove("write", trace_id)
+            except (tk.TclError, AttributeError):
+                pass
+        self._progress_trace_ids.clear()
         self._cancel_rom_draw_job()
         try:
             self.ctx.serial.remove_log_listener(self._handle_serial_status_log)

@@ -74,7 +74,7 @@ class NavigationPaintTests(unittest.TestCase):
             page.show_mode("full_mode", update_chip=False)
             self.assertEqual(list(dict.keys(page.mode_pages)), ["awp1018_normal_mode", "full_mode"])
 
-    def test_small_window_keeps_awp1018_body_and_scrollable_footer_visible(self):
+    def test_small_window_keeps_awp1018_body_and_advanced_tools_visible(self):
         with mocked_application() as app:
             app.set_animations(False)
             app.root.geometry("480x320+0+0")
@@ -85,11 +85,12 @@ class NavigationPaintTests(unittest.TestCase):
             self.assertTrue(app.navigation._page_layout_ready())
             self.assertTrue(page.mode_scroll.winfo_ismapped())
             self.assertGreater(page.mode_scroll.winfo_height(), 30)
-            self.assertIs(page._footer_panel.master, page.footer_scroll.content)
-            self.assertLess(page.footer_scroll.winfo_height(), page._footer_panel.winfo_reqheight())
-            page.footer_scroll.canvas.yview_moveto(1)
+            self.assertTrue(page.identity_bar.winfo_ismapped())
+            self.assertIs(page._floating_group.master, page.mode_scroll.canvas)
+            self.assertTrue(page._floating_group.winfo_ismapped())
+            page.mode_scroll.canvas.yview_moveto(1)
             pump(app.root, .1)
-            self.assertAlmostEqual(page.footer_scroll.canvas.yview()[1], 1)
+            self.assertAlmostEqual(page.mode_scroll.canvas.yview()[1], 1)
 
 
 if __name__ == "__main__":
