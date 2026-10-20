@@ -12,7 +12,7 @@ from core.base_tool import RegisterScriptOperation
 
 
 AWP1221_PAGE_SCRIPT_TAG = "AWP1221_PAGE"
-AWP1221_PAGE_SCRIPT_VERSION = 1
+AWP1221_PAGE_SCRIPT_VERSION = 2
 
 AWP1221_SCRIPT_SETTINGS_REGISTER = 0x05
 AWP1221_SCRIPT_SRAM_ADDRESS_REGISTER = 0x15
@@ -33,7 +33,7 @@ _WAVEFORM_TOKENS = {
 }
 _WAVEFORM_NAMES = {token: name for name, token in _WAVEFORM_TOKENS.items()}
 _SERIALS = ("serial1", "serial2", "serial3", "serial4")
-_METADATA_KEYS = (
+_BASE_METADATA_KEYS = (
     "v",
     "kind",
     "auto",
@@ -84,6 +84,7 @@ _METADATA_KEYS = (
     "sleep",
     "ldo",
 )
+_V2_METADATA_KEYS = (*_BASE_METADATA_KEYS, "x")
 
 
 @dataclass(frozen=True)
@@ -130,6 +131,7 @@ class Awp1221PageScript:
     zps_detect: bool
     sleep_sensitivity: bool
     ldo_index: int
+    advanced_state: str = ""
 
 
 def awp1221_sram_mode_value(mode: int) -> int:
@@ -295,9 +297,10 @@ def _format_page_metadata(snapshot: Awp1221PageScript) -> str:
         "zpsd": int(snapshot.zps_detect),
         "sleep": int(snapshot.sleep_sensitivity),
         "ldo": snapshot.ldo_index,
+        "x": snapshot.advanced_state or "-",
     }
     return AWP1221_PAGE_SCRIPT_TAG + " " + " ".join(
-        f"{key}={_script_token(fields[key])}" for key in _METADATA_KEYS
+        f"{key}={_script_token(fields[key])}" for key in _V2_METADATA_KEYS
     )
 
 
@@ -311,9 +314,11 @@ def _parse_page_metadata(comment: str) -> Awp1221PageScript | None:
             return None
         key, value = token.split("=", 1)
         fields[key] = value
-    if any(key not in fields for key in _METADATA_KEYS):
+    version = fields.get("v")
+    required_keys = _BASE_METADATA_KEYS if version == "1" else _V2_METADATA_KEYS
+    if any(key not in fields for key in required_keys):
         return None
-    if fields["v"] != str(AWP1221_PAGE_SCRIPT_VERSION):
+    if version not in {"1", str(AWP1221_PAGE_SCRIPT_VERSION)}:
         return None
     try:
         kind = fields["kind"]
@@ -371,6 +376,7 @@ def _parse_page_metadata(comment: str) -> Awp1221PageScript | None:
             zps_detect=_parse_flag(fields["zpsd"]),
             sleep_sensitivity=_parse_flag(fields["sleep"]),
             ldo_index=_parse_bounded(fields["ldo"], 1, "ldo"),
+            advanced_state="" if version == "1" or fields.get("x") == "-" else fields["x"],
         )
     except (KeyError, TypeError, ValueError):
         return None

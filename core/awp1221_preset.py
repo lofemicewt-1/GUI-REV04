@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import struct
+from typing import Any
 
 from core.awp1221_sinc import Awp1221SincParams, build_awp1221_sinc_plan
 
@@ -182,6 +183,20 @@ def unpack_awp1221_payload(payload: bytes) -> Awp1221PresetModel:
     if _pack_awp1221_payload(model, allow_legacy_kinds=True, version=version) != raw:
         raise ValueError("Noncanonical Type-4 payload")
     return model
+
+
+def awp1221_type4_save_preflight(settings_model: Any) -> tuple[bool, str | None]:
+    """Reject Full-mode stage combinations that Type-4 cannot encode.
+
+    The chip settings adapter records the unsupported Full-only combinations
+    separately from the shared Type-4 fields. Independent Full settings (for
+    example GPIO) do not prevent saving; they remain in the page settings file.
+    """
+    advanced = getattr(settings_model, "advanced", {})
+    unsupported = advanced.get("type4_unsupported", ()) if isinstance(advanced, dict) else ()
+    if unsupported:
+        return False, "preset_slot_advanced_block_warning"
+    return True, None
 
 
 def awp1221_descriptor_words(model: Awp1221PresetModel) -> tuple[tuple[int, tuple[int, ...]], ...]:

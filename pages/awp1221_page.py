@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+import base64
 from contextlib import contextmanager, nullcontext
+from copy import deepcopy
+from dataclasses import replace
+import json
 import math
 from pathlib import Path
 import tkinter as tk
@@ -37,6 +41,7 @@ from core.awp1221_gpio import (
     gpio_function_category,
     gpio_mcu_role,
 )
+from core.awp1221_preset import awp1221_type4_save_preflight
 from core.base_tool import (
     GPIO_MODE_DETECT,
     GPIO_MODE_HIGH,
@@ -49,6 +54,8 @@ from core.base_tool import (
 from pages.base_page import BasePage, SimpleTooltip
 from pages.waveform_preview import PreviewSegment, compact_preview, draw_omissions
 from pages.awp1221_board_presets import AWP1221BoardPresetMixin
+from pages.chip_settings_model import ChipSettingsModel, ChipSettingsStore
+from pages.preset_toolbar import PresetToolbar
 from pages.awp1221_realtime_sram import (
     AWP1221RealtimeMixin,
     AWP1221SramEditor,
@@ -852,6 +859,13 @@ def _serial_batch(serial: Any) -> Any:
     return snapshot_transaction() if callable(snapshot_transaction) else nullcontext()
 
 
+class AWP1221ChipSettingsModel(ChipSettingsModel):
+    """AWP1221 draft with the Type-4 shared-register save boundary."""
+
+    def can_save_slot(self) -> tuple[bool, str | None]:
+        return awp1221_type4_save_preflight(self)
+
+
 class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
     """One independent AWP1221 mode view using the shared register contract."""
 
@@ -1079,6 +1093,12 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self.mode_key = mode_key
         self._shared_state_owner = shared_state_owner
         self.host = host
+        self._settings_model: AWP1221ChipSettingsModel | ChipSettingsModel | None = (
+            getattr(host, "_settings_model", None) if host is not None else None
+        )
+        self._settings_sync_depth = 0
+        self._settings_trace_ids: list[tuple[tk.Variable, str]] = []
+        self.preset_toolbar: PresetToolbar | None = None
         self._sram_editor: AWP1221SramEditor | None = None
         self._labels: dict[str, ttk.Label] = {}
         self._buttons: dict[str, ttk.Button] = {}
@@ -1170,8 +1190,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
     def _initialize_steps(self) -> Iterator[None]:
         yield from self._build_ui_steps()
-        if self.mode_key == "button_mode":
-            self._init_board_recipe_tracking()
+        self._init_board_recipe_tracking()
         self._bind_realtime_overlay_traces()
         self._auto_serial_trace = self.auto_serial_var.trace_add(
             "write",
@@ -1179,6 +1198,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         self._adc_trigger_log_listener = self._handle_adc_trigger_log
         self.ctx.serial.add_log_listener(self._adc_trigger_log_listener)
+        self._bind_settings_model_traces()
+        if self._settings_model is not None:
+            self._apply_settings_model_to_view(self._settings_model)
         self._preparing = False
 
     def _build_ui(self) -> None:
@@ -1200,24 +1222,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
         preset_frame = self.make_preset_frame(header)
         yield
-        preset_keys = (
-            "awp1221_preset_1_reserved",
-            "awp1221_preset_2_reserved",
-            "awp1221_preset_3_reserved",
-            "awp1221_import_reserved",
-            "awp1221_export_reserved",
-        )
-        for column, key in enumerate(preset_keys):
-            button = ttk.Button(preset_frame, style="Bg.TButton", state="disabled")
-            button.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 6, 0))
-            self._buttons[key] = button
-        self.make_module_help_button(
-            preset_frame,
-            "awp1221_help_presets",
-            row=0,
-            column=len(preset_keys),
-            sticky="e",
-        )
+        self._build_preset_toolbar(preset_frame)
 
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
@@ -2569,79 +2574,466 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self.mode_title_label = header.grid_slaves(row=0, column=0)[0]
 
         preset_frame = self.make_preset_frame(header)
+        self._build_preset_toolbar(preset_frame)
 
-        first_row_keys = (
-            "button_mode_preset_1",
-            "button_mode_preset_2",
-            "button_mode_preset_3",
-            "button_mode_import_user_preset",
-            "button_mode_export_user_preset",
+    def _build_preset_toolbar(self, parent: tk.Misc) -> None:
+        model = self._settings_model
+        selected_slot = model.slot_selection if model is not None else None
+        if selected_slot is None:
+            selected_slot = self.board_slot_var.get()
+        self.preset_toolbar = PresetToolbar(
+            parent,
+            translate=self.tr,
+            callbacks={
+                "software_preset_1": lambda: self.apply_software_preset(0),
+                "software_preset_2": lambda: self.apply_software_preset(1),
+                "software_preset_3": lambda: self.apply_software_preset(2),
+                "import_page_settings": self.import_user_preset_script,
+                "export_page_settings": self.export_user_preset_script,
+                "save_slot": self.save_board_preset,
+                "set_active_slot": self.set_board_preset_active,
+                "apply_slot": self.apply_board_preset,
+                "read_and_apply": self.read_board_preset,
+            },
+            selected_slot=selected_slot,
+            on_slot_selected=self._on_preset_slot_selected,
+            tooltip_keys={
+                "import_page_settings": "button_mode_import_page_settings_tooltip",
+                "export_page_settings": "button_mode_export_page_settings_tooltip",
+                "save_slot": "awp1221_type4_save_to_board_tip",
+                "set_active_slot": "awp1221_type4_set_active_tip",
+                "apply_slot": "awp1221_type4_apply_slot_tip",
+            },
         )
-        for column, key in enumerate(first_row_keys):
-            if key == "button_mode_import_user_preset":
-                command: Callable[[], Any] = self.import_user_preset_script
-            elif key == "button_mode_export_user_preset":
-                command = self.export_user_preset_script
-            elif key.startswith("button_mode_preset_"):
-                command = lambda preset_index=column: self.apply_software_preset(preset_index)
-            else:
-                command = self._show_preset_pending
-            button = ttk.Button(
-                preset_frame,
-                style="Bg.TButton",
-                command=command,
-            )
-            button.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 6, 0))
-            self._buttons[key] = button
-            if key in ("button_mode_import_user_preset", "button_mode_export_user_preset"):
-                tooltip_key = {
-                    "button_mode_import_user_preset": "button_mode_import_page_settings_tooltip",
-                    "button_mode_export_user_preset": "button_mode_export_page_settings_tooltip",
-                }[key]
-                self._tooltips.append(SimpleTooltip(button, lambda tip=tooltip_key: self.tr(tip)))
-            if key.startswith("button_mode_preset_"):
-                self._tooltips.append(
-                    SimpleTooltip(
-                        button,
-                        lambda preset_index=column: self._software_preset_tooltip_text(preset_index),
-                    )
-                )
-
-        self.make_module_help_button(
-            preset_frame,
-            "awp1221_help_presets",
-            row=0,
-            column=len(first_row_keys),
-            sticky="e",
-        )
-
-        slot_cell = ttk.Frame(preset_frame, style="App.TFrame")
-        slot_cell.grid(row=1, column=0, sticky="ew", pady=(self._module_spacing(), 0))
-        slot_label = ttk.Label(slot_cell, style="App.TLabel")
-        slot_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
-        self._register_text(slot_label, "board_slot")
-        ttk.Combobox(
-            slot_cell,
-            textvariable=self.board_slot_var,
-            values=("0", "1", "2"),
-            state="readonly",
-            width=4,
-        ).grid(row=0, column=1, sticky="w")
-
-        board_actions = (self.save_board_preset, self.set_board_preset_active,
-                         self.apply_board_preset, self.read_board_preset)
-        for column, key in enumerate(("save_to_board", "set_active", "apply_slot", "read_slot"), start=1):
-            button = ttk.Button(
-                preset_frame,
-                style="Bg.TButton",
-                command=board_actions[column - 1],
-            )
-            button.grid(row=1, column=column, sticky="ew", pady=(self._module_spacing(), 0), padx=(6, 0))
-            self._buttons[key] = button
-
+        self.preset_toolbar.grid(row=0, column=0, sticky="ew")
+        # Keep the established AWP1221 button lookup names for page actions
+        # and existing integrations while the toolbar owns the actual widgets.
+        for legacy_name, action in (
+            ("button_mode_preset_1", "software_preset_1"),
+            ("button_mode_preset_2", "software_preset_2"),
+            ("button_mode_preset_3", "software_preset_3"),
+            ("button_mode_import_user_preset", "import_page_settings"),
+            ("button_mode_export_user_preset", "export_page_settings"),
+            ("save_to_board", "save_slot"),
+            ("set_active", "set_active_slot"),
+            ("apply_slot", "apply_slot"),
+            ("read_slot", "read_and_apply"),
+        ):
+            self._buttons[legacy_name] = self.preset_toolbar.buttons[action]
+        for preset_index, action in enumerate(("software_preset_1", "software_preset_2", "software_preset_3")):
             self._tooltips.append(SimpleTooltip(
-                button, lambda action=key: self.tr(f"awp1221_type4_{action}_tip")
+                self.preset_toolbar.buttons[action],
+                lambda index=preset_index: self._software_preset_tooltip_text(index),
             ))
+        self._tooltips.append(SimpleTooltip(
+            self.preset_toolbar.buttons["read_and_apply"],
+            lambda: f"{self.tr('awp1221_type4_read_slot_tip')}\n{self.tr('awp1221_type4_apply_slot_tip')}",
+        ))
+        self.board_slot_var.set(str(self.preset_toolbar.selected_slot or 0))
+        current_model = self._current_settings_model()
+        if current_model is not None and current_model.slot_selection is None:
+            current_model.set_slot_selection(self.preset_toolbar.selected_slot or 0)
+
+    def _on_preset_slot_selected(self, slot: int | str) -> None:
+        self.board_slot_var.set(str(slot))
+        model = self._current_settings_model()
+        if model is not None:
+            model.set_slot_selection(slot)
+        if self.host is not None:
+            self.host._sync_awp1221_toolbar_slots(model)
+
+    def _current_settings_model(self) -> AWP1221ChipSettingsModel | ChipSettingsModel | None:
+        if self.host is not None:
+            model = getattr(self.host, "_settings_model", None)
+            if model is not None:
+                self._settings_model = model
+        return self._settings_model
+
+    def _settings_trace_variables(self) -> tuple[tk.Variable, ...]:
+        variables: list[tk.Variable] = [
+            self.auto_serial_var,
+            self.debounce_time_var,
+            self.adc_sample_update_var,
+            self.adc_ldo_var,
+            self.zero_time_var,
+            self.press_return_bit_time_var,
+            self.release_return_bit_time_var,
+            self.zps_enabled_var,
+            self.zps_detect_var,
+            self.sleep_sensitivity_var,
+            self.rom_slice_var,
+            self.rom_source_var,
+            self.rom_waveform_var,
+            self.rom_depth_var,
+            self.rom_half_cycle_var,
+            self.rom_phase_var,
+            self.rom_offset_var,
+            self.rom_vpk_var,
+            self.rom_micro_bias_var,
+            self.rom_point_time_var,
+            self.rom_repeat_var,
+            self.rom_infinite_loop_var,
+            self.sinc_serial_var,
+            self.sinc_depth_var,
+            self.sinc_max_voltage_var,
+            self.sinc_min_voltage_var,
+            self.sinc_sin_repeat_var,
+            self.sinc_window_var,
+            *self._sinc_time_variables(),
+        ]
+        for stage in (*self._button_stage_vars, *self._stage_vars):
+            variables.extend(self._nested_tk_variables(stage))
+        if self.host is not None:
+            for name in ("gpio_function_vars", "gpio_od_vars"):
+                variables.extend(self._nested_tk_variables(getattr(self.host, name, ())))
+        return tuple({id(v): v for v in variables}.values())
+
+    @staticmethod
+    def _nested_tk_variables(value: Any) -> list[tk.Variable]:
+        if isinstance(value, tk.Variable):
+            return [value]
+        if isinstance(value, dict):
+            return [variable for item in value.values() for variable in AWP1221ModePage._nested_tk_variables(item)]
+        if isinstance(value, (tuple, list)):
+            return [variable for item in value for variable in AWP1221ModePage._nested_tk_variables(item)]
+        return []
+
+    def _bind_settings_model_traces(self) -> None:
+        for variable in self._settings_trace_variables():
+            try:
+                trace_id = variable.trace_add("write", lambda *_: self._on_settings_model_var_changed())
+            except (AttributeError, tk.TclError):
+                continue
+            self._settings_trace_ids.append((variable, trace_id))
+
+    def _on_settings_model_var_changed(self) -> None:
+        if (
+            self._settings_sync_depth
+            or getattr(self.host, "_settings_sync_depth", 0)
+            or getattr(self, "_preparing", False)
+        ):
+            return
+        if self.host is not None and self.host.mode_pages.get(self.host.current_mode) is not self:
+            return
+        model = self._current_settings_model()
+        if model is None:
+            return
+        try:
+            self._capture_settings_model(model)
+        except (AttributeError, IndexError, TypeError, ValueError, tk.TclError):
+            # Text entries are allowed to be temporarily invalid while edited.
+            return
+        if self.host is not None:
+            self.host._settings_model_changed(self, model)
+
+    def _capture_settings_model(self, model: ChipSettingsModel | None = None) -> ChipSettingsModel | None:
+        target = model or self._current_settings_model()
+        if target is None:
+            return None
+        self._remember_board_rom()
+        if self._sinc_active_group:
+            self._sinc_group_values[self._sinc_active_group] = self._sinc_group_snapshot()
+        try:
+            serial, _start, _end = awp1221_sinc_serial_group(self.sinc_serial_var.get())
+        except (TypeError, ValueError):
+            serial = self._sinc_active_group or "serial1"
+        recipe = {
+            "kind": "sinc" if self._sinc_selected() else "rom",
+            "auto_serial": bool(self._auto_serial_enabled()),
+            "serial": serial,
+            "slice_index": self._parse_waveform_slice(self.rom_slice_var.get()),
+            "source": str(self.rom_source_var.get()),
+            "waveform": str(self.rom_waveform_var.get()),
+            "rom_depth": str(self.rom_depth_var.get()),
+            "micro_bias": str(self.rom_micro_bias_var.get()),
+            "vpk": str(self.rom_vpk_var.get()),
+            "offset": str(self.rom_offset_var.get()),
+            "half_cycle": str(self.rom_half_cycle_var.get()),
+            "phase": str(self.rom_phase_var.get()),
+            "point_time": str(self.rom_point_time_var.get()),
+            "rom_repeat": str(self.rom_repeat_var.get()),
+            "infinite_loop": bool(self.rom_infinite_loop_var.get()),
+            "sinc_group": list(self._sinc_group_values.get(serial, self._sinc_group_snapshot())),
+        }
+        descriptors = {
+            "rom_by_slice": {str(key): list(value) for key, value in self._board_rom_values.items()},
+            "sinc_groups": {str(key): list(value) for key, value in self._sinc_group_values.items()},
+        }
+        settings = {
+            "debounce_time": str(self.debounce_time_var.get()),
+            "sample_update": str(self.adc_sample_update_var.get()),
+            "zero_time": str(self.zero_time_var.get()),
+            "press_return_bit_time": str(self.press_return_bit_time_var.get()),
+            "release_return_bit_time": str(self.release_return_bit_time_var.get()),
+            "zps_enabled": bool(self.zps_enabled_var.get()),
+            "zps_detect": bool(self.zps_detect_var.get()),
+            "sleep_sensitivity": bool(self.sleep_sensitivity_var.get()),
+            "adc_ldo": str(self.adc_ldo_var.get()),
+            "auto_serial": bool(self._auto_serial_enabled()),
+        }
+        updates: dict[str, Any] = {
+            "waveform_recipe": recipe,
+            "waveform_descriptors": descriptors,
+            "adc_settings": settings,
+        }
+        unsupported: list[str] = []
+        for stage_index in range(2):
+            stage = self._capture_stage_semantics(stage_index, target)
+            if stage is not None:
+                updates[f"stage{stage_index}_semantics"] = stage
+                unsupported.extend(stage.get("type4_unsupported", ()))
+        target.update_shared(updates)
+        target.update_advanced({"type4_unsupported": tuple(sorted(set(unsupported)))})
+        gpio = self._capture_gpio_settings()
+        if gpio is not None:
+            target.set_advanced("gpio", gpio)
+        return target
+
+    def _capture_stage_semantics(
+        self,
+        stage_index: int,
+        model: ChipSettingsModel,
+    ) -> dict[str, Any] | None:
+        key = f"stage{stage_index}_semantics"
+        previous = model.shared.get(key, {})
+        old_registers = tuple(previous.get("register_values", (0, 0, 0, 0, 0)))
+        if len(old_registers) != 5:
+            old_registers = (0, 0, 0, 0, 0)
+        registers = self.STAGE_REGISTER_RANGES[stage_index]
+        current = {register: int(value) & 0xFFFF for register, value in zip(registers, old_registers)}
+        if self.mode_key == "button_mode" and stage_index < len(self._button_stage_vars):
+            try:
+                button = self._button_stage_config(stage_index)
+            except (AttributeError, IndexError, TypeError, ValueError):
+                return None
+            composed = self._button_stage_values_from_config(stage_index, current, button)
+            current.update(composed)
+        elif self.mode_key == "full_mode" and stage_index < len(self._stage_vars):
+            try:
+                current.update(zip(registers, self._stage_values(stage_index)))
+                variables = self._stage_vars[stage_index]
+                mode = str(variables["event_mode"].get())
+                control = decode_awp1221_adc_control(current[registers[0]])
+                press = decode_awp1221_adc_threshold(current[registers[1]])
+                release = decode_awp1221_adc_threshold(current[registers[2]])
+                wave = decode_awp1221_adc_wave(current[registers[4]])
+                active_threshold = press if mode == "press" else release
+                button = {
+                    "mode": mode,
+                    "time_code": control["press_time"] if mode == "press" else control["release_time"],
+                    "target": active_threshold["next_config"],
+                    "debounce": active_threshold["debounce_enabled"],
+                    "use_high_12_bits": active_threshold["use_high_12_bits"],
+                    "threshold": active_threshold["threshold"],
+                    "wave": wave[f"{mode}_wave"],
+                    "repeat": wave[f"{mode}_repeat"],
+                }
+            except (AttributeError, IndexError, TypeError, ValueError):
+                return None
+        else:
+            return None
+        register_values = tuple(int(current[register]) & 0xFFFF for register in registers)
+        return {
+            "button": dict(button),
+            "register_values": register_values,
+            "type4_unsupported": self._type4_unsupported_stage(register_values, button, stage_index),
+        }
+
+    @staticmethod
+    def _type4_unsupported_stage(
+        values: tuple[int, ...],
+        button: dict[str, Any],
+        stage_index: int,
+    ) -> tuple[str, ...]:
+        if len(values) != 5:
+            return (f"stage{stage_index}:missing-registers",)
+        reasons: list[str] = []
+        expected_mode = "press" if stage_index == 0 else "release"
+        if button.get("mode") != expected_mode:
+            reasons.append(f"stage{stage_index}:event-mode")
+        control, press, release, slope, wave = (int(value) & 0xFFFF for value in values)
+        expected_event_bits = 0x0011 if expected_mode == "press" else 0x0022
+        if (control & 0x0033) != expected_event_bits or (control & 0x00CC):
+            reasons.append(f"stage{stage_index}:control-flags")
+        press_time, release_time = (control >> 8) & 0xF, (control >> 12) & 0xF
+        if press_time != 3 or release_time != 3:
+            reasons.append(f"stage{stage_index}:ovv-time")
+        active_threshold, inactive_threshold = (press, release) if expected_mode == "press" else (release, press)
+        if (active_threshold & 0x4000) == 0:
+            reasons.append(f"stage{stage_index}:threshold-precision")
+        if inactive_threshold & 0x5FFF:
+            reasons.append(f"stage{stage_index}:inactive-threshold")
+        if slope:
+            reasons.append(f"stage{stage_index}:slope")
+        press_recipe = (wave & 0x001F, (wave >> 5) & 0x7)
+        release_recipe = ((wave >> 8) & 0x1F, (wave >> 13) & 0x7)
+        if press_recipe != release_recipe:
+            reasons.append(f"stage{stage_index}:separate-event-waveforms")
+        return tuple(reasons)
+
+    def _button_config_from_register_values(
+        self,
+        stage_index: int,
+        values: tuple[int, ...],
+        mode: str,
+    ) -> dict[str, Any]:
+        control = decode_awp1221_adc_control(values[0])
+        press = decode_awp1221_adc_threshold(values[1])
+        release = decode_awp1221_adc_threshold(values[2])
+        wave = decode_awp1221_adc_wave(values[4])
+        threshold = press if mode == "press" else release
+        return {
+            "mode": mode,
+            "time_code": control["press_time"] if mode == "press" else control["release_time"],
+            "target": threshold["next_config"],
+            "debounce": threshold["debounce_enabled"],
+            "use_high_12_bits": threshold["use_high_12_bits"],
+            "threshold": threshold["threshold"],
+            "wave": wave[f"{mode}_wave"],
+            "repeat": wave[f"{mode}_repeat"],
+        }
+
+    def _capture_gpio_settings(self) -> dict[str, Any] | None:
+        host = self.host
+        if host is None:
+            return None
+        channels = []
+        for index in range(2):
+            code = _GPIO_FUNCTION_BY_LABEL.get(host.gpio_function_vars[index].get())
+            category = _GPIO_CATEGORY_BY_LABEL.get(host.gpio_category_vars[index].get(), "input")
+            channels.append({
+                "function": code,
+                "category": category,
+                "open_drain": bool(host.gpio_od_vars[index].get()),
+            })
+        return {"channels": channels}
+
+    def _apply_settings_model_to_view(self, model: ChipSettingsModel | None = None) -> None:
+        target = model or self._current_settings_model()
+        if target is None:
+            return
+        shared = target.shared
+        self._settings_model = target
+        self._settings_sync_depth += 1
+        try:
+            with self._suspend_adc_live_writes():
+                descriptors = shared.get("waveform_descriptors", {})
+                self._board_rom_values = {
+                    int(key): tuple(str(item) for item in value)
+                    for key, value in descriptors.get("rom_by_slice", {}).items()
+                }
+                self._sinc_group_values = {
+                    str(key): tuple(str(item) for item in value)
+                    for key, value in descriptors.get("sinc_groups", {}).items()
+                } or self._sinc_group_values
+                recipe = shared.get("waveform_recipe")
+                if isinstance(recipe, dict):
+                    self._apply_waveform_recipe(recipe)
+                settings = shared.get("adc_settings")
+                if isinstance(settings, dict):
+                    self.debounce_time_var.set(str(settings.get("debounce_time", self.debounce_time_var.get())))
+                    self.adc_sample_update_var.set(str(settings.get("sample_update", self.adc_sample_update_var.get())))
+                    self.zero_time_var.set(str(settings.get("zero_time", self.zero_time_var.get())))
+                    self.press_return_bit_time_var.set(str(settings.get("press_return_bit_time", self.press_return_bit_time_var.get())))
+                    self.release_return_bit_time_var.set(str(settings.get("release_return_bit_time", self.release_return_bit_time_var.get())))
+                    self.zps_enabled_var.set(bool(settings.get("zps_enabled", self.zps_enabled_var.get())))
+                    self.zps_detect_var.set(bool(settings.get("zps_detect", self.zps_detect_var.get())))
+                    self.sleep_sensitivity_var.set(bool(settings.get("sleep_sensitivity", self.sleep_sensitivity_var.get())))
+                    self.adc_ldo_var.set(str(settings.get("adc_ldo", self.adc_ldo_var.get())))
+                    self.auto_serial_var.set(bool(settings.get("auto_serial", self.auto_serial_var.get())))
+                for stage_index in range(2):
+                    stage = shared.get(f"stage{stage_index}_semantics")
+                    if not isinstance(stage, dict):
+                        continue
+                    button = stage.get("button", {})
+                    if self.mode_key == "button_mode" and stage_index < len(self._button_stage_vars):
+                        variables = self._button_stage_vars[stage_index]
+                        variables["event_mode"].set(str(button.get("mode", variables["event_mode"].get())))
+                        variables["ovv_time"].set(AWP1221_ADC_TIME_LABELS[int(button.get("time_code", 3))])
+                        variables["jump_target"].set(f"Stage{int(button.get('target', 0))}")
+                        _threshold = int(button.get("threshold", 0)) & 0xFFF
+                        variables["threshold"].set("0x800" if _threshold == 0x800 else awp1221_format_threshold_signed(_threshold))
+                        variables["debounce"].set(bool(button.get("debounce", False)))
+                        variables["use_high_12_bits"].set(bool(button.get("use_high_12_bits", True)))
+                        variables["wave"].set(self._format_trigger_waveform(int(button.get("wave", 0))))
+                        variables["repeat"].set(str(button.get("repeat", 0)))
+                    elif self.mode_key == "full_mode" and stage_index < len(self._stage_vars):
+                        values = tuple(stage.get("register_values", ()))
+                        if len(values) == 5:
+                            self._set_stage_values(stage_index, tuple(int(value) for value in values))
+                        self._stage_vars[stage_index]["event_mode"].set(str(button.get("mode", "press")))
+                        self._sync_full_event_mode(stage_index)
+            self.board_slot_var.set(str(target.slot_selection if target.slot_selection is not None else 0))
+            if self.preset_toolbar is not None:
+                self.preset_toolbar.slot_var.set(self.board_slot_var.get())
+            if self.host is not None:
+                self.host._settings_sync_depth += 1
+                try:
+                    self.host._apply_settings_gpio(target.advanced.get("gpio"))
+                finally:
+                    self.host._settings_sync_depth -= 1
+            self._refresh_waveform_controls()
+            self._schedule_button_rom_preview()
+            self._refresh_adc_bits()
+        finally:
+            self._settings_sync_depth -= 1
+
+    def _apply_waveform_recipe(self, recipe: dict[str, Any]) -> None:
+        self._board_rom_loading = True
+        self._sinc_loading_group = True
+        try:
+            self.auto_serial_var.set(bool(recipe.get("auto_serial", True)))
+            self.rom_slice_var.set(f"slice{int(recipe.get('slice_index', 0))}")
+            self.rom_source_var.set(str(recipe.get("source", "ROM")))
+            self.rom_waveform_var.set(str(recipe.get("waveform", "SINE")))
+            serial = str(recipe.get("serial", "serial1"))
+            start, end = {
+                "serial1": (0x12, 0x14), "serial2": (0x15, 0x17),
+                "serial3": (0x18, 0x1B), "serial4": (0x1C, 0x1F),
+            }.get(serial, (0x12, 0x14))
+            if serial not in self._sinc_group_values:
+                self._sinc_group_values[serial] = tuple(str(item) for item in recipe.get("sinc_group", ("100", "12", "10", "10", "10", "4", "1", "512", "-")))
+            self._sinc_active_group = serial
+            label = awp1221_sinc_serial_group_label(serial, start, end)
+            self.sinc_serial_var.set(label)
+            group = self._sinc_group_values.get(serial, tuple(recipe.get("sinc_group", ())))
+            if group:
+                values = (
+                    self.sinc_max_voltage_var, self.sinc_min_voltage_var,
+                    *self._sinc_time_variables(), self.sinc_sin_repeat_var,
+                    self.sinc_depth_var, self.sinc_window_var,
+                )
+                for variable, value in zip(values, group):
+                    variable.set(str(value))
+            rom_slice = int(recipe.get("slice_index", 0))
+            rom_values = self._board_rom_values.get(rom_slice)
+            # A SINC recipe occupies ROM-addressed slices, but any saved ROM
+            # editor values for that slice belong to a different recipe. Do
+            # not let those values replace the selected SINC waveform.
+            is_sinc_recipe = (
+                recipe.get("kind") == "sinc"
+                or str(recipe.get("waveform", "")).upper() == self.SINC_WAVEFORM
+            )
+            if not is_sinc_recipe and rom_values:
+                for variable, value in zip(self._board_rom_variables(), rom_values):
+                    variable.set(str(value))
+            self.rom_depth_var.set(str(recipe.get("rom_depth", self.rom_depth_var.get())))
+            self.rom_micro_bias_var.set(str(recipe.get("micro_bias", self.rom_micro_bias_var.get())))
+            self.rom_vpk_var.set(str(recipe.get("vpk", self.rom_vpk_var.get())))
+            self.rom_offset_var.set(str(recipe.get("offset", self.rom_offset_var.get())))
+            self.rom_point_time_var.set(str(recipe.get("point_time", self.rom_point_time_var.get())))
+            self.rom_repeat_var.set(str(recipe.get("rom_repeat", self.rom_repeat_var.get())))
+            self.rom_infinite_loop_var.set(bool(recipe.get("infinite_loop", self.rom_infinite_loop_var.get())))
+            waveform = str(recipe.get("waveform", "SINE"))
+            half_options = self.HALF_CYCLE_OPTIONS_BY_WAVEFORM.get(waveform, self.HALF_CYCLE_OPTIONS_BY_WAVEFORM["SINE"])
+            self.rom_half_cycle_var.set(str(recipe.get("half_cycle", half_options[0])))
+            phase_options = awp1221_phase_options(waveform, self._parse_binary_option(self.rom_half_cycle_var.get()))
+            self.rom_phase_var.set(str(recipe.get("phase", phase_options[0])))
+        finally:
+            self._board_rom_loading = False
+            self._sinc_loading_group = False
+        self._board_rom_slice = self._parse_waveform_slice(self.rom_slice_var.get())
+        self._remember_board_rom()
 
     def _show_preset_pending(self) -> None:
         messagebox.showerror(
@@ -2718,10 +3110,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         messagebox.showinfo(self.tr("info"), self.tr("register_script_import_success"))
 
     def _set_page_script_buttons_state(self, state: str) -> None:
-        for key in ("button_mode_import_user_preset", "button_mode_export_user_preset"):
-            button = self._buttons.get(key)
-            if button is not None:
-                button.configure(state=state)
+        toolbar = self.preset_toolbar
+        if toolbar is not None:
+            toolbar.buttons["import_page_settings"].configure(state=state)
+            toolbar.buttons["export_page_settings"].configure(state=state)
 
     def _execute_page_script_operations(self, operations: list[Any]) -> str | None:
         addresses = {
@@ -2755,15 +3147,18 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         return execute_register_script_operations(operations, transport)
 
     def _build_current_register_script_operations(self) -> list[Any]:
+        model = self._capture_settings_model()
+        if model is None:
+            raise ValueError("AWP1221 settings are not available")
         snapshot, sram_slices, play_slice = self._capture_page_script_waveform()
-        stage_words = tuple(
-            self._button_stage_values_from_config(
-                stage_index,
-                {register: 0 for register in self.STAGE_REGISTER_RANGES[stage_index]},
-                self._button_stage_config(stage_index),
+        sram_slices = self._complete_page_script_waveform_slices(model, sram_slices)
+        stage_words = tuple({
+            register: int(value) & 0xFFFF
+            for register, value in zip(
+                self.STAGE_REGISTER_RANGES[stage_index],
+                model.shared.get(f"stage{stage_index}_semantics", {}).get("register_values", (0, 0, 0, 0, 0)),
             )
-            for stage_index in range(2)
-        )
+        } for stage_index in range(2))
         settings_words = awp1221_settings_target_words(
             {
                 AWP1221_ADC_SETTINGS_REGISTER: AWP1221_INTERFACE_CONFIG_0_DEFAULT,
@@ -2773,6 +3168,15 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             },
             self._adc_settings_config(),
         )
+        serialized = json.dumps(
+            {"shared": model.shared, "advanced": model.advanced},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        snapshot = replace(
+            snapshot,
+            advanced_state=base64.urlsafe_b64encode(serialized).decode("ascii").rstrip("="),
+        )
         return build_awp1221_page_script_operations(
             self.device_addr(),
             snapshot,
@@ -2781,6 +3185,84 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             settings_words=settings_words,
             play_slice=play_slice,
         )
+
+    def _complete_page_script_waveform_slices(
+        self,
+        model: ChipSettingsModel,
+        existing_slices: tuple[tuple[int, tuple[int, ...]], ...],
+    ) -> tuple[tuple[int, tuple[int, ...]], ...]:
+        grouped = {int(index): list(words) for index, words in existing_slices}
+        descriptors = model.shared.get("waveform_descriptors", {})
+        rom_by_slice = descriptors.get("rom_by_slice", {})
+        sinc_groups = descriptors.get("sinc_groups", {})
+        sinc_serial_by_start = {18: "serial1", 21: "serial2", 24: "serial3", 28: "serial4"}
+        needed = {
+            int(model.shared.get(f"stage{index}_semantics", {}).get("button", {}).get("wave", -1))
+            for index in range(2)
+        }
+        if not self._sinc_selected():
+            needed.add(self._parse_waveform_slice(self.rom_slice_var.get()))
+        for slice_index in sorted(needed):
+            if slice_index < 0 or slice_index in grouped:
+                continue
+            serial = sinc_serial_by_start.get(slice_index)
+            if serial is not None:
+                values = sinc_groups.get(serial)
+                if values is None or len(values) < 9:
+                    raise ValueError(f"slice{slice_index} has no complete SINC descriptor")
+                count = 4 if serial in {"serial3", "serial4"} else 3
+                params = awp1221_sinc_parse_params(
+                    str(values[0]), str(values[1]), str(values[2]), str(values[3]), str(values[4]),
+                    str(values[7]), str(values[5]) if count == 4 else None,
+                    str(values[6]) if count == 4 else "1",
+                )
+                plan = build_awp1221_sinc_plan(params, serial=serial)
+                if not plan.writable:
+                    raise ValueError(self._sinc_reason_message(plan.reason))
+                words_by_slice: dict[int, list[int]] = {}
+                for address, value in awp1221_sinc_write_words(plan, {}):
+                    target_slice = int(address) // AWP1221_WAVEFORM_WORDS_PER_SLICE
+                    words_by_slice.setdefault(target_slice, []).append(int(value) & 0xFFFF)
+                for target_slice, words in words_by_slice.items():
+                    grouped[target_slice] = words
+                continue
+
+            raw = rom_by_slice.get(str(slice_index), self._board_rom_values.get(slice_index))
+            if raw is None or len(raw) < 7:
+                raise ValueError(f"slice{slice_index} has no saved waveform descriptor")
+            waveform, coarse, fine, offset, point, repeat, source = (str(value) for value in raw[:7])
+            if source == "RAM":
+                raise ValueError(f"slice{slice_index} contains RAM samples and cannot be exported")
+            if waveform not in self.ROM_WAVEFORM_CODES:
+                raise ValueError(f"slice{slice_index} has unsupported ROM waveform {waveform}")
+            active_recipe = model.shared.get("waveform_recipe", {})
+            active_slice = int(active_recipe.get("slice_index", -1))
+            if active_slice == slice_index:
+                depth = str(active_recipe.get("rom_depth", "512"))
+                half_label = str(active_recipe.get("half_cycle", self.HALF_CYCLE_OPTIONS_BY_WAVEFORM[waveform][0]))
+                phase_label = str(active_recipe.get("phase", "0"))
+                infinite = bool(active_recipe.get("infinite_loop", False))
+            else:
+                depth = "512"
+                half_label = self.HALF_CYCLE_OPTIONS_BY_WAVEFORM[waveform][0]
+                phase_label = "0"
+                infinite = False
+            descriptor = encode_awp1221_waveform_descriptor(
+                source_code=self.WAVEFORM_SOURCE_CODES[source],
+                micro_bias_code=self._parse_binary_option(fine),
+                waveform_code=self.ROM_WAVEFORM_CODES[waveform],
+                depth_code=awp1221_waveform_depth_code(depth),
+                half_cycle_code=self._parse_binary_option(half_label),
+                phase_code=self._parse_binary_option(phase_label),
+                point_time=int(point.strip(), 0),
+                repeat_count=int(repeat.strip(), 0),
+                infinite_loop=infinite,
+            )
+            word3 = merge_awp1221_waveform_word3(
+                0, self._parse_binary_option(offset), self._parse_binary_option(coarse)
+            )
+            grouped[slice_index] = [*descriptor, word3]
+        return tuple((index, tuple(grouped[index])) for index in sorted(grouped))
 
     def _capture_page_script_waveform(
         self,
@@ -2865,107 +3347,120 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         return snapshot, sram_slices, play_slice
 
     def _page_script_stage(self, stage_index: int) -> Awp1221StageScript:
-        variables = self._button_stage_vars[stage_index]
-        config = self._button_stage_config(stage_index)
-        threshold = str(variables["threshold"].get()).strip()
-        awp1221_parse_threshold_text(threshold)
+        model = self._current_settings_model()
+        semantic = model.shared.get(f"stage{stage_index}_semantics", {}) if model is not None else {}
+        config = semantic.get("button", {})
+        if not config:
+            raise ValueError(f"Stage{stage_index} settings are incomplete")
+        threshold = int(config["threshold"])
         return Awp1221StageScript(
-            mode=config["mode"],
-            ovv_code=config["time_code"],
-            jump=config["target"],
-            threshold=threshold,
+            mode=str(config["mode"]),
+            ovv_code=int(config["time_code"]),
+            jump=int(config["target"]),
+            threshold=("0x800" if threshold == 0x800 else awp1221_format_threshold_signed(threshold)),
             debounce=bool(config["debounce"]),
             use_high_12_bits=bool(config["use_high_12_bits"]),
-            wave=config["wave"],
-            repeat=config["repeat"],
+            wave=int(config["wave"]),
+            repeat=int(config["repeat"]),
         )
 
     def _apply_page_script_snapshot(self, snapshot: Awp1221PageScript, device_addr: int) -> None:
-        serial_label = next(
-            awp1221_sinc_serial_group_label(serial, start, end)
-            for serial, start, end in AWP1221_SINC_SERIAL_GROUPS
-            if serial == snapshot.serial
-        )
-        window_options = self._sinc_window_options(snapshot.serial)
-        window_label = window_options[min(snapshot.window_index, len(window_options) - 1)]
-        group = (
-            snapshot.max_voltage,
-            snapshot.min_voltage,
-            *snapshot.times_us,
-            snapshot.sin_repeat,
-            snapshot.depth,
-            window_label,
-        )
-        suspend = getattr(self, "_suspend_adc_live_writes", None)
-        with suspend() if suspend is not None else nullcontext():
-            self._board_rom_loading = True
-            self._sinc_loading_group = True
-            try:
-                self.auto_serial_var.set(snapshot.auto_serial)
-                self._sinc_group_values[snapshot.serial] = group
-                self._sinc_active_group = snapshot.serial
-                if self.sinc_serial_var.get() != serial_label:
-                    self.sinc_serial_var.set(serial_label)
-                else:
-                    for variable, value in zip(
-                        (
-                            self.sinc_max_voltage_var,
-                            self.sinc_min_voltage_var,
-                            *self._sinc_time_variables(),
-                            self.sinc_sin_repeat_var,
-                            self.sinc_depth_var,
-                            self.sinc_window_var,
-                        ),
-                        group,
-                    ):
-                        variable.set(value)
-                self.rom_waveform_var.set(snapshot.waveform)
-                self.rom_source_var.set(snapshot.source)
-                self.rom_slice_var.set(f"slice{snapshot.slice_index}")
-                self.rom_depth_var.set(snapshot.depth)
-                self.sinc_depth_var.set(snapshot.depth)
-                self.rom_micro_bias_var.set(self.MICRO_BIAS_OPTIONS[snapshot.fine])
-                self.rom_vpk_var.set(self.VPK_OPTIONS[snapshot.coarse])
-                self.rom_offset_var.set(self.OFFSET_OPTIONS[snapshot.offset])
-                half_options = self._half_cycle_options_for_waveform()
-                self.rom_half_cycle_var.set(half_options[min(snapshot.half, len(half_options) - 1)])
-                phase_options = awp1221_phase_options(snapshot.waveform, snapshot.half)
-                self.rom_phase_var.set(phase_options[min(snapshot.phase, len(phase_options) - 1)])
-                self.rom_point_time_var.set(snapshot.point_time)
-                self.rom_repeat_var.set(snapshot.rom_repeat)
-                self.rom_infinite_loop_var.set(snapshot.infinite)
-                for stage_index, stage in enumerate(snapshot.stages):
-                    variables = self._button_stage_vars[stage_index]
-                    variables["event_mode"].set(stage.mode)
-                    variables["ovv_time"].set(awp1221_adc_time_label(stage.ovv_code))
-                    variables["jump_target"].set(f"Stage{stage.jump}")
-                    variables["threshold"].set(stage.threshold)
-                    variables["debounce"].set(stage.debounce)
-                    variables["use_high_12_bits"].set(stage.use_high_12_bits)
-                    variables["wave"].set(self._format_trigger_waveform(stage.wave))
-                    variables["repeat"].set(str(stage.repeat))
-                self.debounce_time_var.set(snapshot.debounce_ms)
-                self.adc_sample_update_var.set(AWP1221_ADC_SAMPLE_UPDATE_OPTIONS[snapshot.sample_index])
-                self.zero_time_var.set(AWP1221_ZERO_TIME_OPTIONS[snapshot.zero_index])
-                self.press_return_bit_time_var.set(
-                    AWP1221_RETURN_BIT_TIME_OPTIONS[snapshot.press_return_index]
-                )
-                self.release_return_bit_time_var.set(
-                    AWP1221_RETURN_BIT_TIME_OPTIONS[snapshot.release_return_index]
-                )
-                self.zps_enabled_var.set(snapshot.zps_enabled)
-                self.zps_detect_var.set(snapshot.zps_detect)
-                self.sleep_sensitivity_var.set(snapshot.sleep_sensitivity)
-                self.adc_ldo_var.set(AWP1221_ADC_LDO_OPTIONS[snapshot.ldo_index])
-            finally:
-                self._board_rom_loading = False
-                self._sinc_loading_group = False
-        if snapshot.kind != "sinc":
-            self._board_rom_slice = snapshot.slice_index
-            self._remember_board_rom()
-        self._sync_auto_serial_page_state()
-        self._refresh_waveform_controls()
-        self._schedule_button_rom_preview()
+        model = self._current_settings_model()
+        if model is None:
+            return
+        if snapshot.advanced_state:
+            encoded = snapshot.advanced_state
+            payload = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+            if not isinstance(payload, dict) or not isinstance(payload.get("shared"), dict):
+                raise ValueError("Invalid AWP1221 page settings metadata")
+            model.shared = payload["shared"]
+            model.advanced = payload.get("advanced", {}) if isinstance(payload.get("advanced", {}), dict) else {}
+        else:
+            serial_label = next(
+                awp1221_sinc_serial_group_label(serial, start, end)
+                for serial, start, end in AWP1221_SINC_SERIAL_GROUPS
+                if serial == snapshot.serial
+            )
+            window_options = self._sinc_window_options(snapshot.serial)
+            window_label = window_options[min(snapshot.window_index, len(window_options) - 1)]
+            group = (snapshot.max_voltage, snapshot.min_voltage, *snapshot.times_us,
+                     snapshot.sin_repeat, snapshot.depth, window_label)
+            descriptors = dict(model.shared.get("waveform_descriptors", {}))
+            sinc_groups = dict(descriptors.get("sinc_groups", {}))
+            rom_by_slice = dict(descriptors.get("rom_by_slice", {}))
+            sinc_groups[snapshot.serial] = list(group)
+            rom_by_slice[str(snapshot.slice_index)] = [
+                snapshot.waveform, self.VPK_OPTIONS[snapshot.coarse],
+                self.MICRO_BIAS_OPTIONS[snapshot.fine], self.OFFSET_OPTIONS[snapshot.offset],
+                snapshot.point_time, snapshot.rom_repeat, snapshot.source,
+            ]
+            recipe = {
+                "kind": snapshot.kind, "auto_serial": snapshot.auto_serial,
+                "serial": snapshot.serial, "slice_index": snapshot.slice_index,
+                "source": snapshot.source, "waveform": snapshot.waveform,
+                "rom_depth": snapshot.depth, "micro_bias": self.MICRO_BIAS_OPTIONS[snapshot.fine],
+                "vpk": self.VPK_OPTIONS[snapshot.coarse], "offset": self.OFFSET_OPTIONS[snapshot.offset],
+                "half_cycle": self.HALF_CYCLE_OPTIONS_BY_WAVEFORM.get(snapshot.waveform, ("00 - Full",))[min(snapshot.half, 3)],
+                "phase": str(snapshot.phase), "point_time": snapshot.point_time,
+                "rom_repeat": snapshot.rom_repeat, "infinite_loop": snapshot.infinite,
+                "sinc_group": list(group),
+            }
+            updates: dict[str, Any] = {
+                "waveform_recipe": recipe,
+                "waveform_descriptors": {"sinc_groups": sinc_groups, "rom_by_slice": rom_by_slice},
+                "adc_settings": {
+                    "debounce_time": snapshot.debounce_ms,
+                    "sample_update": AWP1221_ADC_SAMPLE_UPDATE_OPTIONS[snapshot.sample_index],
+                    "zero_time": AWP1221_ZERO_TIME_OPTIONS[snapshot.zero_index],
+                    "press_return_bit_time": AWP1221_RETURN_BIT_TIME_OPTIONS[snapshot.press_return_index],
+                    "release_return_bit_time": AWP1221_RETURN_BIT_TIME_OPTIONS[snapshot.release_return_index],
+                    "zps_enabled": snapshot.zps_enabled, "zps_detect": snapshot.zps_detect,
+                    "sleep_sensitivity": snapshot.sleep_sensitivity,
+                    "adc_ldo": AWP1221_ADC_LDO_OPTIONS[snapshot.ldo_index],
+                    "auto_serial": snapshot.auto_serial,
+                },
+            }
+            for stage_index, stage in enumerate(snapshot.stages):
+                button = {
+                    "mode": stage.mode, "time_code": stage.ovv_code, "target": stage.jump,
+                    "debounce": stage.debounce, "use_high_12_bits": stage.use_high_12_bits,
+                    "threshold": awp1221_parse_threshold_text(stage.threshold),
+                    "wave": stage.wave, "repeat": stage.repeat,
+                }
+                registers = self.STAGE_REGISTER_RANGES[stage_index]
+                previous = model.shared.get(f"stage{stage_index}_semantics", {})
+                old = tuple(previous.get("register_values", (0, 0, 0, 0, 0)))
+                current = {register: int(value) & 0xFFFF for register, value in zip(registers, old)}
+                if len(current) != 5:
+                    current = {register: 0 for register in registers}
+                current.update(self._button_stage_values_from_config(stage_index, current, button))
+                words = tuple(current[register] for register in registers)
+                updates[f"stage{stage_index}_semantics"] = {
+                    "button": button, "register_values": words,
+                    "type4_unsupported": self._type4_unsupported_stage(words, button, stage_index),
+                }
+            model.update_shared(updates)
+            model.set_advanced("type4_unsupported", tuple(sorted({
+                reason for index in range(2)
+                for reason in model.shared.get(f"stage{index}_semantics", {}).get("type4_unsupported", ())
+            })))
+        self._settings_sync_depth += 1
+        try:
+            if self.host is not None:
+                self.host.apply_settings_model(model)
+            else:
+                self._apply_settings_model_to_view(model)
+        finally:
+            self._settings_sync_depth -= 1
+        model.mark_applied()
+        if self.host is not None:
+            self.host._settings_model_changed(self, model)
+            channels = model.advanced.get("gpio", {}).get("channels", ())
+            if len(channels) == 2 and all(
+                isinstance(channel, dict) and channel.get("function") is not None
+                for channel in channels
+            ):
+                self.host.apply_gpio_settings()
         if snapshot.kind != "sinc" or int(device_addr) != self.device_addr():
             return
         try:
@@ -3007,16 +3502,29 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
 
     def apply_software_preset(self, preset_index: int) -> bool:
-        if self.mode_key != "button_mode" or not 0 <= preset_index < len(self.BUTTON_SOFTWARE_PRESETS):
+        if not 0 <= preset_index < len(self.BUTTON_SOFTWARE_PRESETS):
             self._show_preset_pending()
             return False
         preset = self.BUTTON_SOFTWARE_PRESETS[preset_index]
         try:
-            self._load_button_software_preset(preset)
+            model = self._current_settings_model()
+            if model is None:
+                return False
+            self._capture_settings_model(model)
+            self._apply_software_preset_to_model(model, preset)
+            if self.host is not None:
+                self.host.apply_settings_model(model)
+            else:
+                self._apply_settings_model_to_view(model)
             plan = self._build_current_sinc_plan()
             stage_configs = tuple(
-                self._button_stage_config(stage_index)
-                for stage_index in range(len(preset["stages"]))
+                model.shared[f"stage{stage_index}_semantics"]["button"]
+                if self.mode_key == "button_mode"
+                else (
+                    tuple(model.shared[f"stage{stage_index}_semantics"]["register_values"]),
+                    str(model.shared[f"stage{stage_index}_semantics"]["button"]["mode"]),
+                )
+                for stage_index in range(2)
             )
             settings_config = self._adc_settings_config()
         except Exception as exc:
@@ -3056,6 +3564,82 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             ),
         )
         return True
+
+    def _apply_software_preset_to_model(
+        self,
+        model: ChipSettingsModel,
+        preset: dict[str, Any],
+    ) -> None:
+        waveform = preset["waveform"]
+        serial, start, _end = awp1221_sinc_serial_group(waveform["serial"])
+        times = tuple(str(value) for value in waveform["times_us"])
+        if serial in {"serial3", "serial4"} and len(times) != 4:
+            raise ValueError("Serial3/4 software presets must retain all four slice times")
+        if serial in {"serial1", "serial2"} and len(times) < 3:
+            raise ValueError("Serial1/2 software presets require three slice times")
+        descriptors = dict(model.shared.get("waveform_descriptors", {}))
+        sinc_groups = dict(descriptors.get("sinc_groups", {}))
+        existing = tuple(sinc_groups.get(serial, ()))
+        window = existing[-1] if len(existing) >= 9 else "-"
+        group = [
+            str(waveform["max_voltage"]), str(waveform["min_voltage"]), *times,
+            *("1" for _ in range(4 - len(times))),
+            str(waveform.get("sin_repeat", 1)), str(waveform["depth"]), str(window),
+        ]
+        sinc_groups[serial] = group
+        recipe = dict(model.shared.get("waveform_recipe", {}))
+        recipe.update({
+            "kind": "sinc", "auto_serial": bool(waveform["auto_serial"]),
+            "serial": serial, "slice_index": start, "source": "ROM",
+            "waveform": "SINC", "rom_depth": str(waveform["depth"]),
+            "sinc_group": group,
+        })
+        settings = dict(model.shared.get("adc_settings", {}))
+        settings.update(dict(preset["settings"]))
+        settings["auto_serial"] = bool(waveform["auto_serial"])
+        for register, value in preset.get("extra_register_writes", ()):
+            if int(register) == AWP1221_ADC_LOAD_REGISTER:
+                settings["adc_ldo"] = awp1221_adc_load_label(int(value))
+        updates: dict[str, Any] = {
+            "waveform_recipe": recipe,
+            "waveform_descriptors": {**descriptors, "sinc_groups": sinc_groups},
+            "adc_settings": settings,
+        }
+        unsupported: list[str] = []
+        for stage_index, preset_stage in enumerate(preset["stages"]):
+            config = {
+                "mode": str(preset_stage["event_mode"]),
+                "time_code": awp1221_adc_time_code(preset_stage["ovv_time"]),
+                "target": self._stage_target_var_value(preset_stage["jump_target"]),
+                "debounce": bool(preset_stage["debounce"]),
+                "use_high_12_bits": bool(preset_stage["use_high_12_bits"]),
+                "threshold": awp1221_parse_threshold_text(preset_stage["threshold"]),
+                "wave": self._parse_trigger_waveform(preset_stage["wave"]),
+                "repeat": int(str(preset_stage["repeat"]), 0),
+            }
+            registers = self.STAGE_REGISTER_RANGES[stage_index]
+            previous = model.shared.get(f"stage{stage_index}_semantics", {})
+            old = tuple(previous.get("register_values", (0, 0, 0, 0, 0)))
+            current = {register: int(value) & 0xFFFF for register, value in zip(registers, old)}
+            if len(current) != 5:
+                current = {register: 0 for register in registers}
+            current.update(self._button_stage_values_from_config(stage_index, current, config))
+            words = tuple(current[register] for register in registers)
+            unsupported.extend(self._type4_unsupported_stage(words, config, stage_index))
+            updates[f"stage{stage_index}_semantics"] = {
+                "button": config, "register_values": words,
+                "type4_unsupported": self._type4_unsupported_stage(words, config, stage_index),
+            }
+        model.update_shared(updates)
+        model.set_advanced("type4_unsupported", tuple(sorted(set(unsupported))))
+
+    @staticmethod
+    def _stage_target_var_value(text: str) -> int:
+        if text in ("Stage0", "0"):
+            return 0
+        if text in ("Stage1", "1"):
+            return 1
+        raise ValueError(f"Jump target must be Stage0 or Stage1, not {text}")
 
     def _load_button_software_preset(self, preset: dict[str, Any]) -> None:
         suspend = getattr(self, "_suspend_adc_live_writes", None)
@@ -3119,7 +3703,11 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         with _serial_batch(self.ctx.serial):
             self._write_sinc_plan_batch(device_addr, plan)
             for stage_index, config in enumerate(stage_configs):
-                self._write_button_adc_stage(stage_index, config, device_addr)
+                if isinstance(config, tuple):
+                    values, event_mode = config
+                    self._write_adc_stage(stage_index, values, device_addr, event_mode=event_mode)
+                else:
+                    self._write_button_adc_stage(stage_index, config, device_addr)
             self._write_adc_settings(settings_config, device_addr)
             for register, value in extra_writes:
                 self._write_register_value(register, value, device_addr)
@@ -4252,6 +4840,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if owner is not None and shared_state is not None and revision is not None:
             shared_state.sinc_key = key
         self._sinc_verified_key = key
+        model = self._current_settings_model()
+        if model is not None:
+            model.mark_applied()
         messagebox.showinfo(self.tr("info"), self.tr("write_success"))
 
     def _sinc_play_allowed(self) -> bool:
@@ -6038,6 +6629,12 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         setattr(self, name, None)
 
     def destroy(self) -> None:
+        for variable, trace_id in self._settings_trace_ids:
+            try:
+                variable.trace_remove("write", trace_id)
+            except (AttributeError, tk.TclError):
+                pass
+        self._settings_trace_ids.clear()
         for name in (
             "_button_adc_reflow_job",
             "_comm_log_layout_job",
@@ -6775,6 +7372,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._refresh_waveform_peak_to_peak()
         self._refresh_waveform_controls()
         self.mode_title_label.configure(text=self.tr(self.mode_key))
+        if self.preset_toolbar is not None:
+            self.preset_toolbar.refresh_language()
         if self.mode_key == "button_mode":
             self._refresh_pressure_status()
             for widget, key in self._translated_widgets:
@@ -6864,6 +7463,10 @@ class AWP1221Page(BasePage):
         self.mode_pages = LazyPages(self._install_mode_page)
         self._shared_state_owner = AWP1221SharedStateOwner()
         self._shared_addr: int | None = None
+        self._settings_store = ChipSettingsStore(model_factory=AWP1221ChipSettingsModel)
+        self._settings_model: AWP1221ChipSettingsModel | None = None
+        self._settings_defaults: tuple[dict[str, Any], dict[str, Any]] | None = None
+        self._settings_sync_depth = 0
         self._labels: dict[str, ttk.Label] = {}
         self._buttons: dict[str, ttk.Button] = {}
         self._preparing = defer_build
@@ -6940,7 +7543,21 @@ class AWP1221Page(BasePage):
         yield
         yield from self.mode_pages.prepare("button_mode")
         self.show_mode("button_mode")
+        self._remember_settings_defaults()
         self.refresh_language()
+
+    def _remember_settings_defaults(self) -> None:
+        if self._settings_defaults is not None:
+            return
+        page = dict.get(self.mode_pages, "button_mode")
+        if page is None:
+            return
+        defaults = AWP1221ChipSettingsModel()
+        page._capture_settings_model(defaults)
+        defaults.revision = 0
+        defaults.dirty = False
+        defaults.invalidate_applied()
+        self._settings_defaults = (deepcopy(defaults.shared), deepcopy(defaults.advanced))
 
     def _install_mode_page(self, _name: str, page: AWP1221ModePage) -> None:
         page.grid(row=0, column=0, sticky="nsew")
@@ -7443,6 +8060,10 @@ class AWP1221Page(BasePage):
         return False
 
     def _on_addr_changed(self) -> None:
+        if self._settings_model is not None:
+            current_page = self.mode_pages.get(self.current_mode)
+            if current_page is not None:
+                current_page._capture_settings_model(self._settings_model)
         try:
             address = self._device_addr()
         except (AttributeError, ValueError):
@@ -7456,8 +8077,123 @@ class AWP1221Page(BasePage):
                 self._invalidate_gpio_settings()
                 self._shared_addr = address
             self.ctx.state.extra["awp1221_device_addr"] = address
+            self._select_settings_model(address)
+
+    def _settings_connection_identity(self) -> tuple[Any, ...]:
+        identity = active_serial_identity(self.ctx, self.page_name)
+        if identity is not None:
+            return tuple(identity)
+        serial = self.ctx.serial
+        selector = getattr(serial, "selected_port_for_page", None)
+        try:
+            port = selector(self.page_name) if callable(selector) else None
+        except TypeError:
+            port = selector() if callable(selector) else None
+        if not port:
+            port = getattr(getattr(self.ctx, "state", None), "selected_port", None)
+        return ("awp1221", id(serial), str(port or ""), int(getattr(serial, "connection_generation", 0)))
+
+    def _select_settings_model(self, address: int | None = None) -> None:
+        if address is None:
+            address = self._device_addr()
+        model = self._settings_store.select_device(self._settings_connection_identity(), int(address))
+        if not model.shared and self._settings_defaults is not None:
+            model.shared = deepcopy(self._settings_defaults[0])
+            model.advanced = deepcopy(self._settings_defaults[1])
+        self._settings_model = model
+        self._settings_sync_depth += 1
+        try:
+            for page in tuple(dict.values(self.mode_pages)):
+                page._settings_model = model
+                page._apply_settings_model_to_view(model)
+            self._apply_settings_gpio(model.advanced.get("gpio"))
+            self._sync_awp1221_toolbar_slots(model)
+        finally:
+            self._settings_sync_depth -= 1
+
+    def _settings_model_changed(
+        self,
+        source: AWP1221ModePage,
+        model: ChipSettingsModel,
+    ) -> None:
+        self._settings_model = model  # type: ignore[assignment]
+        self._settings_sync_depth += 1
+        try:
+            for page in tuple(dict.values(self.mode_pages)):
+                if page is source:
+                    continue
+                page._settings_model = model
+                page._apply_settings_model_to_view(model)
+            self._apply_settings_gpio(model.advanced.get("gpio"))
+            self._sync_awp1221_toolbar_slots(model)
+        finally:
+            self._settings_sync_depth -= 1
+
+    def apply_settings_model(self, model: ChipSettingsModel | None = None) -> None:
+        """Refresh every already-created view from the chip-level draft."""
+        target = model or self._settings_model
+        if target is None:
+            return
+        self._settings_model = target  # type: ignore[assignment]
+        self._settings_sync_depth += 1
+        try:
+            for page in tuple(dict.values(self.mode_pages)):
+                page._settings_model = target
+                page._apply_settings_model_to_view(target)
+            self._apply_settings_gpio(target.advanced.get("gpio"))
+            self._sync_awp1221_toolbar_slots(target)
+        finally:
+            self._settings_sync_depth -= 1
+
+    def _sync_awp1221_toolbar_slots(self, model: ChipSettingsModel | None) -> None:
+        slot = model.slot_selection if model is not None else None
+        if slot is None:
+            slot = 0
+        for page in tuple(dict.values(self.mode_pages)):
+            page.board_slot_var.set(str(slot))
+            toolbar = page.preset_toolbar
+            if toolbar is not None:
+                toolbar.slot_var.set(str(slot))
+
+    def _apply_settings_gpio(self, gpio: Any) -> None:
+        if not isinstance(gpio, dict):
+            return
+        channels = gpio.get("channels")
+        if not isinstance(channels, (tuple, list)) or len(channels) != 2:
+            return
+        for index, channel in enumerate(channels):
+            if not isinstance(channel, dict):
+                continue
+            function = channel.get("function")
+            if function is None:
+                category = str(channel.get("category", "input"))
+                if category not in GPIO_CATEGORY_LABELS:
+                    category = "input"
+                self.gpio_category_vars[index].set(GPIO_CATEGORY_LABELS[category])
+                self.gpio_function_vars[index].set("")
+            else:
+                code = int(function)
+                label = GPIO_FUNCTION_LABELS.get(code)
+                if label is None:
+                    continue
+                category = gpio_function_category(code)
+                category_label = (
+                    f"0x{code:02X} (readback)"
+                    if category == "debug"
+                    else GPIO_CATEGORY_LABELS[category]
+                )
+                self.gpio_category_vars[index].set(category_label)
+                self.gpio_function_vars[index].set(label)
+            self.gpio_od_vars[index].set(bool(channel.get("open_drain", True)))
+            for combo in self.gpio_function_combos[index]:
+                combo.configure(values=self._gpio_function_labels(index))
+            self._refresh_gpio_mcu_label(index)
 
     def _on_serial_selector_changed(self, control: dict[str, Any]) -> None:
+        if self._settings_model is not None:
+            previous_page = self.mode_pages.get(self.current_mode)
+            if previous_page is not None:
+                previous_page._capture_settings_model(self._settings_model)
         super()._on_serial_selector_changed(control)
         self._set_en_state(None)
         self._shared_d4_panel_identity = None
@@ -7469,6 +8205,7 @@ class AWP1221Page(BasePage):
         owner = getattr(self, "_shared_state_owner", None)
         if owner is not None:
             owner.invalidate_all()
+        self._select_settings_model(self._device_addr())
 
     def _scan_for_chip(self) -> tuple[int | None, int | None, str]:
         last_detail = ""
@@ -7637,7 +8374,11 @@ class AWP1221Page(BasePage):
             return
         self.mode_scroll.clamp_width = mode == "button_mode"
         previous_page = self.mode_pages.get(self.current_mode)
+        if previous_page is not None and self._settings_model is not None:
+            previous_page._capture_settings_model(self._settings_model)
         next_page = self.mode_pages[mode]
+        next_page._settings_model = self._settings_model
+        next_page._apply_settings_model_to_view(self._settings_model)
         if previous_page is not None and previous_page is not next_page and hasattr(previous_page, "on_hide"):
             previous_page.on_hide()
         self.current_mode = mode
