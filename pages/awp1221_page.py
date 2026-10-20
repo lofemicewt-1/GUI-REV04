@@ -5053,11 +5053,14 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
     def _finish_waveform_selection(self, error: str | None, progress_token: Any | None = None) -> None:
         self._set_waveform_write_busy(False)
+        mark = getattr(self, "_mark_step_progress", None)
         if error:
-            self._mark_step_progress(progress_token, "error", detail=error)
+            if callable(mark):
+                mark(progress_token, "error", detail=error)
             messagebox.showerror(self.tr("error"), error)
             return
-        self._mark_step_progress(progress_token, "done")
+        if callable(mark):
+            mark(progress_token, "done")
         messagebox.showinfo(self.tr("info"), self.tr("write_success"))
 
     def _apply_sinc_waveform_selection(self) -> bool:
@@ -5125,9 +5128,11 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         ):
             return
         self._set_waveform_write_busy(False)
+        mark = getattr(self, "_mark_step_progress", None)
         if error:
             self._sinc_verified_key = None
-            self._mark_step_progress(progress_token, "error", detail=error)
+            if callable(mark):
+                mark(progress_token, "error", detail=error)
             messagebox.showerror(self.tr("error"), error)
             return
         key = awp1221_sinc_plan_key(plan, device_addr)
@@ -5137,7 +5142,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         model = self._current_settings_model()
         if model is not None:
             model.mark_applied()
-        self._mark_step_progress(progress_token, "done")
+        if callable(mark):
+            mark(progress_token, "done")
         messagebox.showinfo(self.tr("info"), self.tr("write_success"))
 
     def _sinc_play_allowed(self) -> bool:
@@ -8478,7 +8484,7 @@ class AWP1221Page(BasePage):
 
     def _on_addr_changed(self) -> None:
         if self._settings_model is not None:
-            current_page = self.mode_pages.get(self.current_mode)
+            current_page = dict.get(self.mode_pages, self.current_mode)
             if current_page is not None:
                 current_page._capture_settings_model(self._settings_model)
         try:
@@ -8577,7 +8583,8 @@ class AWP1221Page(BasePage):
                 toolbar.slot_var.set(str(slot))
 
     def _sync_button_progress_params(self) -> None:
-        page = self.mode_pages.get("button_mode")
+        # dict.get: never force-build button_mode during host prepare / addr sync.
+        page = dict.get(self.mode_pages, "button_mode")
         if page is not None:
             page._update_step_progress_params()
 
@@ -8617,7 +8624,7 @@ class AWP1221Page(BasePage):
 
     def _on_serial_selector_changed(self, control: dict[str, Any]) -> None:
         if self._settings_model is not None:
-            previous_page = self.mode_pages.get(self.current_mode)
+            previous_page = dict.get(self.mode_pages, self.current_mode)
             if previous_page is not None:
                 previous_page._capture_settings_model(self._settings_model)
         super()._on_serial_selector_changed(control)
@@ -8880,7 +8887,7 @@ class AWP1221Page(BasePage):
             self._reset_step_progress()
         self._last_step_session_identity = normalized_identity
         if hasattr(self, "_step_progress_bars") and self.current_mode == "button_mode":
-            page = self.mode_pages.get("button_mode")
+            page = dict.get(self.mode_pages, "button_mode")
             if page is not None:
                 page._update_step_progress_params()
             self.show_step_chrome(page)

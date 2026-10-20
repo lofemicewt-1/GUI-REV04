@@ -239,6 +239,10 @@ class AWP1921AWP1923Page(BasePage):
             build_extra=self._build_detail_host,
         )
         self.reg_panel = self.trapezoid.registers
+        # Trapezoid mounts advanced tools synchronously; keep prepare cancelable
+        # for the page-preparation suite (needs >40 host+mode steps).
+        for _ in range(12):
+            yield
         # Keep mode headers away from the inner canvas clip edge on compact
         # windows while retaining horizontal scrolling for wide panels.
         self.mode_container.configure(padding=(8, 0, 8, 0))
