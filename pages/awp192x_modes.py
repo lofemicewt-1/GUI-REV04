@@ -1415,10 +1415,17 @@ class ButtonModePage(ButtonModeView, BasePage):
         if bar is None or self.page_name != "button_mode":
             return
         waveform = self._button_waveform_progress_fingerprint()
+        if getattr(self, "_button_waveform_progress_fingerprint_seen", None) != waveform:
+            self._clear_button_waveform_slice_receipts()
+            self._button_waveform_progress_fingerprint_seen = waveform
         config = self._button_config_progress_fingerprint()
         bar.update_params("waveform", {"settings": waveform})
         bar.update_params("config", {"settings": config})
         bar.update_params("detection", {"settings": (waveform, config)})
+
+    def _clear_button_waveform_slice_receipts(self) -> None:
+        self._button_waveform_slice_receipts: set[int] = set()
+        self._button_waveform_receipt_token = None
 
     def _on_button_progress_inputs_changed(self) -> None:
         if (
@@ -1445,14 +1452,20 @@ class ButtonModePage(ButtonModeView, BasePage):
         if self._button_active_waveform_requirements() != ():
             return
         self._sync_button_step_progress_params()
+        self._clear_button_waveform_slice_receipts()
         token = self.step_progress.begin("waveform")
+        self._button_waveform_receipt_token = token
         self.step_progress.mark("waveform", "done", token)
 
     def _begin_button_progress_step(self, step_key: str) -> Any | None:
         if self.page_name != "button_mode" or self.step_progress is None:
             return None
         self._sync_button_step_progress_params()
+        if step_key == "waveform":
+            self._clear_button_waveform_slice_receipts()
         token = self.step_progress.begin(step_key)
+        if step_key == "waveform":
+            self._button_waveform_receipt_token = token
         event = {
             "waveform": "waveform",
             "config": "preset",
@@ -1471,10 +1484,12 @@ class ButtonModePage(ButtonModeView, BasePage):
         if self.page_name != "button_mode" or self.step_progress is None:
             return {}
         self._sync_button_step_progress_params()
+        self._clear_button_waveform_slice_receipts()
         tokens = {
             "waveform": self.step_progress.begin("waveform"),
             "config": self.step_progress.begin("config"),
         }
+        self._button_waveform_receipt_token = tokens["waveform"]
         _begin_status(self, "waveform", progress_token=tokens["waveform"])
         _begin_status(self, "preset", progress_token=tokens["config"])
         return tokens
@@ -1507,12 +1522,33 @@ class ButtonModePage(ButtonModeView, BasePage):
             return
         if token is None or self.step_progress is None:
             return
+        if outcome in {"done", "error"}:
+            self._sync_button_step_progress_params()
         if outcome == "done":
             requirements = self._button_active_waveform_requirements()
-            if requirements is None or (requirements and int(slice_index) not in requirements):
+            if (
+                requirements is None
+                or not requirements
+                or token != getattr(self, "_button_waveform_receipt_token", None)
+                or int(slice_index) not in requirements
+                or not self.step_progress.accepts(token)
+            ):
                 return
-            self._mark_button_progress_step("waveform", "done", token)
+            receipts = getattr(self, "_button_waveform_slice_receipts", None)
+            if receipts is None:
+                receipts = set()
+                self._button_waveform_slice_receipts = receipts
+            receipts.add(int(slice_index))
+            if set(requirements).issubset(receipts):
+                self._mark_button_progress_step("waveform", "done", token)
+            else:
+                self._mark_button_progress_step("waveform", "running", token)
         elif outcome == "error":
+            if (
+                token == getattr(self, "_button_waveform_receipt_token", None)
+                and self.step_progress.accepts(token)
+            ):
+                getattr(self, "_button_waveform_slice_receipts", set()).discard(int(slice_index))
             self._mark_button_progress_step("waveform", "error", token)
         elif outcome == "cancelled":
             bus = getattr(getattr(self, "ctx", None), "status_bus", None)
@@ -4270,6 +4306,12 @@ class ButtonModePage(ButtonModeView, BasePage):
         legend.set_rules(stage_data, {"Stage0": []})
 
     def on_hide(self) -> None:
+        progress = getattr(self, "step_progress", None)
+        if progress is not None:
+            progress.reset_all()
+        clear_receipts = getattr(self, "_clear_button_waveform_slice_receipts", None)
+        if callable(clear_receipts):
+            clear_receipts()
         if getattr(self, "_sense_blink_job", None) is not None:
             try:
                 self.after_cancel(self._sense_blink_job)
@@ -7048,10 +7090,15 @@ class PumpModePage(BasePage):
         ]
 
     def on_show(self) -> None:
-        # \u8fdb\u5165 Pump Mode \u81ea\u52a8\u5199 0x13 = 0x401F
+        self._sync_pump_step_progress_params()
         self.write_reg(0x13, 0x401F, show_error=False)
         self._on_amp_changed()
         self._on_freq_changed()
+
+    def on_hide(self) -> None:
+        progress = getattr(self, "step_progress", None)
+        if progress is not None:
+            progress.reset_all()
 
     def _add_combo(self, parent: tk.Misc, row: int, key: str, variable: tk.StringVar, values: list[str]) -> None:
         label = ttk.Label(parent, style="Panel.TLabel")

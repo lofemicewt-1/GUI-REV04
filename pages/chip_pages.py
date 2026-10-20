@@ -874,8 +874,7 @@ class AWP1921AWP1923Page(BasePage):
                 finish = getattr(self, "finish_status", None)
                 if callable(finish):
                     finish(status_token, success=True)
-                for bar in list(self._step_progress_bars):
-                    bar.reset_all()
+                self._reset_step_progress()
                 if definition is not None:
                     self._refresh_detail_fields(definition=definition, view="write")
         except Exception as exc:
@@ -899,9 +898,8 @@ class AWP1921AWP1923Page(BasePage):
             if not ok:
                 messagebox.showerror(self.tr("error"), error)
                 return
-            if value == 0x5283 and progress_context == self._step_progress_context():
-                for bar in list(self._step_progress_bars):
-                    bar.reset_all()
+            if progress_context == self._step_progress_context():
+                self._reset_step_progress()
 
         def worker() -> None:
             response = self.ctx.serial.write_register_value(
@@ -926,8 +924,7 @@ class AWP1921AWP1923Page(BasePage):
 
         self.ctx.state.awp192x_device_addr = addr
         if previous_addr is not None and int(previous_addr) != addr:
-            for bar in list(self._step_progress_bars):
-                bar.reset_all()
+            self._reset_step_progress()
 
     def _step_progress_context(self) -> Any:
         from core.awp192x_settings import connection_key_for_context
@@ -954,9 +951,32 @@ class AWP1921AWP1923Page(BasePage):
         if page is not None and hasattr(page, "on_show"):
             page.on_show()
 
+    def on_hide(self) -> None:
+        page = dict.get(self.mode_pages, self.current_mode)
+        if page is not None and hasattr(page, "on_hide"):
+            page.on_hide()
+        self._reset_step_progress()
+
+    def _reset_step_progress(self) -> None:
+        for bar in list(self._step_progress_bars):
+            bar.reset_all()
+        for page in dict.values(self.mode_pages):
+            clear_receipts = getattr(page, "_clear_button_waveform_slice_receipts", None)
+            if callable(clear_receipts):
+                clear_receipts()
+
     def show_mode(self, mode: str, *, activate: bool = True) -> None:
         if mode not in self.mode_pages:
             return
+        previous_mode = self.current_mode
+        if mode != previous_mode:
+            previous_page = dict.get(self.mode_pages, previous_mode)
+            if previous_page is not None and hasattr(previous_page, "on_hide"):
+                previous_page.on_hide()
+        if mode != previous_mode or (activate and mode == "full_mode"):
+            # Mode changes and activation of Full invalidate proofs across
+            # every mode, including transitions where no bar is active.
+            self._reset_step_progress()
         self.current_mode = mode
         self._sync_mode_button_styles()
         for page in dict.values(self.mode_pages):

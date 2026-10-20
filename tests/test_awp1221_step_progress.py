@@ -220,6 +220,24 @@ class Awp1221StepProgressTests(unittest.TestCase):
                 self.assertEqual(adc["state"], "error")
                 self.assertNotIn(part, adc["parts"])
 
+    def test_each_adc_begin_supersedes_older_attempts(self) -> None:
+        older = self.page._begin_adc_progress()
+        self.assertIs(self.page._capture_adc_progress_token(force_new=False), older)
+
+        newer = self.page._begin_adc_progress()
+        self.assertNotEqual(older.operation_id, newer.operation_id)
+        self.assertIs(self.page._adc_progress_token, newer)
+
+        self.progress.mark_part("adc", "settings", "done", older)
+        self.progress.mark("adc", "done", older)
+        self.assertEqual(self.progress.snapshot()["adc"]["state"], "running")
+
+        self.progress.mark_part("adc", "settings", "error", newer)
+        self.assertEqual(self.progress.snapshot()["adc"]["state"], "error")
+        self.progress.mark_part("adc", "settings", "done", older)
+        self.progress.mark("adc", "done", older)
+        self.assertEqual(self.progress.snapshot()["adc"]["state"], "error")
+
     def test_parameter_edit_rejects_late_waveform_and_detection_results(self) -> None:
         waveform_token = self.progress.begin("waveform")
         detection_token = self.progress.begin("detection")

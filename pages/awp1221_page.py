@@ -2757,12 +2757,11 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if progress is None:
             return None
         self._update_step_progress_params()
-        token = getattr(self, "_adc_progress_token", None)
-        if token is None or not progress.accepts(token):
-            token = progress.begin("adc")
-            self._adc_progress_token = token
-        else:
-            progress.mark("adc", "running", token)
+        # Explicit ADC starts supersede prior attempts. Verified-start
+        # component writes use _capture_adc_progress_token() to intentionally
+        # keep the same operation token while that attempt is in flight.
+        token = progress.begin("adc")
+        self._adc_progress_token = token
         self.begin_status("adc", progress_token=token)
         return token
 

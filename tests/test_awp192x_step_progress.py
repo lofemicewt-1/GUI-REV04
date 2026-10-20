@@ -79,6 +79,9 @@ class _Progress:
             and token.operation == self.operations[step]
         )
 
+    def accepts(self, token):
+        return token is not None and self._current(token.step, token)
+
     def mark(self, step, state, token):
         if self._current(step, token):
             self.states[step] = state
@@ -131,6 +134,7 @@ class Awp192xWaveformProgressTests(unittest.TestCase):
             page,
             ButtonModePage,
             "_mark_button_progress_step",
+            "_clear_button_waveform_slice_receipts",
             "_reconcile_rom_waveform_progress",
             "_on_button_waveform_write_result",
         )
@@ -169,6 +173,52 @@ class Awp192xWaveformProgressTests(unittest.TestCase):
         bar.update_params("waveform", {"settings": ("new waveform inputs",)})
         owner._on_button_waveform_write_result(stale, "done", 0x44, 0)
         self.assertEqual(bar.states["waveform"], "idle")
+
+    def test_ram_slice_receipts_complete_only_after_every_required_slice(self):
+        owner = self._owner((0, 1))
+        bar = owner.step_progress
+        token = bar.begin("waveform")
+        owner._button_waveform_receipt_token = token
+        owner._button_waveform_slice_receipts = set()
+
+        owner._on_button_waveform_write_result(token, "done", 0x44, 0)
+        self.assertEqual(bar.states["waveform"], "running")
+        self.assertEqual(owner._button_waveform_slice_receipts, {0})
+
+        owner._on_button_waveform_write_result(token, "done", 0x44, 2)
+        self.assertEqual(bar.states["waveform"], "running")
+        self.assertEqual(owner._button_waveform_slice_receipts, {0})
+
+        owner._on_button_waveform_write_result(token, "done", 0x44, 1)
+        self.assertEqual(bar.states["waveform"], "done")
+        self.assertEqual(owner._button_waveform_slice_receipts, {0, 1})
+
+    def test_ram_slice_receipts_clear_on_parameter_change_and_reset(self):
+        owner = self._owner((0, 1))
+        owner.current_fingerprint = ("before",)
+        owner._button_waveform_progress_fingerprint = lambda: owner.current_fingerprint
+        owner._button_config_progress_fingerprint = lambda: ()
+        owner._sync_button_step_progress_params = MethodType(
+            ButtonModePage._sync_button_step_progress_params, owner
+        )
+        owner._button_waveform_progress_fingerprint_seen = ("before",)
+        owner._button_waveform_slice_receipts = {0}
+        owner._button_waveform_receipt_token = owner.step_progress.begin("waveform")
+
+        owner.current_fingerprint = ("after",)
+        owner._sync_button_step_progress_params()
+        self.assertEqual(owner._button_waveform_slice_receipts, set())
+        self.assertIsNone(owner._button_waveform_receipt_token)
+
+        owner._button_waveform_slice_receipts = {1}
+        host = SimpleNamespace(
+            _step_progress_bars=[owner.step_progress],
+            mode_pages={"button_mode": owner},
+        )
+        host._reset_step_progress = MethodType(AWP1921AWP1923Page._reset_step_progress, host)
+        host._reset_step_progress()
+        self.assertEqual(owner._button_waveform_slice_receipts, set())
+        self.assertIsNone(owner._button_waveform_receipt_token)
 
 
 class Awp192xButtonProgressTests(unittest.TestCase):
@@ -366,40 +416,44 @@ class Awp192xPumpProgressTests(unittest.TestCase):
 
 
 class Awp192xHostProgressTests(unittest.TestCase):
-    def test_successful_reset_state_command_resets_progress_without_extra_writes(self):
-        progress = _Progress(("output", "start"))
-        progress.states["output"] = "done"
-        progress.states["start"] = "done"
-        calls = []
-        serial = SimpleNamespace(
-            is_connected=True,
-            write_register_value=lambda *args, **kwargs: calls.append((args, kwargs))
-            or SimpleNamespace(ok=True, error=""),
-        )
-        context = ProgressContext(("COM1", 2, 3), 0x44, "pump_mode")
-        page = SimpleNamespace(
-            ctx=SimpleNamespace(serial=serial, state=SimpleNamespace(awp192x_device_addr=0x44)),
-            state_buttons={},
-            _step_progress_bars=[progress],
-            _step_progress_context=lambda: context,
-            tr=lambda key: key,
-        )
+    def test_successful_state_commands_reset_progress_without_extra_writes(self):
+        for value in (0x5283, 0x5350, 0x5337, 0x5F76):
+            with self.subTest(value=hex(value)):
+                progress = _Progress(("output", "start"))
+                progress.states["output"] = "done"
+                progress.states["start"] = "done"
+                calls = []
+                serial = SimpleNamespace(
+                    is_connected=True,
+                    write_register_value=lambda *args, **kwargs: calls.append((args, kwargs))
+                    or SimpleNamespace(ok=True, error=""),
+                )
+                context = ProgressContext(("COM1", 2, 3), 0x44, "pump_mode")
+                page = SimpleNamespace(
+                    ctx=SimpleNamespace(serial=serial, state=SimpleNamespace(awp192x_device_addr=0x44)),
+                    state_buttons={},
+                    mode_pages={},
+                    _step_progress_bars=[progress],
+                    _step_progress_context=lambda: context,
+                    tr=lambda key: key,
+                )
+                page._reset_step_progress = MethodType(AWP1921AWP1923Page._reset_step_progress, page)
 
-        class ImmediateThread:
-            def __init__(self, *, target, args=(), daemon):
-                self.target, self.args = target, args
+                class ImmediateThread:
+                    def __init__(self, *, target, args=(), daemon):
+                        self.target, self.args = target, args
 
-            def start(self):
-                self.target(*self.args)
+                    def start(self):
+                        self.target(*self.args)
 
-        with patch("pages.chip_pages.threading.Thread", ImmediateThread), patch(
-            "core.ui_dispatch.post_to_ui", lambda _widget, callback, *args: callback(*args)
-        ):
-            AWP1921AWP1923Page.write_chip_state(page, 0x5283)
+                with patch("pages.chip_pages.threading.Thread", ImmediateThread), patch(
+                    "core.ui_dispatch.post_to_ui", lambda _widget, callback, *args: callback(*args)
+                ):
+                    AWP1921AWP1923Page.write_chip_state(page, value)
 
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][0][1:3], (0x01, 0x5283))
-        self.assertEqual(progress.states, {"output": "idle", "start": "idle"})
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(calls[0][0][1:3], (0x01, value))
+                self.assertEqual(progress.states, {"output": "idle", "start": "idle"})
 
     def test_successful_custom_register_write_resets_progress(self):
         progress = _Progress(("output", "start"))
@@ -419,8 +473,10 @@ class Awp192xHostProgressTests(unittest.TestCase):
             _parse_int=lambda text: int(text, 0),
             write_value_var=_Value("0x1234"),
             _step_progress_bars=[progress],
+            mode_pages={},
             tr=lambda key: key,
         )
+        page._reset_step_progress = MethodType(AWP1921AWP1923Page._reset_step_progress, page)
 
         AWP1921AWP1923Page.write_register(page)
 
@@ -496,6 +552,20 @@ class Awp192xChromeTkTests(unittest.TestCase):
         self.assertEqual(str(self.page.write_value_entry.cget("textvariable")), str(self.page.write_value_var))
         self.page.write_value_var.set("0x1234")
         self.assertEqual(self.serial.calls, [])
+
+    def test_button_full_button_mode_transition_clears_completed_proofs(self):
+        # Offline harness has no port_session, so mark() cannot land a blue
+        # cell. Seed a completed proof directly, then verify mode/hide resets.
+        self.page.show_mode("button_mode")
+        button = self.page.mode_pages["button_mode"]
+        bar = button.step_progress
+        bar._data["config"].state = "done"
+        self.assertEqual(bar.snapshot()["config"]["state"], "done")
+
+        self.page.show_mode("full_mode")
+        self.assertEqual(bar.snapshot()["config"]["state"], "idle")
+        self.page.show_mode("button_mode")
+        self.assertEqual(bar.snapshot()["config"]["state"], "idle")
 
 
 if __name__ == "__main__":

@@ -340,6 +340,98 @@ class Awp1018StepProgressTests(unittest.TestCase):
             value["state"] == "idle" for value in diff.step_progress.snapshot().values()
         ))
 
+    def test_queued_ack_keeps_its_submission_token_across_reset_all(self):
+        app, host = self.open_host()
+        page = host.mode_pages["awp1018_normal_mode"]
+        manager = self.attach_manager(app, host)
+        router = app.serial
+        queued = {}
+        router.queue_register_setting = lambda *args, **kwargs: queued.update(
+            args=args, kwargs=kwargs
+        )
+        page._progress_tokens.pop("adc", None)
+
+        with patch(
+            "pages.awp1018_page.post_to_ui",
+            lambda _widget, callback, *args: callback(*args),
+        ):
+            self.assertTrue(
+                page._queue_general_setting(0x22, 150, progress_part="debounce")
+            )
+            submitted_token = page._progress_tokens["adc"]
+            self.assertTrue(page.step_progress.accepts(submitted_token))
+
+            page.step_progress.reset_all()
+            self.assertFalse(page.step_progress.accepts(submitted_token))
+            queued["kwargs"]["on_result"]("completed")
+
+        self.flush_progress(app)
+        self.assertEqual(page.step_progress.snapshot()["adc"]["state"], "idle")
+        self.assertNotIn("debounce", page.step_progress.snapshot()["adc"]["parts"])
+        self.assertEqual(manager.calls, [])
+
+    def test_successful_custom_register_sleep_and_shutdown_clear_proofs_but_reads_do_not(self):
+        app, host = self.open_host()
+        page = host.mode_pages["awp1018_normal_mode"]
+        manager = self.attach_manager(app, host)
+        progress = page.step_progress
+
+        def mark_channels_done():
+            # channels is an aggregate step (mask + mapping); mark(done)
+            # alone is rejected until both part receipts exist.
+            progress.update_params("channels", {"mask": "m1", "mapping": "g1"})
+            token = progress.begin("channels")
+            progress.mark_part("channels", "mask", "done", token)
+            progress.mark_part("channels", "mapping", "done", token)
+            self.flush_progress(app)
+            self.assertEqual(progress.snapshot()["channels"]["state"], "done")
+
+        host.reg_addr_var.set("0x12")
+        manager.registers[0x12] = 0x1234
+        mark_channels_done()
+        host.read_register()
+        self.flush_progress(app)
+        self.assertEqual(progress.snapshot()["channels"]["state"], "done")
+
+        actions = (
+            ("write_register", host.write_register),
+            ("sleep_chip", host.sleep_chip),
+            ("shutdown_chip", host.shutdown_chip),
+        )
+        for action_name, action in actions:
+            with self.subTest(action=action_name):
+                progress.reset_all()
+                mark_channels_done()
+                manager.calls.clear()
+                if action_name == "write_register":
+                    host.write_value_var.set("0x1234")
+                action()
+                self.flush_progress(app)
+                self.assertEqual(progress.snapshot()["channels"]["state"], "idle")
+                self.assertEqual(len(manager.calls), 1)
+                self.assertEqual(manager.calls[0][0], "write")
+
+    def test_import_without_chip_apply_reconciles_changed_draft_fingerprints(self):
+        app, host = self.open_host()
+        page = host.mode_pages["awp1018_normal_mode"]
+        manager = self.attach_manager(app, host)
+        settings = page.export_settings()
+        settings["channels"][0] = not settings["channels"][0]
+
+        progress = page.step_progress
+        progress.update_params("channels", {"mask": "m1", "mapping": "g1"})
+        token = progress.begin("channels")
+        progress.mark_part("channels", "mask", "done", token)
+        progress.mark_part("channels", "mapping", "done", token)
+        self.flush_progress(app)
+        self.assertEqual(progress.snapshot()["channels"]["state"], "done")
+
+        manager.calls.clear()
+        self.assertTrue(page.import_settings(settings, apply_to_chip=False))
+        self.flush_progress(app)
+        self.assertEqual(page.step_progress.snapshot()["channels"]["state"], "idle")
+        self.assertEqual(manager.calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

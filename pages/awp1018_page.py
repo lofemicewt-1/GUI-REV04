@@ -424,6 +424,7 @@ class AWP1018Page(BasePage):
                 messagebox.showerror(self.tr("error"), resp.error)
             else:
                 self.finish_status(status_token, success=True)
+                self._reset_step_progress()
         except Exception as exc:
             self.finish_status(status_token, success=False, error=str(exc))
             messagebox.showerror(self.tr("error"), str(exc))
@@ -457,10 +458,12 @@ class AWP1018Page(BasePage):
             self._reset_step_progress()
 
     def sleep_chip(self) -> None:
-        self._write_reg(0x01, 0x5350)
+        if self._write_reg(0x01, 0x5350):
+            self._reset_step_progress()
 
     def shutdown_chip(self) -> None:
-        self._write_reg(0x01, 0x5337)
+        if self._write_reg(0x01, 0x5337):
+            self._reset_step_progress()
 
     def wake_chip(self) -> None:
         if not self._ensure_connected():
@@ -1673,10 +1676,13 @@ class AWP1018NormalModePage(BasePage):
         fingerprint: Any,
         outcome: str,
         submitted_context: ProgressContext | None,
+        token: Any | None,
     ) -> None:
         if outcome not in {"completed", "failed", "rejected"}:
             return
-        if self.step_progress is None or self._loading_settings or self._preparing:
+        if self.step_progress is None or token is None or self._loading_settings or self._preparing:
+            return
+        if not self.step_progress.accepts(token):
             return
         host = self._progress_host
         if host is None or submitted_context != host._progress_context():
@@ -1685,7 +1691,6 @@ class AWP1018NormalModePage(BasePage):
         current = self._progress_fingerprints()["adc"].get(part_key)
         if current != fingerprint:
             return
-        token = self._progress_token("adc")
         self._progress_mark_part("adc", part_key, "done" if outcome == "completed" else "error", token)
         self.report_progress_status(
             token,
@@ -4514,6 +4519,7 @@ class AWP1018NormalModePage(BasePage):
             self._refresh_diff_waveform_controls()
         self._show_stage(self.active_stage.get())
         self._draw_rom_waveform()
+        self._refresh_step_progress_params()
         return self._write_imported_settings_to_chip() if apply_to_chip else True
 
     def _normalize_imported_amplitude(self, value: Any) -> str:
@@ -5615,6 +5621,7 @@ class AWP1018NormalModePage(BasePage):
                     part=progress_part,
                     submitted=fingerprint,
                     context=submitted_context,
+                    submitted_token=token,
                 ) -> None:
                     post_to_ui(
                         self,
@@ -5623,6 +5630,7 @@ class AWP1018NormalModePage(BasePage):
                         submitted,
                         outcome,
                         context,
+                        submitted_token,
                     )
 
                 on_result = observe
@@ -6552,10 +6560,16 @@ class AWP1018NormalModePage(BasePage):
                 host._reset_step_progress()
 
     def sleep_chip(self) -> None:
-        self.write_reg(0x01, 0x5350)
+        if self.write_reg(0x01, 0x5350):
+            host = self._progress_host
+            if host is not None:
+                host._reset_step_progress()
 
     def shutdown_chip(self) -> None:
-        self.write_reg(0x01, 0x5337)
+        if self.write_reg(0x01, 0x5337):
+            host = self._progress_host
+            if host is not None:
+                host._reset_step_progress()
 
     def wake_chip(self) -> None:
         if not self._ensure_connected():

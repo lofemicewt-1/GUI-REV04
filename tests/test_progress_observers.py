@@ -208,6 +208,28 @@ class WaveformObserverTests(unittest.TestCase):
 
 
 class StatusProgressIntegrationTests(unittest.TestCase):
+    def test_1221_each_explicit_adc_begin_mints_a_new_operation(self) -> None:
+        progress = mock.Mock()
+        progress.begin.side_effect = ("first-token", "second-token")
+        statuses = []
+        page = SimpleNamespace(
+            step_progress=progress,
+            _update_step_progress_params=lambda: None,
+            begin_status=lambda event, **kwargs: statuses.append((event, kwargs)),
+            _adc_progress_token=None,
+        )
+
+        first = AWP1221ModePage._begin_adc_progress(page)
+        second = AWP1221ModePage._begin_adc_progress(page)
+
+        self.assertEqual((first, second), ("first-token", "second-token"))
+        self.assertEqual(page._adc_progress_token, second)
+        self.assertEqual(progress.begin.call_args_list, [mock.call("adc"), mock.call("adc")])
+        self.assertEqual(
+            statuses,
+            [("adc", {"progress_token": first}), ("adc", {"progress_token": second})],
+        )
+
     def test_1221_en_ack_remains_success_when_followup_ldo_write_fails(self) -> None:
         calls = []
         statuses = []
@@ -301,42 +323,90 @@ class StatusProgressIntegrationTests(unittest.TestCase):
 
         self.assertEqual(updates, [])
 
+    def test_1018_queued_callback_uses_submission_token_after_reset(self) -> None:
+        context = object()
+        submitted_token = SimpleNamespace(context=context)
+        callback = {}
+        marks = []
+        progress = SimpleNamespace(current_token=submitted_token)
+        progress.accepts = lambda token: token is progress.current_token
+
+        class QueueRouter:
+            def queue_register_setting(self, *args, **kwargs):
+                callback["result"] = kwargs["on_result"]
+
+        page = SimpleNamespace(
+            ctx=SimpleNamespace(serial=QueueRouter()),
+            step_progress=progress,
+            _loading_settings=False,
+            _preparing=False,
+            _progress_host=SimpleNamespace(_progress_context=lambda: context),
+            _device_addr=lambda: 0x48,
+            _progress_tokens={},
+            _progress_token=lambda step: marks.append(("token", step)) or submitted_token,
+            _progress_fingerprints=lambda: {"adc": {"zero_time": "150"}},
+            _refresh_step_progress_params=lambda: None,
+            _progress_mark_part=lambda *args: marks.append(("part", *args)),
+            report_progress_status=lambda *args, **kwargs: marks.append(("status", *args, kwargs)),
+        )
+        page._handle_queued_general_setting_result = MethodType(
+            AWP1018NormalModePage._handle_queued_general_setting_result, page
+        )
+
+        with mock.patch(
+            "pages.awp1018_page.post_to_ui",
+            lambda _widget, function, *args: function(*args),
+        ):
+            self.assertTrue(
+                AWP1018NormalModePage._queue_general_setting(
+                    page, 0x22, 150, progress_part="zero_time"
+                )
+            )
+            self.assertIn("result", callback)
+            progress.current_token = None  # reset_all invalidates the submitted operation
+            callback["result"]("completed")
+
+        self.assertEqual(marks, [("token", "adc")])
+
     def test_1018_queued_outcomes_are_current_fingerprint_gated_and_explicit(self) -> None:
         context = object()
         events = []
+        token = object()
+        accepted = {"value": True}
         host = SimpleNamespace(_progress_context=lambda: context)
         page = SimpleNamespace(
-            step_progress=object(),
+            step_progress=SimpleNamespace(accepts=lambda candidate: accepted["value"] and candidate is token),
             _loading_settings=False,
             _preparing=False,
             _progress_host=host,
             _refresh_step_progress_params=lambda: None,
             _progress_fingerprints=lambda: {"adc": {"zero_time": "current"}},
-            _progress_token=lambda key: events.append(("token", key)) or "adc-token",
             _progress_mark_part=lambda key, part, state, token: events.append(("part", key, part, state, token)),
             report_progress_status=lambda token, state, **kwargs: events.append(("status", token, state, kwargs)),
         )
 
         AWP1018NormalModePage._handle_queued_general_setting_result(
-            page, "zero_time", "current", "completed", context,
+            page, "zero_time", "current", "completed", context, token,
         )
         AWP1018NormalModePage._handle_queued_general_setting_result(
-            page, "zero_time", "current", "failed", context,
+            page, "zero_time", "current", "failed", context, token,
         )
         AWP1018NormalModePage._handle_queued_general_setting_result(
-            page, "zero_time", "old", "failed", context,
+            page, "zero_time", "old", "failed", context, token,
         )
         AWP1018NormalModePage._handle_queued_general_setting_result(
-            page, "zero_time", "current", "rejected", object(),
+            page, "zero_time", "current", "rejected", object(), token,
+        )
+        accepted["value"] = False
+        AWP1018NormalModePage._handle_queued_general_setting_result(
+            page, "zero_time", "current", "completed", context, token,
         )
 
         self.assertEqual(events, [
-            ("token", "adc"),
-            ("part", "adc", "zero_time", "done", "adc-token"),
-            ("status", "adc-token", "done", {"detail": ""}),
-            ("token", "adc"),
-            ("part", "adc", "zero_time", "error", "adc-token"),
-            ("status", "adc-token", "error", {"detail": "queued register write failed"}),
+            ("part", "adc", "zero_time", "done", token),
+            ("status", token, "done", {"detail": ""}),
+            ("part", "adc", "zero_time", "error", token),
+            ("status", token, "error", {"detail": "queued register write failed"}),
         ])
 
 
