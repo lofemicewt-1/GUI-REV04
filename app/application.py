@@ -937,7 +937,7 @@ class HomePage(BasePage):
             row = self._status_row(slot)
             if row is not None:
                 row["enabled"].set(not enabled)
-            self._set_status_row_text(slot, "firmware flashing")
+            self._set_status_row_text(slot, self.tr("firmware_status_row_flashing"))
             return
         active = getattr(self, "_status_operation", None)
         if active is not None:

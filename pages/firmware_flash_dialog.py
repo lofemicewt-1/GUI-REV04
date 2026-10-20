@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -279,7 +280,20 @@ class FirmwareFlashDialog(tk.Toplevel):
             status = ff.DriverStatus(checked=False)
         self._post(self._after_driver_check, port, hex_path, status)
 
+    def _fail_on_ui(self, port: str, exc: BaseException) -> None:
+        """Any Tk-thread step failed: report it and always release the lock."""
+        self._finish_flash(
+            port,
+            ff.FlashResult(ok=False, error_key="firmware_error_launch", error_kwargs={"detail": str(exc)}),
+        )
+
     def _after_driver_check(self, port: str, hex_path: str, status: ff.DriverStatus) -> None:
+        try:
+            self._after_driver_check_inner(port, hex_path, status)
+        except Exception as exc:
+            self._fail_on_ui(port, exc)
+
+    def _after_driver_check_inner(self, port: str, hex_path: str, status: ff.DriverStatus) -> None:
         if status.needs_install:
             key = "ch340_missing_prompt" if not status.installed else "ch340_problem_prompt"
             if self._ask_yes_no(self.tr("info"), self.tr(key), parent=self):
@@ -316,6 +330,12 @@ class FirmwareFlashDialog(tk.Toplevel):
             )
 
     def _begin_flash(self, port: str, hex_path: str) -> None:
+        try:
+            self._begin_flash_inner(port, hex_path)
+        except Exception as exc:
+            self._fail_on_ui(port, exc)
+
+    def _begin_flash_inner(self, port: str, hex_path: str) -> None:
         home = self.home
         self._session = ff.FlashSession(
             port,
@@ -337,8 +357,11 @@ class FirmwareFlashDialog(tk.Toplevel):
         thread = self._connect_thread
         if thread is not None and thread is not threading.current_thread():
             try:
-                if thread.is_alive():
-                    thread.join(timeout=ff.PORT_RELEASE_TIMEOUT_S + 30)
+                deadline = time.monotonic() + ff.PORT_RELEASE_TIMEOUT_S + 30
+                while thread.is_alive() and time.monotonic() < deadline:
+                    if self._flasher.cancel_event.is_set():
+                        break  # flasher.flash() reports the cancel
+                    thread.join(0.25)
             except Exception:
                 pass
         try:

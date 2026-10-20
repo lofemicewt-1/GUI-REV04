@@ -4,7 +4,9 @@ import io
 import os
 import subprocess
 import tempfile
+import sys
 import threading
+import time
 import tkinter as tk
 import unittest
 from pathlib import Path
@@ -613,6 +615,89 @@ class DialogFlowTests(Base):
         self.assertEqual(home.events[1], ("release", "COM3"))
         self.assertEqual(home.events[-1], ("restore", "COM3"))
         self.assertIn("烧录失败", dialog.status_var.get())
+
+
+class ReReviewTests(DialogFlowTests):
+    def test_n1_release_exception_unlocks_and_reports(self) -> None:
+        dlg, home, dialog = self.make_dialog(connected=True)
+
+        def boom(_port):
+            raise RuntimeError("disconnect exploded")
+        home.firmware_release_port = boom
+        dialog.hex_var.set(str(self.hex))
+        self.run_start(dlg, dialog)
+        self.assertEqual(self.popen.calls, [])
+        self.assertIn(("unlock", "COM3"), home.events)
+        self.assertFalse(dialog.busy)
+        self.assertEqual(dialog.last_result.error_key, "firmware_error_launch")
+        self.assertIn("disconnect exploded", dialog.last_result.error_kwargs["detail"])
+
+    def test_n1_driver_prompt_exception_unlocks(self) -> None:
+        dlg, home, dialog = self.make_dialog(driver=ff.DriverStatus(True, installed=False, device_present=True))
+
+        def bad_ask(*_a, **_k):
+            raise tk.TclError("messagebox failed")
+        dialog._ask_yes_no = bad_ask
+        dialog.hex_var.set(str(self.hex))
+        self.run_start(dlg, dialog)
+        self.assertIn(("unlock", "COM3"), home.events)
+        self.assertFalse(dialog.busy)
+
+    def test_n2_cancel_interrupts_connect_thread_join(self) -> None:
+        dlg, home, dialog = self.make_dialog(connected=False)
+        release = threading.Event()
+        stuck = threading.Thread(target=lambda: release.wait(10), daemon=True)
+        stuck.start()
+        self.addCleanup(release.set)
+        dialog._connect_thread = stuck
+        dialog._flasher.cancel()
+        start = time.monotonic()
+        with mock.patch.object(dlg, "post_to_ui", lambda _w, fn, *a: fn(*a)):
+            dialog._flash_worker("COM3", str(self.hex))
+        self.assertLess(time.monotonic() - start, 2)
+        self.assertEqual(dialog.last_result.error_key, "firmware_error_cancelled")
+
+
+class ProbeAndDecodeTests(unittest.TestCase):
+    def test_n3_probe_keeps_dtr_rts_low_before_open(self) -> None:
+        seen = {}
+
+        class FakeSerial:
+            def open(self):
+                seen.update(dtr=self.dtr, rts=self.rts, dsrdtr=self.dsrdtr, rtscts=self.rtscts)
+
+            def close(self):
+                seen["closed"] = True
+
+        fake_module = SimpleNamespace(Serial=FakeSerial)
+        with mock.patch.dict(sys.modules, {"serial": fake_module}):
+            self.assertTrue(ff._default_port_probe("COM3"))
+        self.assertEqual(seen, {"dtr": False, "rts": False, "dsrdtr": False, "rtscts": False, "closed": True})
+
+    def test_n5_decode_preference(self) -> None:
+        import codecs
+
+        aliases = {"oem": "cp437", "mbcs": "cp1252"}
+
+        def lookup(name):
+            return codecs.lookup(aliases[name]) if name in aliases else None
+        codecs.register(lookup)
+        self.addCleanup(codecs.unregister, lookup)
+        data = b"caf\xe9"
+        self.assertEqual(ff.decode_console(data, platform="win32", prefer="mbcs"), "café")
+        self.assertEqual(ff.decode_console(data, platform="win32", prefer="oem"), "caf\u0398")
+        self.assertEqual(ff.decode_console(data, platform="win32"), "caf\u0398")  # pnputil default
+
+
+class HomeStatusRowTests(unittest.TestCase):
+    def test_n4_status_row_text_localized(self) -> None:
+        from config.languages import t
+
+        self.assertEqual(t("zh", "firmware_status_row_flashing"), "正在烧录固件")
+        self.assertEqual(t("en", "firmware_status_row_flashing"), "Flashing firmware")
+        src = (Path(__file__).resolve().parent.parent / "app" / "application.py").read_text(encoding="utf-8")
+        self.assertIn('self.tr("firmware_status_row_flashing")', src)
+        self.assertNotIn('"firmware flashing"', src)
 
 
 class BundleTests(unittest.TestCase):

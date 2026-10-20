@@ -90,7 +90,7 @@ class FirmwareFlashError(Exception):
 
 
 # -- console decoding -----------------------------------------------------------
-def decode_console(data: bytes, *, platform: str | None = None) -> str:
+def decode_console(data: bytes, *, platform: str | None = None, prefer: str = "oem") -> str:
     """Decode child-process output.
 
     Windows console tools write the OEM code page to a pipe (``pnputil`` may
@@ -106,7 +106,9 @@ def decode_console(data: bytes, *, platform: str | None = None) -> str:
     except UnicodeDecodeError:
         pass
     if (platform or sys.platform).startswith("win"):
-        for codec in ("oem", "mbcs"):
+        # avrdude is an ANSI program (prefer="mbcs"); console tools such as
+        # pnputil write the OEM code page (prefer="oem").
+        for codec in (prefer, "mbcs" if prefer == "oem" else "oem"):
             try:
                 return data.decode(codec)
             except (LookupError, UnicodeDecodeError):
@@ -236,7 +238,17 @@ def _default_port_probe(port: str) -> bool:
     except Exception:
         return True  # cannot probe: let avrdude report
     try:
-        handle = serial.Serial(port=avrdude_port_name(port), baudrate=115200, timeout=0.1)
+        # Configure before open with DTR/RTS low so probing does not reset
+        # the Nano (avrdude resets it itself).
+        handle = serial.Serial()
+        handle.port = avrdude_port_name(port)
+        handle.baudrate = 115200
+        handle.timeout = 0.1
+        handle.dsrdtr = False
+        handle.rtscts = False
+        handle.dtr = False
+        handle.rts = False
+        handle.open()
     except Exception as exc:
         text = str(exc).lower()
         if "filenotfound" in text or "could not find" in text or "no such file" in text:
@@ -411,14 +423,14 @@ class FirmwareFlasher:
                     cut = min((i for i in (pending.find(b"\n"), pending.find(b"\r")) if i >= 0), default=-1)
                     if cut < 0:
                         break
-                    line = decode_console(pending[:cut]).strip()
+                    line = decode_console(pending[:cut], prefer="mbcs").strip()
                     pending = pending[cut + 1 :]
                     if line:
                         lines.append(line)
                         log(line)
                         self._report_progress(line, progress)
-                self._report_progress(decode_console(pending), progress)
-            tail = decode_console(pending).strip()
+                self._report_progress(decode_console(pending, prefer="mbcs"), progress)
+            tail = decode_console(pending, prefer="mbcs").strip()
             if tail:
                 lines.append(tail)
                 log(tail)
