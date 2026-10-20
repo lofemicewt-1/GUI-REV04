@@ -1302,6 +1302,7 @@ class AWP1744AWP1766PumpModePage(BasePage):
 
         log_frame = self.make_serial_log(panel, height=12, subscribe=True)
         log_frame.grid(row=5, column=0, columnspan=5, sticky="nsew", pady=(18, 0))
+        self._register_module_spacing_widget(log_frame, before=True, after=False)
 
         self.refresh_language()
         self._refresh_pump_buttons()

@@ -1283,6 +1283,7 @@ class AWP1018NormalModePage(BasePage):
             on_mode_failure=self._on_gpio_mode_failure,
         )
         panel.grid(row=row, column=0, columnspan=columnspan, sticky="ew", pady=(12, 0))
+        self._register_module_spacing_widget(panel, before=True, after=False)
         group.add(panel)
         return row + 1
 
@@ -1323,6 +1324,7 @@ class AWP1018NormalModePage(BasePage):
         row += 1
         self.stage_container = ttk.Frame(left, style="Panel.TFrame")
         self.stage_container.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(4, 8))
+        self._register_module_spacing_widget(self.stage_container, before=True, after=True)
         yield
         self.stage_container.columnconfigure(0, weight=1)
         for stage in ("Stage0", "Stage1", "Stage2", "Stage3"):
@@ -1373,6 +1375,7 @@ class AWP1018NormalModePage(BasePage):
 
         log_frame = self.make_serial_log(right, height=7, subscribe=True)
         log_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        self._register_module_spacing_widget(log_frame, before=True, after=False)
 
         self.rom_waveform_var.trace_add("write", self._queue_rom_waveform_draw)
         self.rom_waveform_var.trace_add("write", lambda *_: self._refresh_rom_depth_options())
@@ -1494,6 +1497,7 @@ class AWP1018NormalModePage(BasePage):
     def _build_generator_dac_rate_steps(self, parent: tk.Misc) -> Iterator[None]:
         frame = ttk.Frame(parent, style="Panel.TFrame", padding=(14, 10))
         frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        self._register_module_spacing_widget(frame, before=True, after=False)
         frame.columnconfigure(1, weight=1)
 
         label = ttk.Label(frame, style="Panel.TLabel")
@@ -1780,6 +1784,7 @@ class AWP1018NormalModePage(BasePage):
     def _build_control_buttons_steps(self, parent: tk.Misc, row: int) -> Iterator[None]:
         frame = ttk.Frame(parent, style="Panel.TFrame")
         frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        self._register_module_spacing_widget(frame, before=True, after=False)
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
 
@@ -1912,6 +1917,7 @@ class AWP1018NormalModePage(BasePage):
     def _build_diff_channel_status(self, parent: tk.Misc, row: int) -> None:
         frame = ttk.Frame(parent, style="Panel.TFrame")
         frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        self._register_module_spacing_widget(frame, before=True, after=False)
         for channel in range(4):
             frame.columnconfigure(channel, weight=1, uniform="diff_channel_status")
             value_var = tk.StringVar(value="0")
@@ -5683,6 +5689,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
 
         log_frame = self.make_serial_log(right, height=14, width=42, subscribe=True)
         log_frame.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+        self._register_module_spacing_widget(log_frame, before=True, after=False)
         yield
 
         self._bind_full_mode_traces()
@@ -5720,6 +5727,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
 
         self.stage_container = ttk.Frame(left, style="Panel.TFrame")
         self.stage_container.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(4, 8))
+        self._register_module_spacing_widget(self.stage_container, before=True, after=True)
         self.stage_container.columnconfigure(0, weight=1)
         for stage in ("Stage0", "Stage1", "Stage2", "Stage3"):
             self._build_stage_frame(stage)
@@ -5766,6 +5774,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
 
         dac_frame = ttk.Frame(middle, style="Panel.TFrame", padding=(0, 10))
         dac_frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        self._register_module_spacing_widget(dac_frame, before=True, after=False)
         dac_frame.columnconfigure(1, weight=1)
 
         label = ttk.Label(dac_frame, style="Panel.TLabel")

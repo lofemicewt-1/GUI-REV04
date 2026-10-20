@@ -1376,6 +1376,9 @@ class BasePage(ttk.Frame):
         header._preset_frame = frame
         area.bind("<Configure>", self._queue_header_layout, add="+")
         frame.bind("<Configure>", self._queue_header_layout, add="+")
+        viewport = VerticalScrollArea._nearest_scroll_area(header)
+        if viewport is not None:
+            viewport.canvas.bind("<Configure>", self._queue_header_layout, add="+")
         self._sync_mode_header(header)
         return frame
 
@@ -1559,8 +1562,9 @@ class BasePage(ttk.Frame):
         title_width = max(1, int(getattr(header, "_mode_title_width", 0)))
         frame = getattr(header, "_preset_frame", None)
         action_width = max(1, int(frame.winfo_reqwidth())) if frame is not None else 1
+        viewport = VerticalScrollArea._nearest_scroll_area(header)
         try:
-            available_width = int(header.winfo_width())
+            available_width = int(viewport.canvas.winfo_width()) if viewport is not None else 0
         except tk.TclError:
             available_width = 0
         if available_width <= 1:

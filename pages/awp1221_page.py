@@ -1284,6 +1284,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
         log_frame = self.make_serial_log(right, height=7, subscribe=True)
         log_frame.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        self._register_module_spacing_widget(log_frame, before=True, after=False)
         self._hide_serial_log_hscroll(log_frame)
 
         self._show_stage(0)
@@ -1335,6 +1336,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
         middle = ttk.Frame(body, style="App.TFrame")
         middle.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        self._register_module_spacing_widget(middle, before=True, after=False)
         yield
         middle.columnconfigure(0, weight=2, uniform="button_adc_panels")
         middle.columnconfigure(1, weight=3, uniform="button_adc_panels")
@@ -1356,6 +1358,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
         lower = ttk.Frame(body, style="App.TFrame")
         lower.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        self._register_module_spacing_widget(lower, before=True, after=False)
         lower.columnconfigure(1, weight=3)
         lower.columnconfigure(2, weight=2)
         yield
@@ -1390,6 +1393,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         details = ttk.Frame(body, style="Panel.TFrame", padding=10)
         yield
         details.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        self._register_module_spacing_widget(details, before=True, after=False)
         details.columnconfigure(0, weight=1)
         extra = ttk.Frame(details, style="Panel.TFrame")
         extra.columnconfigure(0, weight=1)
@@ -5049,6 +5053,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             return
         section = ttk.Frame(parent, style="Panel.TFrame")
         section.grid(row=row, column=0, sticky="ew", pady=(12, 8))
+        self._register_module_spacing_widget(section, before=True, after=True)
         section.columnconfigure(1, weight=1)
         title = ttk.Label(section, style="SectionTitle.TLabel")
         title.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
@@ -5152,6 +5157,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
     def _build_adc_settings_steps(self, parent: ttk.Frame, *, row: int) -> Iterator[None]:
         section = ttk.Frame(parent, style="Panel.TFrame")
         section.grid(row=row, column=0, sticky="ew", pady=(16, 0))
+        self._register_module_spacing_widget(section, before=True, after=False)
         section.columnconfigure(1, weight=1)
         section.columnconfigure(3, weight=1)
         title = ttk.Label(section, style="SectionTitle.TLabel")
@@ -5906,6 +5912,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
     def _build_control_buttons_steps(self, parent: ttk.Frame, *, row: int) -> Iterator[None]:
         controls = ttk.Frame(parent, style="Panel.TFrame")
         controls.grid(row=row, column=0, sticky="ew", pady=(14, 0))
+        self._register_module_spacing_widget(controls, before=True, after=False)
         controls.columnconfigure(0, weight=1)
         controls.columnconfigure(1, weight=1)
         actions = (

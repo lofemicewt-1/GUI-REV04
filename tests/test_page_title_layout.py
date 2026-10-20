@@ -28,6 +28,14 @@ class PageTitleLayoutTests(unittest.TestCase):
         self.root.rowconfigure(0, weight=1)
         self.root.columnconfigure(0, weight=1)
         self.addCleanup(self.root.destroy)
+        self.addCleanup(self._cancel_after_jobs)
+
+    def _cancel_after_jobs(self) -> None:
+        for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
+            try:
+                self.root.after_cancel(job)
+            except tk.TclError:
+                pass
 
     def _settle(self) -> None:
         self.root.update_idletasks()
@@ -101,7 +109,7 @@ class PageTitleLayoutTests(unittest.TestCase):
                 ttk.Button(
                     preset,
                     style="Bg.TButton",
-                    text=f"Long action label {row}-{column}",
+                    text=f"Act {row}-{column}",
                 ).grid(
                     row=row,
                     column=column,
@@ -129,6 +137,36 @@ class PageTitleLayoutTests(unittest.TestCase):
             int(header.grid_rowconfigure(1)["minsize"]),
             int(area.winfo_reqheight()),
         )
+
+    def test_preset_toolbar_uses_visible_viewport_with_wide_content(self) -> None:
+        self.root.geometry("540x600")
+        self.root.deiconify()
+        self.page.rowconfigure(0, weight=1)
+        self.page.columnconfigure(0, weight=1)
+        viewport, content = self.page.make_vertical_scroll_area(
+            self.page,
+            min_content_width=1320,
+        )
+        viewport.grid(row=0, column=0, sticky="nsew")
+        header = self.page.make_title(content, "button_mode", show_logo=False)
+        header.grid(row=0, column=0, sticky="ew")
+        preset = self.page.make_preset_frame(header)
+        for row in range(2):
+            for column in range(5):
+                ttk.Button(
+                    preset,
+                    style="Bg.TButton",
+                    text=f"Act {row}-{column}",
+                ).grid(row=row, column=column, sticky="ew")
+
+        self._settle()
+        self.assertGreater(int(header.winfo_width()), int(viewport.canvas.winfo_width()))
+        self.assertEqual(int(header._preset_area.grid_info()["row"]), 1)
+
+        self.root.geometry("1500x600")
+        self._settle()
+
+        self.assertEqual(int(header._preset_area.grid_info()["row"]), 0)
 
 
 if __name__ == "__main__":

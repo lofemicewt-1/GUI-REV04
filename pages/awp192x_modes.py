@@ -3238,6 +3238,7 @@ class FullModePage(ButtonModePage):
 
         adc_btn_frame = ttk.Frame(left, style="Panel.TFrame")
         adc_btn_frame.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(10, 0))
+        self._register_module_spacing_widget(adc_btn_frame, before=True, after=False)
         for index in range(3):
             adc_btn_frame.columnconfigure(index, weight=1)
 
@@ -3259,6 +3260,7 @@ class FullModePage(ButtonModePage):
 
         adc_aux_frame = ttk.Frame(left, style="Panel.TFrame")
         adc_aux_frame.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(8, 0))
+        self._register_module_spacing_widget(adc_aux_frame, before=True, after=False)
         adc_aux_frame.columnconfigure(0, weight=1)
         adc_aux_frame.columnconfigure(1, weight=1)
 
@@ -3326,6 +3328,7 @@ class FullModePage(ButtonModePage):
         play_frame = ttk.Frame(middle, style="Panel.TFrame")
         yield
         play_frame.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(8, 0))
+        self._register_module_spacing_widget(play_frame, before=True, after=False)
         play_frame.columnconfigure(0, weight=1)
         play_frame.columnconfigure(1, weight=1)
 
@@ -3362,6 +3365,7 @@ class FullModePage(ButtonModePage):
 
         log_frame = self.make_serial_log(right, height=18, subscribe=True)
         log_frame.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+        self._register_module_spacing_widget(log_frame, before=True, after=False)
 
         self.duration_var.trace_add("write", lambda *_: self._update_period_hint())
         self.max_voltage_var.trace_add("write", lambda *_: self._on_voltage_changed())
@@ -4731,6 +4735,7 @@ class PumpModePage(BasePage):
 
         log_frame = self.make_serial_log(panel, height=10, subscribe=True)
         log_frame.grid(row=row, column=0, columnspan=2, sticky="nsew", pady=(16, 0))
+        self._register_module_spacing_widget(log_frame, before=True, after=False)
         panel.rowconfigure(row, weight=1)
 
         self.amp_var.trace_add("write", lambda *_: self._on_amp_changed())

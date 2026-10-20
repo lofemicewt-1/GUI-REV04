@@ -367,6 +367,7 @@ class ButtonModeView:
             variable.trace_add("write", lambda *_: self.waveform_page._redraw_active_plot())
         middle = ttk.Frame(body, style="App.TFrame")
         middle.grid(row=1, column=0, sticky="ew", pady=10)
+        self._register_module_spacing_widget(middle, before=True)
         yield
         middle.columnconfigure(0, weight=2, uniform="adc_sections")
         middle.columnconfigure(1, weight=3, uniform="adc_sections")
