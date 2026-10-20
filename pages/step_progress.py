@@ -394,6 +394,8 @@ class StepProgressBar(ttk.Frame):
         self._active = False
         self._poll_job: str | None = None
         self._last_context: ProgressContext | None = None
+        self._issued_tokens: dict[str, EventToken] = {}
+        self._status_unsubscribe = None
         self._collapsed = False
         self._metadata = self._module_targets(page)
         self._cells: dict[str, tk.Button] = {}
@@ -433,6 +435,9 @@ class StepProgressBar(ttk.Frame):
         SimpleTooltip(self.badge, lambda: self.page.tr("step_expand" if self._collapsed else "step_count", **self._count_args()))
         SimpleTooltip(self.collapse_button, lambda: self.page.tr("step_collapse"))
         self._render()
+        bus = getattr(getattr(page, "ctx", None), "status_bus", None)
+        if bus is not None:
+            self._status_unsubscribe = bus.subscribe(self._on_status_update)
         self.bind("<Destroy>", self._on_destroy, add="+")
 
     @staticmethod
@@ -464,16 +469,23 @@ class StepProgressBar(ttk.Frame):
         current = self._current_context()
         if current is None or current.port_session is None:
             if self._last_context is not None:
+                bus = getattr(getattr(self.page, "ctx", None), "status_bus", None)
+                if bus is not None:
+                    bus.invalidate_context(self._last_context)
                 self._clear_all_for_context()
             self._last_context = current
             return current
         if self._last_context is not None and current != self._last_context:
+            bus = getattr(getattr(self.page, "ctx", None), "status_bus", None)
+            if bus is not None:
+                bus.invalidate_context(self._last_context)
             self._clear_all_for_context()
         self._last_context = current
         return current
 
     def _clear_all_for_context(self) -> None:
         self._epoch += 1
+        self._invalidate_issued_tokens()
         for data in self._data.values():
             data.param_version += 1
             data.operation_id += 1
@@ -496,6 +508,7 @@ class StepProgressBar(ttk.Frame):
 
         for key in self.steps[index:]:
             current = self._data[key.key]
+            self._invalidate_step_token(key.key)
             current.param_version += 1
             current.operation_id += 1
             current.detail = ""
@@ -515,11 +528,12 @@ class StepProgressBar(ttk.Frame):
         if current is None:
             current = ProgressContext(None, 0, "")
         data.operation_id += 1
+        self._invalidate_step_token(step_key)
         data.state = "running"
         data.detail = ""
         data.note_key = None
         self._render()
-        return EventToken(
+        token = EventToken(
             context=current,
             activation_epoch=self._epoch,
             step_key=step_key,
@@ -527,6 +541,8 @@ class StepProgressBar(ttk.Frame):
             operation_id=data.operation_id,
             part_fingerprints=tuple(sorted(data.fingerprints.items(), key=lambda item: item[0])),
         )
+        self._issued_tokens[step_key] = token
+        return token
 
     def mark(self, step_key: str, state: StepState, token: EventToken, *, detail: str = "") -> None:
         post_to_ui(self, self._deliver_mark, step_key, state, token, str(detail))
@@ -594,10 +610,40 @@ class StepProgressBar(ttk.Frame):
         self._data[step_key].note_key = str(text_key)
         self._render()
 
+    def _on_status_update(self, update: Any) -> None:
+        token = getattr(update, "token", None)
+        progress_token = getattr(token, "progress_token", None)
+        if not isinstance(progress_token, EventToken):
+            return
+        step_key = progress_token.step_key
+        state = getattr(update, "state", "")
+        if state == "running":
+            self._deliver_mark(step_key, "running", progress_token, "")
+        elif state == "receipt":
+            part_state = getattr(update, "part_state", None)
+            mapped = {"done": "done", "error": "error", "running": "running", "idle": "idle"}.get(part_state)
+            if mapped is not None and getattr(update, "part_key", None):
+                self._deliver_part(step_key, update.part_key, mapped, progress_token)
+        elif state == "success":
+            self._deliver_mark(step_key, "done", progress_token, "")
+        elif state == "failure":
+            self._deliver_mark(step_key, "error", progress_token, str(getattr(update, "error", "")))
+
+    def _invalidate_step_token(self, step_key: str) -> None:
+        token = self._issued_tokens.pop(step_key, None)
+        bus = getattr(getattr(self.page, "ctx", None), "status_bus", None)
+        if token is not None and bus is not None:
+            bus.invalidate_progress(token)
+
+    def _invalidate_issued_tokens(self) -> None:
+        for key in tuple(self._issued_tokens):
+            self._invalidate_step_token(key)
+
     def invalidate_from(self, step_key: str) -> None:
         index = self._index[step_key]
         for step in self.steps[index:]:
             data = self._data[step.key]
+            self._invalidate_step_token(step.key)
             data.param_version += 1
             data.operation_id += 1
             data.state = "idle"
@@ -608,6 +654,7 @@ class StepProgressBar(ttk.Frame):
 
     def reset_all(self) -> None:
         self._epoch += 1
+        self._invalidate_issued_tokens()
         for data in self._data.values():
             data.param_version += 1
             data.operation_id += 1
@@ -629,6 +676,7 @@ class StepProgressBar(ttk.Frame):
     def deactivate(self) -> None:
         self._active = False
         self._epoch += 1
+        self._invalidate_issued_tokens()
         for data in self._data.values():
             data.operation_id += 1
             if data.state == "running":
@@ -781,9 +829,16 @@ class StepProgressBar(ttk.Frame):
     def _on_destroy(self, event: tk.Event) -> None:
         if event.widget is self:
             self._cancel_context_check()
+            if self._status_unsubscribe is not None:
+                self._status_unsubscribe()
+                self._status_unsubscribe = None
 
     def destroy(self) -> None:
         self._cancel_context_check()
+        if self._status_unsubscribe is not None:
+            self._status_unsubscribe()
+            self._status_unsubscribe = None
+        self._invalidate_issued_tokens()
         try:
             self.host._forget_step_progress(self)
         except (AttributeError, tk.TclError):

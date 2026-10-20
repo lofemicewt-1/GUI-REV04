@@ -12,6 +12,7 @@ from core.base_tool import (
     GPIO_MODE_PULLUP,
 )
 from pages.base_page import SimpleTooltip
+from core.status_bus import StatusContext, StatusMessage
 
 
 GPIO_PIN_MAP = ((0, "D2"), (1, "D3"), (2, "D4"), (3, "D5"))
@@ -245,6 +246,20 @@ class GpioControlPanel(ttk.Frame):
             messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
             return
 
+        status_token = None
+        if pin == "D4" and getattr(self.ctx, "status_bus", None) is not None:
+            session = active_serial_identity(self.ctx, "awp1018")
+            address = getattr(getattr(self.ctx, "state", None), "extra", {}).get("awp1018_device_addr")
+            try:
+                address = int(address) if address is not None else None
+            except (TypeError, ValueError):
+                address = None
+            status_token = self.ctx.status_bus.begin(
+                StatusMessage.make("sidebar_status_en_begin"),
+                context=StatusContext(session, address, "gpio", page_name="awp1018"),
+                event="en",
+            )
+
         try:
             configure = getattr(serial, "configure_gpio")
             response = configure(pin, mode)
@@ -259,6 +274,11 @@ class GpioControlPanel(ttk.Frame):
             detail = error or str(getattr(response, "data", "") or "GPIOCFG failed")
             self._clear_confirmation(gpio_index, pin)
             self._notify_mode_failure(pin)
+            if status_token is not None:
+                self.ctx.status_bus.fail(
+                    status_token,
+                    StatusMessage.make("sidebar_status_en_fail", error=detail),
+                )
             messagebox.showerror(self.tr("error"), detail)
             return
 
@@ -269,6 +289,8 @@ class GpioControlPanel(ttk.Frame):
         extra = getattr(getattr(self.ctx, "state", None), "extra", None)
         if isinstance(extra, dict):
             extra[f"gpio_mode_{pin}"] = mode
+        if status_token is not None:
+            self.ctx.status_bus.ok(status_token, StatusMessage.make("sidebar_status_en_ok"))
         if self.on_mode_success is not None:
             self.on_mode_success(pin, mode)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from datetime import datetime
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
@@ -17,6 +18,7 @@ from styles.fonts import sidebar_brand_font_spec
 from pages.base_page import hide_scroll_chrome, relay_vertical_scroll, scaled_scroll_px
 from pages.user_guide import UserGuideWindow
 from styles.theme import BRAND_ENLARGE, logo_asset, photoimage_scale_token, scale_photoimage
+from core.status_bus import StatusMessage, StatusUpdate
 
 
 class Navigation:
@@ -130,6 +132,27 @@ class Navigation:
         self.pages = LazyPages(self._install_page)
         self.buttons: dict[str, ttk.Button] = {}
         self.label_keys: dict[str, str] = {}
+        self._chip_group_by_page = {
+            "awp1221": "awp1221",
+            "awp1921_1923": "awp1921_1923",
+            "awp1018": "awp1018",
+            "awp1922": "awp1922",
+        }
+        self._chip_page_by_device = {
+            "AWP1221": "awp1221",
+            "AWP192X": "awp1921_1923",
+            "AWP1018": "awp1018",
+            "AWP1922": "awp1922",
+        }
+        self._visibility = {
+            "phase": "offline",
+            "visible": False,
+            "highlight": None,
+            "keep_group": None,
+            "disabled": False,
+        }
+        self._developer_visibility_override = False
+        self._connection_notice_key: str | None = None
         self.mode_host: Any | None = None
         self.mode_buttons: dict[str, ttk.Button] = {}
         self._pending_page: str | None = None
@@ -179,6 +202,41 @@ class Navigation:
             style="SidebarVersion.TLabel",
         )
         self._version_label.grid(row=100, column=0, sticky="sw", pady=(4, 0))
+        self._status_frame = ttk.Frame(self.sidebar, style="Sidebar.TFrame")
+        self._status_frame.grid(row=101, column=0, sticky="ew", pady=(2, 0))
+        self._status_frame.columnconfigure(1, weight=1)
+        self._status_dot = tk.Label(self._status_frame, text="●", bd=0, padx=0, pady=0)
+        self._status_dot.grid(row=0, column=0, sticky="w", padx=(0, 5))
+        self._status_text = ttk.Label(self._status_frame, style="SidebarVersion.TLabel", anchor="w")
+        self._status_text.grid(row=0, column=1, sticky="ew")
+        self._status_detail: Any = None
+        self._status_error = ""
+        self._status_state = "ready"
+        self._status_timestamp: float | None = None
+        self._status_display_sequence = 0
+        self._status_expire_after: str | None = None
+        self._status_unsubscribe: Callable[[], None] | None = None
+        self._status_tooltip = None
+        try:
+            from pages.base_page import SimpleTooltip
+            self._status_tooltip = SimpleTooltip(self._status_frame, self._status_tooltip_text)
+            self._status_tooltip_text_widget = SimpleTooltip(self._status_text, self._status_tooltip_text)
+        except Exception:
+            self._status_tooltip_text_widget = None
+        self._connection_notice_frame = ttk.Frame(self.sidebar, style="Sidebar.TFrame")
+        self._connection_notice_frame.grid(row=102, column=0, sticky="ew", pady=(2, 0))
+        self._connection_notice_label = ttk.Label(
+            self._connection_notice_frame, style="SidebarVersion.TLabel", wraplength=self._scaled(196),
+        )
+        self._connection_notice_label.grid(row=0, column=0, sticky="ew")
+        self._connection_home_button = ttk.Button(
+            self._connection_notice_frame, style="SidebarMode.TButton", command=lambda: self.show("home"),
+        )
+        self._connection_home_button.grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self._connection_notice_frame.grid_remove()
+        bus = getattr(self.ctx, "status_bus", None)
+        if bus is not None:
+            self._status_unsubscribe = bus.subscribe(self._on_status_update)
         self.sidebar.rowconfigure(98, weight=1)
         self._settings_bar = ttk.Frame(self.sidebar_shell, style="Sidebar.TFrame", padding=self._pad(10, 8))
         self._settings_bar.grid(row=1, column=0, sticky="ew")
@@ -192,6 +250,8 @@ class Navigation:
         self._settings_button.grid(row=0, column=0, sticky="ew")
         self._refresh_settings_button()
         self._refresh_version_label()
+        self._render_status()
+        self._render_connection_notice()
         self._escape_binding = root.bind('<Escape>', self._cancel_preparation, add='+')
         self.refresh_layout()
 
@@ -263,12 +323,14 @@ class Navigation:
                 style="Sidebar.TButton",
                 command=lambda n=name: self.request_show(n),
             )
-            btn.grid(row=row, column=0, sticky="ew", pady=(0, 3) if row == 1 else 3)
             self.buttons[name] = btn
             self.label_keys[name] = label_key
             self.motion.bind(btn)
+            btn.grid(row=row, column=0, sticky="ew", pady=(0, 3) if row == 1 else 3)
+            self._configure_chip_button(name)
 
         self.sidebar.columnconfigure(0, weight=1)
+        self._relayout_sidebar()
 
     def show(self, name: str) -> None:
         """Immediate navigation for application/configuration callers."""
@@ -281,6 +343,8 @@ class Navigation:
     def request_show(self, name: str) -> None:
         """Acknowledge clicks before construction; keep only the newest request."""
         if name not in self.pages or name == self._pending_page:
+            return
+        if not self._page_navigation_enabled(name):
             return
         self._finish_waiting_transition()
         self.cancel_pending_navigation()
@@ -384,6 +448,15 @@ class Navigation:
 
     def close(self) -> None:
         self.cancel_pending_navigation()
+        if self._status_expire_after is not None:
+            try:
+                self.root.after_cancel(self._status_expire_after)
+            except tk.TclError:
+                pass
+            self._status_expire_after = None
+        if self._status_unsubscribe is not None:
+            self._status_unsubscribe()
+            self._status_unsubscribe = None
         self.motion.close()
         self.root.unbind('<Escape>', self._escape_binding)
         for sequence in ("<Map>", "<Unmap>"):
@@ -476,6 +549,8 @@ class Navigation:
         lang = self.ctx.state.language
         self._redraw_sidebar_brand()
         self._refresh_version_label()
+        self._render_status()
+        self._render_connection_notice()
         self._guide_button.configure(text=t(lang, "user_guide"))
         if self._user_guide_window is not None:
             self._user_guide_window.refresh_language()
@@ -485,6 +560,8 @@ class Navigation:
             btn.configure(text=t(lang, key))
         for key, btn in self.mode_buttons.items():
             btn.configure(text=t(lang, key))
+
+        self._refresh_visibility()
 
         for page in self.pages.built_values():
             if hasattr(page, "refresh_language"):
@@ -496,6 +573,9 @@ class Navigation:
         self.refresh_layout()
         self._settings_images.clear()
         self._refresh_settings_button()
+        self._render_status()
+        self._render_connection_notice()
+        self._refresh_visibility()
         for page in self.pages.built_values():
             if hasattr(page, "refresh_theme"):
                 page.refresh_theme()
@@ -695,6 +775,8 @@ class Navigation:
             cleared()
 
     def _animate_modes(self, target: int, done: Callable[[], None] | None = None) -> None:
+        if target > 0 and not self._mode_sidebar_allowed():
+            target = 0
         start = self._mode_height
         animator = anim.animator_for(self.root)
         def step(p: float) -> None:
@@ -721,19 +803,294 @@ class Navigation:
             self.mode_clip.configure(height=max(1, round(self._mode_height)))
             self.motion.refresh()
 
+    def set_chip_pages_visible(
+        self,
+        visible: bool,
+        highlight: str | None = None,
+        *,
+        keep_group: str | None = None,
+        disabled: bool = False,
+    ) -> None:
+        """Apply the one sidebar visibility state for all chip page groups."""
+        highlight = self._resolve_chip_group(highlight) if highlight else None
+        keep_group = self._resolve_chip_group(keep_group) if keep_group else None
+        phase = self._visibility.get("phase", "offline")
+        if disabled:
+            phase = "disconnected"
+        elif visible:
+            phase = "ready_identified" if highlight else "ready_unidentified"
+        elif phase not in {"connecting", "waiting_ready"}:
+            phase = "offline"
+        self._visibility = {
+            "phase": phase,
+            "visible": bool(visible),
+            "highlight": highlight,
+            "keep_group": keep_group,
+            "disabled": bool(disabled),
+        }
+        self._refresh_visibility()
+
+    def set_connection_phase(self, phase: str) -> None:
+        """Track connection progress while keeping startup chip pages hidden."""
+        if phase not in {"offline", "connecting", "waiting_ready", "disconnected"}:
+            raise ValueError(f"invalid connection phase: {phase}")
+        if phase in {"offline", "connecting", "waiting_ready"}:
+            self._visibility = {
+                "phase": phase,
+                "visible": False,
+                "highlight": None,
+                "keep_group": None,
+                "disabled": False,
+            }
+        self._refresh_visibility()
+
+    def set_connection_notice(self, key: str | None) -> None:
+        self._connection_notice_key = str(key) if key else None
+        self._render_connection_notice()
+
+    def set_developer_visibility_override(self, enabled: bool) -> None:
+        self._developer_visibility_override = bool(enabled)
+        if enabled and self._visibility.get("phase") in {"offline", "connecting", "waiting_ready"}:
+            self._visibility["visible"] = True
+        elif not enabled and self._visibility.get("phase") in {"offline", "connecting", "waiting_ready"}:
+            self._visibility["visible"] = False
+        self._refresh_visibility()
+
+    def _resolve_chip_group(self, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = str(value)
+        if value in self._chip_group_by_page.values():
+            return value
+        mapped = self._chip_page_by_device.get(value.upper())
+        return self._chip_group_by_page.get(mapped) if mapped else None
+
+    def _page_visible(self, name: str) -> bool:
+        group = self._chip_group_by_page.get(name)
+        if group is None:
+            return True
+        state = self._visibility
+        phase = state.get("phase")
+        visible = bool(state.get("visible")) or self._developer_visibility_override
+        if not visible:
+            return False
+        keep_group = state.get("keep_group")
+        return self._developer_visibility_override or keep_group is None or group == keep_group
+
+    def _page_navigation_enabled(self, name: str) -> bool:
+        return self._page_visible(name) and not self._page_disabled(name)
+
+    def _page_disabled(self, name: str) -> bool:
+        group = self._chip_group_by_page.get(name)
+        return bool(group is not None and self._visibility.get("disabled"))
+
+    def _mode_sidebar_allowed(self) -> bool:
+        return self._page_visible(str(self._mode_anchor))
+
+    def _configure_chip_button(self, name: str) -> None:
+        button = self.buttons.get(name)
+        if button is None or name not in self._chip_group_by_page:
+            return
+        group = self._chip_group_by_page[name]
+        key = self.label_keys.get(name, name)
+        prefix = "● " if group == self._visibility.get("highlight") else ""
+        button.configure(text=prefix + t(self.ctx.state.language, key))
+        if self._page_disabled(name):
+            button.state(["disabled"])
+        else:
+            button.state(["!disabled"])
+
+    def _refresh_visibility(self) -> None:
+        for name in self.buttons:
+            self._configure_chip_button(name)
+        for button in self.mode_buttons.values():
+            if self._visibility.get("disabled") and self._mode_sidebar_allowed():
+                button.state(["disabled"])
+            else:
+                button.state(["!disabled"])
+        if self._pending_page is not None and not self._page_navigation_enabled(self._pending_page):
+            self.cancel_pending_navigation()
+        self._relayout_sidebar()
+        if (
+            self.mode_host is not None
+            and self._mode_sidebar_allowed()
+            and self._mode_visible
+            and self._mode_height <= 0
+        ):
+            try:
+                self.root.after_idle(lambda page=self.mode_host: self._expand_current_modes(page))
+            except tk.TclError:
+                pass
+
     def _relayout_sidebar(self) -> None:
-        current = self.ctx.state.current_page
         row = 1
         for index, (name, btn) in enumerate(self.buttons.items()):
+            if not self._page_visible(name):
+                btn.grid_remove()
+                continue
             pady = (0, 3) if index == 0 else 3
             btn.grid(row=row, column=0, sticky="ew", pady=pady)
             row += 1
-            if name == self._mode_anchor and self._mode_visible:
+            if name == self._mode_anchor and self._mode_visible and self._mode_sidebar_allowed():
                 self.mode_clip.grid(row=row, column=0, sticky="ew", padx=(self._scaled(16), 0), pady=(0, 3))
                 row += 1
-        if not self._mode_visible:
+        if not self._mode_visible or not self._mode_sidebar_allowed():
             self.mode_clip.grid_remove()
         self._sync_sidebar_scroll_region()
+
+    @staticmethod
+    def _short_status(text: str, limit: int = 14) -> str:
+        text = str(text or "")
+        if len(text) <= limit:
+            return text
+        return text[: max(1, limit - 1)] + "…"
+
+    def _resolve_status_text(self, value: Any) -> str:
+        if isinstance(value, StatusMessage):
+            return t(self.ctx.state.language, value.key, **dict(value.args))
+        return str(value or "")
+
+    def _on_status_update(self, update: StatusUpdate) -> None:
+        bus = getattr(self.ctx, "status_bus", None)
+        if bus is None or not bus.accepts(update.token):
+            return
+        if update.token.sequence < bus.display_sequence:
+            return
+        if update.state == "receipt":
+            # Part receipts feed the progress subscriber; the aggregate outcome
+            # controls sidebar text after all matching parts have completed.
+            return
+        if update.state not in {"running", "success", "failure"}:
+            return
+        self._status_display_sequence = update.token.sequence
+        self._status_state = update.state
+        self._status_detail = update.text
+        self._status_error = str(update.error or "")
+        self._status_timestamp = float(update.timestamp)
+        self._cancel_status_expiry()
+        self._render_status()
+        if update.state == "success":
+            self._status_expire_after = self.root.after(
+                8000, self._expire_status, update.token.sequence, update.token,
+            )
+
+    def _cancel_status_expiry(self) -> None:
+        if self._status_expire_after is None:
+            return
+        try:
+            self.root.after_cancel(self._status_expire_after)
+        except tk.TclError:
+            pass
+        self._status_expire_after = None
+
+    def _expire_status(self, sequence: int, token_or_session: Any) -> None:
+        self._status_expire_after = None
+        if sequence != self._status_display_sequence or self._status_state != "success":
+            return
+        bus = getattr(self.ctx, "status_bus", None)
+        if bus is None or sequence != bus.display_sequence:
+            return
+        token = token_or_session if hasattr(token_or_session, "context") else None
+        accepts = getattr(bus, "accepts", None)
+        if token is not None and callable(accepts) and not accepts(token):
+            return
+        token_session = getattr(token, "port_session", token_or_session)
+        token_context = getattr(token, "context", None)
+        page_name = str(getattr(token_context, "page_name", "") or "")
+        from core.status_bus import normalized_port_session
+        normalized = normalized_port_session(token_session) if token_session is not None else None
+        token_port = normalized[0] if isinstance(normalized, tuple) and normalized else None
+        serial = getattr(self.ctx, "serial", None)
+        selector = getattr(serial, "selected_port_for_page", None)
+        selected_port = getattr(getattr(self.ctx, "state", None), "selected_port", None)
+        if token_port and not page_name and selected_port:
+            if str(selected_port).strip() != str(token_port).strip():
+                return
+        if token_port and page_name and callable(selector):
+            try:
+                current_page_port = selector(page_name)
+            except TypeError:
+                try:
+                    current_page_port = selector()
+                except Exception:
+                    return
+            except Exception:
+                return
+            if current_page_port and str(current_page_port).strip() != str(token_port).strip():
+                return
+        identity_reader = getattr(serial, "connection_identity", None)
+        if token_session is not None and token_port and callable(identity_reader):
+            try:
+                current_identity = identity_reader(str(token_port))
+            except Exception:
+                current_identity = None
+            # A disconnected operation may still expire normally. A live
+            # manager on the reused port must match the captured generation.
+            if current_identity is not None and normalized_port_session(current_identity) != normalized:
+                return
+        self._status_state = "ready"
+        self._status_detail = None
+        self._status_error = ""
+        self._render_status()
+
+    def _status_tooltip_text(self) -> str:
+        lang = self.ctx.state.language
+        state_key = {
+            "running": "sidebar_status_running",
+            "success": "sidebar_status_success",
+            "failure": "sidebar_status_failure",
+            "ready": "sidebar_status_ready",
+        }.get(self._status_state, "sidebar_status_ready")
+        state = t(lang, state_key)
+        detail = self._resolve_status_text(self._status_detail)
+        if self._status_error and self._status_error not in detail:
+            detail = f"{detail}\n{self._status_error}" if detail else self._status_error
+        timestamp = ""
+        if self._status_timestamp is not None:
+            try:
+                timestamp = datetime.fromtimestamp(self._status_timestamp).strftime("%Y-%m-%d %H:%M:%S")
+            except (OSError, OverflowError, ValueError):
+                timestamp = str(self._status_timestamp)
+        return t(lang, "sidebar_status_tooltip", state=state, detail=detail, time=timestamp)
+
+    def _render_status(self) -> None:
+        if not hasattr(self, "_status_text"):
+            return
+        lang = self.ctx.state.language
+        if self._status_state == "ready":
+            label = t(lang, "sidebar_status_ready")
+            color = "#6B7280"
+        else:
+            label = self._resolve_status_text(self._status_detail)
+            color = {
+                "running": "#D99A00",
+                "success": "#2563EB",
+                "failure": "#DC2626",
+            }.get(self._status_state, "#6B7280")
+        try:
+            self._status_dot.configure(fg=color, bg=self.ctx.colors.get("panel_alt", "#F3F4F6"))
+            self._status_text.configure(text=self._short_status(label))
+            if self._status_tooltip is not None:
+                self._status_tooltip.text_getter = self._status_tooltip_text
+            if self._status_tooltip_text_widget is not None:
+                self._status_tooltip_text_widget.text_getter = self._status_tooltip_text
+        except tk.TclError:
+            pass
+
+    def _render_connection_notice(self) -> None:
+        if not hasattr(self, "_connection_notice_frame"):
+            return
+        if not self._connection_notice_key:
+            self._connection_notice_frame.grid_remove()
+            return
+        key = self._connection_notice_key
+        self._connection_notice_label.configure(text=t(self.ctx.state.language, key))
+        if key == "sidebar_disconnected_reconnect":
+            self._connection_home_button.configure(text=t(self.ctx.state.language, "sidebar_reconnect_home"))
+            self._connection_home_button.grid()
+        else:
+            self._connection_home_button.grid_remove()
+        self._connection_notice_frame.grid()
 
     def _sync_sidebar_content_width(self, event: tk.Event) -> None:
         try:

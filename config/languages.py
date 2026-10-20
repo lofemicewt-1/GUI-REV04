@@ -1868,3 +1868,10 @@ def t(language: str, key: str, **kwargs: Any) -> str:
         except Exception:
             return text
     return text
+
+
+# Round-2 item 13→1 translations remain isolated while staged translation
+# batches are reconciled. See config/lang_r2_13.py for the bilingual manifest.
+from config.lang_r2_13 import install as _install_r2_13
+
+_install_r2_13(LANGUAGES)

@@ -134,6 +134,10 @@ class RealPagePreparationTests(unittest.TestCase):
                 if nav._preparation is not None:
                     observations.append((app.state.current_page, dict.__contains__(nav.pages, 'awp1221')))
             nav._run_preparation = observe
+            # Item-1 visibility hides chip pages while offline; READY-identified
+            # is required before request_show may start cold preparation.
+            nav.set_chip_pages_visible(True, highlight='AWP1221')
+            root.update()
             with patch.object(app.ctx.serial, 'write_register_value', side_effect=AssertionError('preparation writes hardware')), patch.object(app.ctx.serial, 'read_register_value', side_effect=AssertionError('preparation reads hardware'), create=True):
                 nav.request_show('awp1221')
                 deadline = time.perf_counter()+5

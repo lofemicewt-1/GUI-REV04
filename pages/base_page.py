@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable, Sequence
 from config.app_info import CHIP_WEBSITE_URLS
 from config.languages import t
 from core.ui_dispatch import post_to_ui
+from core.status_bus import StatusContext, StatusMessage, StatusToken
 from core import animation as anim
 from styles.fonts import sidebar_brand_font_spec, page_title_weight
 from styles.theme import get_colors
@@ -1368,6 +1369,7 @@ class BasePage(ttk.Frame):
     def __init__(self, parent: tk.Misc, ctx: Any) -> None:
         super().__init__(parent, style="App.TFrame")
         self.ctx = ctx
+        self._status_progress_tokens: dict[int, StatusToken] = {}
         self._text_widgets: list[tuple[Any, str]] = []
         self._logo_widgets: list[ttk.Label] = []
         self._chip_title_labels: list[CanvasTitle] = []
@@ -1406,6 +1408,139 @@ class BasePage(ttk.Frame):
 
     def tr(self, key: str, **kwargs: Any) -> str:
         return t(self.language, key, **kwargs)
+
+    def _status_context(self, progress_token: Any = None, *, event: str = "") -> StatusContext:
+        page_name = str(getattr(self, "page_name", ""))
+        if progress_token is not None:
+            context = getattr(progress_token, "context", None)
+            if context is not None:
+                return StatusContext(
+                    getattr(context, "port_session", None),
+                    getattr(context, "chip_addr", None),
+                    str(getattr(context, "mode", "")),
+                    getattr(progress_token, "activation_epoch", None),
+                    getattr(progress_token, "param_version", None),
+                    getattr(progress_token, "operation_id", None),
+                    page_name,
+                    self._status_part_keys(progress_token),
+                )
+        host = self
+        while host is not None and not getattr(host, "page_name", None):
+            host = getattr(host, "master", None)
+        page_resolver = getattr(host, "_awp192x_settings_page_name", None)
+        if callable(page_resolver):
+            try:
+                page_name = str(page_resolver())
+            except Exception:
+                page_name = str(getattr(host, "page_name", page_name))
+        else:
+            progress_host = getattr(host, "_progress_host", None)
+            parent_host = getattr(host, "host", None)
+            page_name = str(
+                getattr(progress_host, "page_name", None)
+                or getattr(parent_host, "page_name", None)
+                or getattr(host, "page_name", page_name)
+            )
+        try:
+            from pages.gpio_controls import active_serial_identity
+            session = active_serial_identity(self.ctx, page_name) if page_name else None
+        except Exception:
+            session = None
+        address = None
+        for attribute in ("device_addr", "_addr"):
+            getter = getattr(host, attribute, None)
+            try:
+                address = getter() if callable(getter) else None
+            except Exception:
+                address = None
+            if address is not None:
+                break
+        mode = str(getattr(host, "current_mode", getattr(self, "page_name", "")))
+        return StatusContext(session, address, mode, page_name=page_name)
+
+    def _status_part_keys(self, progress_token: Any) -> tuple[str, ...]:
+        bar = getattr(self, "step_progress", None)
+        if bar is None:
+            host = getattr(self, "_progress_host", None)
+            bar = getattr(host, "step_progress", None)
+        key = getattr(progress_token, "step_key", None)
+        data = getattr(bar, "_data", {}).get(key) if bar is not None else None
+        return tuple(getattr(getattr(data, "spec", None), "part_keys", ()) or ())
+
+    def begin_status(
+        self,
+        event: str,
+        *,
+        progress_token: Any = None,
+        context: Any = None,
+        aggregate_parts: bool = False,
+    ) -> StatusToken | None:
+        bus = getattr(self.ctx, "status_bus", None)
+        if bus is None:
+            return None
+        context = context if context is not None else self._status_context(progress_token, event=event)
+        if progress_token is not None and not aggregate_parts and isinstance(context, StatusContext):
+            context = StatusContext(
+                context.port_session, context.chip_addr, context.mode, context.activation_epoch,
+                context.param_version, context.operation_id, context.page_name, (),
+            )
+        token = bus.begin(
+            StatusMessage.make(f"sidebar_status_{event}_begin"),
+            context=context,
+            event=event,
+            progress_token=progress_token,
+        )
+        if progress_token is not None:
+            tokens = getattr(self, "_status_progress_tokens", None)
+            if tokens is None:
+                self._status_progress_tokens = {}
+                tokens = self._status_progress_tokens
+            tokens[id(progress_token)] = token
+        return token
+
+    def finish_status(
+        self,
+        token: StatusToken | None,
+        *,
+        success: bool,
+        error: str = "",
+    ) -> bool:
+        bus = getattr(self.ctx, "status_bus", None)
+        if bus is None or token is None:
+            return False
+        key = f"sidebar_status_{token.event}_{'ok' if success else 'fail'}"
+        message = StatusMessage.make(key, error=str(error))
+        return bus.ok(token, message) if success else bus.fail(token, message)
+
+    def report_progress_status(self, progress_token: Any, state: str, *, detail: str = "") -> bool:
+        bus = getattr(self.ctx, "status_bus", None)
+        tokens = getattr(self, "_status_progress_tokens", {})
+        token = tokens.get(id(progress_token))
+        if bus is None or token is None:
+            return False
+        if state in {"done", "success"}:
+            return self.finish_status(token, success=True)
+        if state in {"error", "failure"}:
+            return self.finish_status(token, success=False, error=detail)
+        return False
+
+    def report_progress_part_status(
+        self,
+        progress_token: Any,
+        part_key: str,
+        state: str,
+        *,
+        error: str = "",
+    ) -> bool:
+        bus = getattr(self.ctx, "status_bus", None)
+        tokens = getattr(self, "_status_progress_tokens", {})
+        token = tokens.get(id(progress_token))
+        if bus is None or token is None:
+            return False
+        accepted = bus.receipt(token, part_key, state, error=error)
+        if accepted and state == "error":
+            self.finish_status(token, success=False, error=error)
+        return accepted
 
     def bind_text(self, widget: Any, key: str) -> None:
         """

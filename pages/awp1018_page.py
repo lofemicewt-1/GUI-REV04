@@ -389,6 +389,7 @@ class AWP1018Page(BasePage):
     def read_register(self) -> None:
         if not self._ensure_connected():
             return
+        status_token = self.begin_status("register_read")
         try:
             reg = self._parse_int(self.reg_addr_var.get())
             address = self._addr()
@@ -401,21 +402,29 @@ class AWP1018Page(BasePage):
                     bits=16,
                 )
                 self.read_value_var.set(resp.data if value is None else f"0x{value & 0xFFFF:04X}")
+                self.finish_status(status_token, success=True)
             else:
+                self.finish_status(status_token, success=False, error=resp.error)
                 messagebox.showerror(self.tr("error"), resp.error)
         except Exception as exc:
+            self.finish_status(status_token, success=False, error=str(exc))
             messagebox.showerror(self.tr("error"), str(exc))
 
     def write_register(self) -> None:
         if not self._ensure_connected():
             return
+        status_token = self.begin_status("register_write")
         try:
             reg = self._parse_int(self.reg_addr_var.get())
             value = self._parse_int(self.write_value_var.get())
             resp = self.ctx.serial.write_register_value(self._addr(), reg, value, bits=16)
             if not resp.ok:
+                self.finish_status(status_token, success=False, error=resp.error)
                 messagebox.showerror(self.tr("error"), resp.error)
+            else:
+                self.finish_status(status_token, success=True)
         except Exception as exc:
+            self.finish_status(status_token, success=False, error=str(exc))
             messagebox.showerror(self.tr("error"), str(exc))
 
     def _write_reg(self, reg: int, value: int, *, show_error: bool = True) -> bool:
@@ -503,6 +512,7 @@ class AWP1018Page(BasePage):
         if not path:
             return
 
+        status_token = self.begin_status("preset")
         self._set_user_preset_buttons_state("disabled")
 
         def worker() -> None:
@@ -541,6 +551,7 @@ class AWP1018Page(BasePage):
                     path,
                     error_kind,
                     error_detail,
+                    status_token,
                 )
             except tk.TclError:
                 pass
@@ -573,10 +584,13 @@ class AWP1018Page(BasePage):
             self._start_awp1018_txt_import(preset)
             return
 
-        self._import_awp1018_legacy_json(preset)
-
-    def _import_awp1018_legacy_json(self, preset: LegacyJsonPreset) -> None:
         if not self._ensure_connected():
+            return
+        self._import_awp1018_legacy_json(preset, status_token=self.begin_status("preset"))
+
+    def _import_awp1018_legacy_json(self, preset: LegacyJsonPreset, *, status_token: Any = None) -> None:
+        if not self._ensure_connected():
+            self.finish_status(status_token, success=False, error=self.tr("not_connected"))
             return
         mode_key = {
             "normal": "awp1018_normal_mode",
@@ -584,6 +598,7 @@ class AWP1018Page(BasePage):
         }[preset.mode]
         page = self.mode_pages.get(mode_key)
         if not isinstance(page, AWP1018NormalModePage):
+            self.finish_status(status_token, success=False, error=self.tr("awp1018_settings_invalid"))
             messagebox.showerror(self.tr("error"), self.tr("awp1018_settings_invalid"))
             return
 
@@ -592,9 +607,11 @@ class AWP1018Page(BasePage):
             page._validate_imported_settings(preset.settings)
             self.show_mode(mode_key)
             if not page.import_settings(preset.settings):
+                self.finish_status(status_token, success=False, error="settings import failed")
                 return
             page.save_button_draft()
         except Exception as exc:
+            self.finish_status(status_token, success=False, error=str(exc))
             messagebox.showerror(
                 self.tr("error"),
                 f"{self.tr('awp1018_json_import_failed')}\n{exc}",
@@ -602,11 +619,13 @@ class AWP1018Page(BasePage):
             return
         finally:
             self._set_user_preset_buttons_state("normal")
+        self.finish_status(status_token, success=True)
         messagebox.showinfo(self.tr("info"), self.tr("awp1018_settings_imported"))
 
     def _start_awp1018_txt_import(self, preset: RegisterScriptPreset) -> None:
         if not self._ensure_connected():
             return
+        status_token = self.begin_status("preset")
         cancel = getattr(type(self.ctx.serial), "cancel_register_settings", None)
         if callable(cancel):
             self.ctx.serial.cancel_register_settings(self.page_name)
@@ -619,7 +638,7 @@ class AWP1018Page(BasePage):
             except Exception as exc:
                 error = str(exc)
             try:
-                self.after(0, self._finish_awp1018_txt_import, preset, error)
+                self.after(0, self._finish_awp1018_txt_import, preset, error, status_token)
             except tk.TclError:
                 pass
 
@@ -674,9 +693,11 @@ class AWP1018Page(BasePage):
         self,
         preset: RegisterScriptPreset,
         error: str | None,
+        status_token: Any = None,
     ) -> None:
         self._set_user_preset_buttons_state("normal")
         if error:
+            self.finish_status(status_token, success=False, error=error)
             messagebox.showerror(
                 self.tr("error"),
                 f"{self.tr('awp1018_txt_import_failed')}\n{error}",
@@ -690,11 +711,13 @@ class AWP1018Page(BasePage):
                 descriptors,
             )
         except Exception as exc:
+            self.finish_status(status_token, success=False, error=str(exc))
             messagebox.showerror(
                 self.tr("error"),
                 f"{self.tr('awp1018_txt_import_failed')}\n{exc}",
             )
             return
+        self.finish_status(status_token, success=True)
         messagebox.showinfo(self.tr("info"), self.tr("awp1018_txt_imported_raw"))
 
     def _sync_decoded_page_settings(
@@ -744,6 +767,7 @@ class AWP1018Page(BasePage):
         path: str,
         error_kind: str,
         error_detail: str,
+        status_token: Any = None,
     ) -> None:
         try:
             if error_kind == "chip_mismatch":
@@ -764,6 +788,7 @@ class AWP1018Page(BasePage):
             content = format_awp1018_register_script(page_state["script_mode"], operations)
             Path(path).write_text(content, encoding="utf-8")
         except Exception as exc:
+            self.finish_status(status_token, success=False, error=str(exc))
             messagebox.showerror(
                 self.tr("error"),
                 f"{self.tr('awp1018_txt_export_failed')}\n{exc}",
@@ -771,6 +796,7 @@ class AWP1018Page(BasePage):
             return
         finally:
             self._set_user_preset_buttons_state("normal")
+        self.finish_status(status_token, success=True)
         messagebox.showinfo(self.tr("info"), self.tr("awp1018_settings_exported"))
 
     def _read_register_value(
@@ -824,23 +850,49 @@ class AWP1018Page(BasePage):
     def detect_chip(self) -> None:
         if not self._ensure_connected():
             return
-
+        session = active_serial_identity(self.ctx, self.page_name)
+        status_token = self.begin_status("discovery")
         last_detail = ""
-        for addr in self.DEVICE_ADDRS:
-            value, error = self._read_chip_id(addr, attempts=3)
-            if value == self.CHIP_ID:
-                self.addr_var.set(f"0x{addr:02X}")
-                self._on_addr_changed()
-                self.status_var.set(self.tr("chip_detect_success") + f" 0x{addr:02X}: 0x{value:04X}")
-                return
+        try:
+            for addr in self.DEVICE_ADDRS:
+                value, error = self._read_chip_id(addr, attempts=3)
+                if value == self.CHIP_ID:
+                    if session is not None and active_serial_identity(self.ctx, self.page_name) != session:
+                        if self.ctx.status_bus is not None and status_token is not None:
+                            self.ctx.status_bus.invalidate_context(token=status_token)
+                        return
+                    self.addr_var.set(f"0x{addr:02X}")
+                    self._on_addr_changed()
+                    self.status_var.set(self.tr("chip_detect_success") + f" 0x{addr:02X}: 0x{value:04X}")
+                    self.ctx.app.apply_manual_chip_discovery(
+                        chip_name="AWP1018", address=addr, page_name=self.page_name,
+                        session=session, status_token=status_token,
+                    )
+                    return
 
-            if value is not None:
-                last_detail = f"0x{addr:02X}: 0x{value & 0xFFFF:04X}"
-            elif error:
-                last_detail = error
+                if value is not None:
+                    last_detail = f"0x{addr:02X}: 0x{value & 0xFFFF:04X}"
+                elif error:
+                    last_detail = error
+        except Exception as exc:
+            last_detail = str(exc)
+            self.status_var.set(self.tr("chip_detect_failed") + f" {last_detail}")
+            self.ctx.app.apply_manual_chip_discovery(
+                chip_name=None, address=None, page_name=self.page_name, session=session,
+                error=last_detail, exception=True, status_token=status_token,
+            )
+            return
 
+        if session is not None and active_serial_identity(self.ctx, self.page_name) != session:
+            if self.ctx.status_bus is not None and status_token is not None:
+                self.ctx.status_bus.invalidate_context(token=status_token)
+            return
         suffix = f" {last_detail}" if last_detail else ""
         self.status_var.set(self.tr("chip_detect_failed") + suffix)
+        self.ctx.app.apply_manual_chip_discovery(
+            chip_name=None, address=None, page_name=self.page_name, session=session,
+            error=last_detail, status_token=status_token,
+        )
 
     def _read_chip_id(self, addr: int, *, attempts: int = 3) -> tuple[int | None, str]:
         last_error = ""
@@ -1569,12 +1621,23 @@ class AWP1018NormalModePage(BasePage):
             return current
         token = bar.begin(step_key)
         self._progress_tokens[step_key] = token
+        event = {
+            "channels": "adc",
+            "waveform": "waveform",
+            "adc": "adc",
+            "detection": "detection",
+        }.get(step_key)
+        if event is not None:
+            self.begin_status(event, progress_token=token)
         return token
 
     def _progress_mark(self, step_key: str, state: str, token: Any, *, detail: str = "") -> None:
         if token is None or self._loading_settings or self._preparing:
             return
         bar = getattr(self, "step_progress", None)
+        report = getattr(self, "report_progress_status", None)
+        if callable(report):
+            report(token, state, detail=detail)
         if bar is not None:
             bar.mark(step_key, state, token, detail=detail)
 
@@ -1588,6 +1651,9 @@ class AWP1018NormalModePage(BasePage):
         if token is None or self._loading_settings or self._preparing:
             return
         bar = getattr(self, "step_progress", None)
+        report_part = getattr(self, "report_progress_part_status", None)
+        if callable(report_part):
+            report_part(token, part_key, state)
         if bar is not None:
             bar.mark_part(step_key, part_key, state, token)
 
@@ -1611,6 +1677,11 @@ class AWP1018NormalModePage(BasePage):
             return
         token = self._progress_token("adc")
         self._progress_mark_part("adc", part_key, "done" if outcome == "completed" else "error", token)
+        self.report_progress_status(
+            token,
+            "done" if outcome == "completed" else "error",
+            detail="queued register write failed" if outcome != "completed" else "",
+        )
 
     def _invalidate_detection_progress(self) -> None:
         bar = getattr(self, "step_progress", None)
@@ -2619,6 +2690,7 @@ class AWP1018NormalModePage(BasePage):
         if not 0 <= preset_index < len(presets):
             return False
         preset = presets[preset_index]
+        status_token = self.begin_status("preset")
 
         previous_loading_state = self._loading_settings
         self._loading_settings = True
@@ -2659,7 +2731,14 @@ class AWP1018NormalModePage(BasePage):
             self._refresh_diff_slice_group_options()
             self._refresh_diff_waveform_controls()
         self._draw_rom_waveform()
-        return self.apply_rom_waveform_selection()
+        try:
+            success = self.apply_rom_waveform_selection()
+        except Exception as exc:
+            self.finish_status(status_token, success=False, error=str(exc))
+            raise
+        self.finish_status(status_token, success=bool(success),
+                           error="software preset apply failed" if not success else "")
+        return bool(success)
 
     def _build_button_readings_status_steps(self, parent: tk.Misc) -> Iterator[None]:
         help_key = "awp1221_help_adc_readings" if self.supports_live_adc_read else "awp1018_help_button_adc"
@@ -5234,7 +5313,14 @@ class AWP1018NormalModePage(BasePage):
             messagebox.showerror(self.tr("error"), resp.error)
         return resp.ok
 
-    def write_reg_async(self, reg: int, value: int, *, on_success: Any = None) -> None:
+    def write_reg_async(
+        self,
+        reg: int,
+        value: int,
+        *,
+        on_success: Any = None,
+        on_failure: Any = None,
+    ) -> None:
         if not self._ensure_connected():
             return
 
@@ -5243,6 +5329,8 @@ class AWP1018NormalModePage(BasePage):
         def finish(ok: bool, error: str) -> None:
             if not ok:
                 messagebox.showerror(self.tr("error"), error)
+                if on_failure is not None:
+                    on_failure(error)
                 return
             if on_success is not None:
                 on_success()
@@ -5287,8 +5375,11 @@ class AWP1018NormalModePage(BasePage):
 
         self._board_preset_poll_active = False
         self._set_board_preset_controls_state("normal")
+        status_token = getattr(self, "_board_preset_status_token", None)
+        self._board_preset_status_token = None
         if result == "error":
             error = detail or "unknown"
+            self.finish_status(status_token, success=False, error=error)
             if action != "save":
                 messagebox.showerror(self.tr("error"), error)
                 return
@@ -5304,6 +5395,7 @@ class AWP1018NormalModePage(BasePage):
                 summary, device_addr, register_values, descriptors = detail
                 self.sync_decoded_settings(device_addr, register_values, descriptors)
             except Exception as exc:
+                self.finish_status(status_token, success=False, error=str(exc))
                 messagebox.showerror(self.tr("error"), str(exc))
                 return
             messagebox.showinfo(self.tr("info"), summary)
@@ -5312,6 +5404,7 @@ class AWP1018NormalModePage(BasePage):
                 self.tr("info"),
                 self.tr("board_preset_read").format(slot=detail or ""),
             )
+        self.finish_status(status_token, success=True)
 
     def _start_board_preset_operation(
         self,
@@ -5320,6 +5413,7 @@ class AWP1018NormalModePage(BasePage):
     ) -> None:
         if self._board_preset_poll_active:
             return
+        self._board_preset_status_token = self.begin_status("preset")
         cancel = getattr(type(self.ctx.serial), "cancel_register_settings", None)
         if callable(cancel):
             self.ctx.serial.cancel_register_settings("awp1018")
@@ -6175,12 +6269,15 @@ class AWP1018NormalModePage(BasePage):
             progress_channels_token=channels_token,
             progress_adc_token=adc_token,
         ):
+            self.report_progress_status(adc_token, "error", detail="ADC configuration failed")
             return False
 
         for stage in ("Stage0", "Stage1", "Stage2", "Stage3"):
             if not self._sync_stage_to_chip(stage, progress_token=adc_token):
+                self.report_progress_status(adc_token, "error", detail=f"{stage} configuration failed")
                 return False
 
+        self.report_progress_status(adc_token, "done")
         return True
 
     def _sync_stage_to_chip(self, stage: str, *, progress_token: Any = None) -> bool:
@@ -6237,6 +6334,9 @@ class AWP1018NormalModePage(BasePage):
         if not self._sync_stage_defaults_before_run():
             self._progress_mark("detection", "error", token)
             return
+        # Configuration is complete; make the actual start write the newest
+        # status operation so its checked response owns the sidebar outcome.
+        self.begin_status("detection", progress_token=token)
         if self.write_reg(0x02, 0x0001):
             self._set_button_selected("start_detection", True)
             if self.diff_mode:
@@ -6277,23 +6377,47 @@ class AWP1018NormalModePage(BasePage):
     def stop_detection(self) -> None:
         if self.diff_mode:
             self._stop_diff_status_monitor()
-        if self.write_reg(0x02, 0x0002):
+        if not self._ensure_connected():
+            return
+        status_token = self.begin_status("detection")
+        stopped = self.write_reg(0x02, 0x0002)
+        self.finish_status(status_token, success=stopped,
+                           error="stop detection write failed" if not stopped else "")
+        if stopped:
             self._set_button_selected("start_detection", False)
             self._invalidate_detection_progress()
 
     def start_play(self) -> None:
-        self.write_reg_async(0x02, 0x0004)
+        if not self._ensure_connected():
+            return
+        status_token = self.begin_status("playback")
+        self.write_reg_async(
+            0x02, 0x0004,
+            on_success=lambda: self.finish_status(status_token, success=True),
+            on_failure=lambda error: self.finish_status(status_token, success=False, error=error),
+        )
 
     def stop_play(self) -> None:
-        self.write_reg_async(0x02, 0x0008)
+        if not self._ensure_connected():
+            return
+        status_token = self.begin_status("playback")
+        self.write_reg_async(
+            0x02, 0x0008,
+            on_success=lambda: self.finish_status(status_token, success=True),
+            on_failure=lambda error: self.finish_status(status_token, success=False, error=error),
+        )
 
     def stop_all(self) -> None:
+        if not self._ensure_connected():
+            return
         if self.diff_mode:
             self._stop_diff_status_monitor()
         host = self._progress_host
         submitted_context = host._progress_context() if host is not None else None
+        status_token = self.begin_status("detection")
 
         def on_stopped() -> None:
+            self.finish_status(status_token, success=True)
             self._set_button_selected("start_detection", False)
             self._set_button_selected("awp1018_realtime_display", False)
             if host is not None and submitted_context == host._progress_context():
@@ -6303,6 +6427,7 @@ class AWP1018NormalModePage(BasePage):
             0x02,
             0x0010,
             on_success=on_stopped,
+            on_failure=lambda error: self.finish_status(status_token, success=False, error=error),
         )
 
     def reset_chip(self) -> None:

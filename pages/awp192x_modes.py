@@ -89,6 +89,22 @@ AWP192X_WAVEFORM_METADATA_TAG = "AWP192X_WAVEFORM_V1"
 AWP192X_PAGE_SETTINGS_TAG = "AWP192X_PAGE_SETTINGS_V1"
 
 
+def _begin_status(page: Any, event: str, **kwargs: Any) -> Any:
+    """Status instrumentation stays optional for lightweight page harnesses."""
+    begin = getattr(page, "begin_status", None)
+    return begin(event, **kwargs) if callable(begin) else None
+
+
+def _finish_status(page: Any, token: Any, *, success: bool, error: str = "") -> bool:
+    finish = getattr(page, "finish_status", None)
+    return bool(finish(token, success=success, error=error)) if callable(finish) else False
+
+
+def _report_progress_status(page: Any, progress_token: Any, state: str, *, detail: str = "") -> bool:
+    report = getattr(page, "report_progress_status", None)
+    return bool(report(progress_token, state, detail=detail)) if callable(report) else False
+
+
 @dataclass(frozen=True)
 class Awp192xScriptWaveform:
     device_addr: int
@@ -1404,9 +1420,18 @@ class ButtonModePage(ButtonModeView, BasePage):
         if self.page_name != "button_mode" or self.step_progress is None:
             return None
         self._sync_button_step_progress_params()
-        return self.step_progress.begin(step_key)
+        token = self.step_progress.begin(step_key)
+        event = {
+            "waveform": "waveform",
+            "config": "preset",
+            "detection": "detection",
+        }.get(step_key, "detection")
+        _begin_status(self, event, progress_token=token)
+        return token
 
     def _mark_button_progress_step(self, step_key: str, state: str, token: Any | None) -> None:
+        if token is not None:
+            _report_progress_status(self, token, state)
         if self.step_progress is not None and token is not None:
             self.step_progress.mark(step_key, state, token)
 
@@ -1414,10 +1439,13 @@ class ButtonModePage(ButtonModeView, BasePage):
         if self.page_name != "button_mode" or self.step_progress is None:
             return {}
         self._sync_button_step_progress_params()
-        return {
+        tokens = {
             "waveform": self.step_progress.begin("waveform"),
             "config": self.step_progress.begin("config"),
         }
+        _begin_status(self, "waveform", progress_token=tokens["waveform"])
+        _begin_status(self, "preset", progress_token=tokens["config"])
+        return tokens
 
     def _finish_button_preset_progress(self, tokens: dict[str, Any] | None, *, success: bool) -> None:
         if self.step_progress is None or not tokens:
@@ -1433,6 +1461,18 @@ class ButtonModePage(ButtonModeView, BasePage):
         _device_addr: int,
         slice_index: int,
     ) -> None:
+        from core.status_bus import StatusToken
+
+        if isinstance(token, StatusToken):
+            if outcome == "done":
+                _finish_status(self, token, success=True)
+            elif outcome == "error":
+                _finish_status(self, token, success=False, error="waveform write failed")
+            elif outcome == "cancelled":
+                bus = getattr(getattr(self, "ctx", None), "status_bus", None)
+                if bus is not None:
+                    bus.invalidate_context(token=token)
+            return
         if token is None or self.step_progress is None:
             return
         if outcome == "done":
@@ -1443,7 +1483,15 @@ class ButtonModePage(ButtonModeView, BasePage):
         elif outcome == "error":
             self._mark_button_progress_step("waveform", "error", token)
         elif outcome == "cancelled":
+            bus = getattr(getattr(self, "ctx", None), "status_bus", None)
+            if bus is not None:
+                bus.invalidate_progress(token)
             self._mark_button_progress_step("waveform", "idle", token)
+
+    def _begin_waveform_write_observation(self) -> Any:
+        if self.page_name == "button_mode" and self.step_progress is not None:
+            return self._begin_button_progress_step("waveform")
+        return _begin_status(self, "waveform")
 
     def _add_entry(self, parent: tk.Misc, row: int, key: str, variable: tk.StringVar, unit: str = "") -> None:
         label = ttk.Label(parent, style="Panel.TLabel")
@@ -1708,12 +1756,15 @@ class ButtonModePage(ButtonModeView, BasePage):
         if not path:
             return
 
+        status_token = _begin_status(self, "preset")
         try:
             Path(path).write_text(content, encoding="utf-8")
         except Exception as exc:
+            _finish_status(self, status_token, success=False, error=str(exc))
             messagebox.showerror(self.tr("error"), str(exc))
             return
 
+        _finish_status(self, status_token, success=True)
         messagebox.showinfo(self.tr("info"), self.tr("register_script_export_success"))
 
     def import_user_preset_script(self) -> None:
@@ -1739,12 +1790,13 @@ class ButtonModePage(ButtonModeView, BasePage):
             messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
             return
 
+        status_token = _begin_status(self, "preset")
         self._set_register_script_buttons_state("disabled")
 
         def worker() -> None:
             error = self._execute_register_script_operations(operations)
             try:
-                self.after(0, self._finish_register_script_import, error, operations, metadata)
+                self.after(0, self._finish_register_script_import, error, operations, metadata, status_token)
             except tk.TclError:
                 pass
 
@@ -1755,15 +1807,23 @@ class ButtonModePage(ButtonModeView, BasePage):
         error: str | None,
         operations: list[RegisterScriptOperation] | None = None,
         metadata: dict[str, Any] | None = None,
+        status_token: Any = None,
     ) -> None:
         self._set_register_script_buttons_state("normal")
         if error:
+            _finish_status(self, status_token, success=False, error=error)
             messagebox.showerror(self.tr("error"), error)
             return
-        if operations:
-            self._apply_register_script_waveform_page_state(operations)
-        if metadata:
-            self._apply_page_settings_metadata(metadata)
+        try:
+            if operations:
+                self._apply_register_script_waveform_page_state(operations)
+            if metadata:
+                self._apply_page_settings_metadata(metadata)
+        except Exception as exc:
+            _finish_status(self, status_token, success=False, error=str(exc))
+            messagebox.showerror(self.tr("error"), str(exc))
+            return
+        _finish_status(self, status_token, success=True)
         messagebox.showinfo(self.tr("info"), self.tr("register_script_import_success"))
         self.read_current_settings(show_success=False)
 
@@ -2309,7 +2369,14 @@ class ButtonModePage(ButtonModeView, BasePage):
             messagebox.showerror(self.tr("error"), resp.error)
         return resp.ok
 
-    def write_reg_async(self, reg: int, value: int, *, on_success: Any = None) -> None:
+    def write_reg_async(
+        self,
+        reg: int,
+        value: int,
+        *,
+        on_success: Any = None,
+        on_failure: Any = None,
+    ) -> None:
         if getattr(self, '_preparing', False):
             return
         if not self.ctx.serial.is_connected:
@@ -2321,6 +2388,8 @@ class ButtonModePage(ButtonModeView, BasePage):
         def finish(ok: bool, error: str) -> None:
             if not ok:
                 messagebox.showerror(self.tr("error"), error)
+                if on_failure is not None:
+                    on_failure(error)
                 return
             if on_success is not None:
                 on_success()
@@ -2509,6 +2578,7 @@ class ButtonModePage(ButtonModeView, BasePage):
 
         begin_progress = getattr(self, "_begin_button_preset_progress", None)
         progress_tokens = begin_progress() if callable(begin_progress) else {}
+        preset_status = _begin_status(self, "preset") if not progress_tokens else None
 
         self._preset_waveform_write_busy = True
         if page is not None:
@@ -2553,6 +2623,7 @@ class ButtonModePage(ButtonModeView, BasePage):
                     error,
                     recipe,
                     progress_tokens,
+                    preset_status,
                 )
             except tk.TclError:
                 pass
@@ -2758,6 +2829,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         error: str | None,
         power_on_recipe: Awp192xWaveformRecipe | Awp192xSineWaveformRecipe | None = None,
         progress_tokens: dict[str, Any] | None = None,
+        preset_status: Any = None,
     ) -> None:
         page = getattr(self, "waveform_page", None)
         self._preset_waveform_write_busy = False
@@ -2768,6 +2840,7 @@ class ButtonModePage(ButtonModeView, BasePage):
             finish_progress = getattr(self, "_finish_button_preset_progress", None)
             if callable(finish_progress):
                 finish_progress(progress_tokens, success=False)
+            _finish_status(self, preset_status, success=False, error=error)
             messagebox.showerror(self.tr("error"), error)
             return
 
@@ -2806,6 +2879,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         finish_progress = getattr(self, "_finish_button_preset_progress", None)
         if callable(finish_progress):
             finish_progress(progress_tokens, success=True)
+        _finish_status(self, preset_status, success=True)
         messagebox.showinfo(self.tr("info"), self.tr("preset_write_success"))
 
     @staticmethod
@@ -3059,9 +3133,16 @@ class ButtonModePage(ButtonModeView, BasePage):
             return
 
         slot = int(self.board_slot_var.get())
-        resp = self.ctx.serial.sync_config_preset(slot, payload, set_active=False)
+        status_token = _begin_status(self, "preset")
+        try:
+            resp = self.ctx.serial.sync_config_preset(slot, payload, set_active=False)
+        except Exception as exc:
+            _finish_status(self, status_token, success=False, error=str(exc))
+            messagebox.showerror(self.tr("error"), str(exc))
+            return
 
         if resp.ok:
+            _finish_status(self, status_token, success=True)
             if page_name == "full_mode" and getattr(self._chip_settings_model, "advanced", {}).get("slot_omitted"):
                 messagebox.showwarning(
                     self.tr("info"),
@@ -3070,6 +3151,7 @@ class ButtonModePage(ButtonModeView, BasePage):
             else:
                 messagebox.showinfo(self.tr("info"), self.tr("board_preset_saved"))
         else:
+            _finish_status(self, status_token, success=False, error=resp.error)
             messagebox.showerror(self.tr("error"), resp.error)
 
     def set_board_preset_active(self) -> None:
@@ -3077,11 +3159,19 @@ class ButtonModePage(ButtonModeView, BasePage):
             return
 
         slot = int(self.board_slot_var.get())
-        resp = self.ctx.serial.cfg_use(slot)
+        status_token = _begin_status(self, "preset")
+        try:
+            resp = self.ctx.serial.cfg_use(slot)
+        except Exception as exc:
+            _finish_status(self, status_token, success=False, error=str(exc))
+            messagebox.showerror(self.tr("error"), str(exc))
+            return
 
         if resp.ok:
+            _finish_status(self, status_token, success=True)
             messagebox.showinfo(self.tr("info"), self.tr("board_preset_read").format(slot=slot))
         else:
+            _finish_status(self, status_token, success=False, error=resp.error)
             messagebox.showerror(self.tr("error"), resp.error)
 
     def apply_board_preset(self) -> None:
@@ -3089,25 +3179,42 @@ class ButtonModePage(ButtonModeView, BasePage):
             return
 
         slot = int(self.board_slot_var.get())
-        resp = self.ctx.serial.cfg_apply(slot)
+        status_token = _begin_status(self, "preset")
+        try:
+            resp = self.ctx.serial.cfg_apply(slot)
+        except Exception as exc:
+            _finish_status(self, status_token, success=False, error=str(exc))
+            messagebox.showerror(self.tr("error"), str(exc))
+            return
 
         if resp.ok:
             messagebox.showinfo(self.tr("info"), self.tr("board_preset_read").format(slot=slot))
-            self.read_board_preset(show_success=False)
+            self.read_board_preset(show_success=False, status_token=status_token)
             self.read_current_settings(show_success=False)
         else:
+            _finish_status(self, status_token, success=False, error=resp.error)
             messagebox.showerror(self.tr("error"), resp.error)
 
-    def read_board_preset(self, *, show_success: bool = True) -> None:
+    def read_board_preset(self, *, show_success: bool = True, status_token: Any = None) -> None:
         if not self._ensure_connected():
+            _finish_status(self, status_token, success=False, error=self.tr("not_connected"))
             return
 
         slot = int(self.board_slot_var.get())
-        resp = self.ctx.serial.cfg_read(slot)
+        owns_status = status_token is None
+        if owns_status:
+            status_token = _begin_status(self, "preset")
+        try:
+            resp = self.ctx.serial.cfg_read(slot)
+        except Exception as exc:
+            _finish_status(self, status_token, success=False, error=str(exc))
+            messagebox.showerror(self.tr("error"), str(exc))
+            return
 
         if resp.ok:
             raw_hex = self.ctx.serial._extract_cfgread_hex(resp.data)
             if raw_hex is None:
+                _finish_status(self, status_token, success=False, error=self.tr("board_preset_read_invalid"))
                 messagebox.showerror(self.tr("error"), self.tr("board_preset_read_invalid"))
                 return
             try:
@@ -3127,11 +3234,14 @@ class ButtonModePage(ButtonModeView, BasePage):
                     unpack_awp192x_button_payload(stored.payload)
                 )
             except ValueError as exc:
+                _finish_status(self, status_token, success=False, error=str(exc))
                 messagebox.showerror(self.tr("error"), f"{self.tr('board_preset_read_invalid')}\n{exc}")
                 return
+            _finish_status(self, status_token, success=True)
             if show_success:
                 messagebox.showinfo(self.tr("info"), summary)
         else:
+            _finish_status(self, status_token, success=False, error=resp.error)
             messagebox.showerror(self.tr("error"), resp.error)
 
     def _apply_button_runtime_page_state(self, runtime) -> None:
@@ -3814,50 +3924,72 @@ class ButtonModePage(ButtonModeView, BasePage):
     def _start_detection_direct(self) -> None:
         self._invalidate_detect_session()
         detect_generation = self._detect_generation
-        config_token = self._begin_button_progress_step("config")
-        detection_token = self._begin_button_progress_step("detection")
-        if not self._write_button_output_timing_config():
-            if detect_generation == self._detect_generation:
+        has_button_progress = self.page_name == "button_mode" and self.step_progress is not None
+        config_token = self._begin_button_progress_step("config") if has_button_progress else None
+        config_status = None if has_button_progress else _begin_status(self, "preset")
+        detection_token = self.step_progress.begin("detection") if has_button_progress else None
+
+        def config_failed() -> None:
+            if detect_generation != self._detect_generation:
+                return
+            if has_button_progress:
                 self._mark_button_progress_step("config", "error", config_token)
-                self._mark_button_progress_step("detection", "error", detection_token)
+                if detection_token is not None:
+                    self.step_progress.mark("detection", "error", detection_token)
+            else:
+                _finish_status(self, config_status, success=False, error="configuration write failed")
+
+        if not self._write_button_output_timing_config():
+            config_failed()
             return
         if not self._apply_adc_threshold_config():
-            if detect_generation == self._detect_generation:
-                self._mark_button_progress_step("config", "error", config_token)
-                self._mark_button_progress_step("detection", "error", detection_token)
+            config_failed()
             return
         if not self._apply_serial_waveform_config():
-            if detect_generation == self._detect_generation:
-                self._mark_button_progress_step("config", "error", config_token)
-                self._mark_button_progress_step("detection", "error", detection_token)
+            config_failed()
             return
         if not self._apply_sense_event_config():
-            if detect_generation == self._detect_generation:
-                self._mark_button_progress_step("config", "error", config_token)
-                self._mark_button_progress_step("detection", "error", detection_token)
+            config_failed()
             return
         if not self._write_button_adc_event_config(show_error=True):
-            if detect_generation == self._detect_generation:
-                self._mark_button_progress_step("config", "error", config_token)
-                self._mark_button_progress_step("detection", "error", detection_token)
+            config_failed()
             return
         if detect_generation == self._detect_generation:
-            self._mark_button_progress_step("config", "done", config_token)
-        if not self.write_reg(0x06, 0x0001):
+            if has_button_progress:
+                self._mark_button_progress_step("config", "done", config_token)
+            else:
+                _finish_status(self, config_status, success=True)
+        detection_status = (
+            _begin_status(self, "detection", progress_token=detection_token)
+            if has_button_progress
+            else _begin_status(self, "detection")
+        )
+        started = self.write_reg(0x06, 0x0001)
+        _finish_status(self, 
+            detection_status,
+            success=started,
+            error="start detection write failed" if not started else "",
+        )
+        if not started:
             if detect_generation == self._detect_generation:
-                self._mark_button_progress_step("detection", "error", detection_token)
+                if has_button_progress:
+                    self._mark_button_progress_step("detection", "error", detection_token)
             return
         self._direct_detection_active = True
         if detect_generation == self._detect_generation:
-            self._mark_button_progress_step("detection", "done", detection_token)
+            if has_button_progress:
+                self._mark_button_progress_step("detection", "done", detection_token)
         self._reset_direct_detect_cycle()
         self._detect_gui_state = "ready"
         self._set_button_selected("start_detection", True)
         self._set_sense_ready()
 
     def stop_detection(self) -> None:
+        status_token = _begin_status(self, "detection")
         self._invalidate_detect_session()
-        if not self.write_reg(0x06, 0x0002):
+        success = self.write_reg(0x06, 0x0002)
+        _finish_status(self, status_token, success=success, error="stop detection write failed" if not success else "")
+        if not success:
             return
         if self.page_name == "button_mode" and self.step_progress is not None:
             self.step_progress.invalidate_from("detection")
@@ -3865,21 +3997,36 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._finish_detection_stop_ui()
 
     def start_play(self) -> None:
+        if not self.ctx.serial.is_connected:
+            return
+        status_token = _begin_status(self, "playback")
         if self._adc_trigger_read_active:
             self._read_and_update_button_adc(show_error=False)
         if not self._write_button_playback_start_config():
+            _finish_status(self, status_token, success=False, error="playback configuration failed")
             return
         self.write_reg_async(
             0x06,
             0x0004,
-            on_success=lambda: self._set_button_selected("start_play", True),
+            on_success=lambda: (
+                self._set_button_selected("start_play", True),
+                _finish_status(self, status_token, success=True),
+            ),
+            on_failure=lambda error: _finish_status(self, status_token, success=False, error=error),
         )
 
     def stop_play(self) -> None:
+        if not self.ctx.serial.is_connected:
+            return
+        status_token = _begin_status(self, "playback")
         self.write_reg_async(
             0x06,
             0x0008,
-            on_success=lambda: self._set_button_selected("start_play", False),
+            on_success=lambda: (
+                self._set_button_selected("start_play", False),
+                _finish_status(self, status_token, success=True),
+            ),
+            on_failure=lambda error: _finish_status(self, status_token, success=False, error=error),
         )
 
     def read_button_adc_value(self) -> None:
@@ -5397,6 +5544,10 @@ class FullModePage(ButtonModePage):
             embedded=False,
             storage=self.storage,
         )
+        self.waveform_page.set_write_observer(
+            self._begin_waveform_write_observation,
+            self._on_button_waveform_write_result,
+        )
         self.waveform_page.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
         self._syncing_chip_settings = True
         try:
@@ -6134,36 +6285,73 @@ class FullModePage(ButtonModePage):
         return True
 
     def start_detection(self) -> None:
+        if not self.ctx.serial.is_connected:
+            return
+        status_token = _begin_status(self, "detection")
         if not self._write_full_reg14(show_error=True):
+            _finish_status(self, status_token, success=False, error="configuration write failed")
             return
         if not self._write_duration_reg(show_error=True):
+            _finish_status(self, status_token, success=False, error="configuration write failed")
             return
         if not self._write_full_adc_thresholds(show_error=True):
+            _finish_status(self, status_token, success=False, error="configuration write failed")
             return
         if not self._write_adc_config_0c(show_error=True):
+            _finish_status(self, status_token, success=False, error="configuration write failed")
             return
         if not self._write_adc_config_0b(show_error=True):
+            _finish_status(self, status_token, success=False, error="configuration write failed")
             return
         if not self._write_full_sense_event_config(show_error=True):
+            _finish_status(self, status_token, success=False, error="configuration write failed")
             return
-        if self.write_reg(0x06, 0x0001):
+        started = self.write_reg(0x06, 0x0001)
+        _finish_status(self, status_token, success=started,
+                           error="start detection write failed" if not started else "")
+        if started:
             self._set_button_selected("adc_start", True)
 
     def stop_detection(self) -> None:
-        if self.write_reg(0x06, 0x0002):
+        if not self.ctx.serial.is_connected:
+            return
+        status_token = _begin_status(self, "detection")
+        stopped = self.write_reg(0x06, 0x0002)
+        _finish_status(self, status_token, success=stopped,
+                           error="stop detection write failed" if not stopped else "")
+        if stopped:
             self._set_button_selected("adc_start", False)
 
     def start_play(self) -> None:
+        if not self.ctx.serial.is_connected:
+            return
+        status_token = _begin_status(self, "playback")
         if not self._write_full_reg14(show_error=True):
+            _finish_status(self, status_token, success=False, error="playback configuration failed")
             return
         if not self._write_duration_reg(show_error=True):
+            _finish_status(self, status_token, success=False, error="playback configuration failed")
             return
         if not self._write_full_manual_play_config(show_error=True):
+            _finish_status(self, status_token, success=False, error="playback configuration failed")
             return
-        self.write_reg_async(0x06, 0x0004, on_success=lambda: self._set_button_selected("start_play", True))
+        self.write_reg_async(
+            0x06, 0x0004,
+            on_success=lambda: (self._set_button_selected("start_play", True),
+                                _finish_status(self, status_token, success=True)),
+            on_failure=lambda error: _finish_status(self, status_token, success=False, error=error),
+        )
 
     def stop_play(self) -> None:
-        self.write_reg_async(0x06, 0x0008, on_success=lambda: self._set_button_selected("start_play", False))
+        if not self.ctx.serial.is_connected:
+            return
+        status_token = _begin_status(self, "playback")
+        self.write_reg_async(
+            0x06, 0x0008,
+            on_success=lambda: (self._set_button_selected("start_play", False),
+                                _finish_status(self, status_token, success=True)),
+            on_failure=lambda error: _finish_status(self, status_token, success=False, error=error),
+        )
 
 
 class PumpModePage(BasePage):
@@ -6355,15 +6543,45 @@ class PumpModePage(BasePage):
         bar.update_params("output", {"frequency": frequency, "amplitude": amplitude})
         bar.update_params("start", {"settings": (frequency, amplitude)})
 
-    def _begin_pump_output_attempt(self) -> Any | None:
+    def _begin_pump_output_attempt(self, *, aggregate: bool = False) -> Any | None:
         bar = getattr(self, "step_progress", None)
-        if bar is None:
+        if bar is not None:
+            self._sync_pump_step_progress_params()
+            token = bar.begin("output")
+            _begin_status(self, "pump_output", progress_token=token, aggregate_parts=aggregate)
+            return token
+        bus = getattr(getattr(self, "ctx", None), "status_bus", None)
+        if bus is None:
             return None
-        self._sync_pump_step_progress_params()
-        return bar.begin("output")
+        from core.status_bus import StatusContext, StatusMessage
+        context = self._status_context(event="pump_output")
+        if aggregate:
+            context = StatusContext(
+                context.port_session, context.chip_addr, context.mode,
+                context.activation_epoch, context.param_version, context.operation_id,
+                context.page_name, ("frequency", "amplitude"),
+            )
+        return bus.begin(
+            StatusMessage.make("sidebar_status_pump_output_begin"),
+            context=context,
+            event="pump_output",
+        )
 
     def _record_pump_output_part(self, part_key: str, ok: bool, token: Any | None) -> None:
+        from core.status_bus import StatusToken
+        if isinstance(token, StatusToken):
+            bus = getattr(getattr(self, "ctx", None), "status_bus", None)
+            if bus is None:
+                return
+            state = "done" if ok else "error"
+            if bus.receipt(token, part_key, state, error="Pump output write failed" if not ok else ""):
+                if not token.context.part_keys:
+                    _finish_status(self, token, success=ok, error="Pump output write failed" if not ok else "")
+            return
         bar = getattr(self, "step_progress", None)
+        report_part = getattr(self, "report_progress_part_status", None)
+        if token is not None and callable(report_part):
+            report_part(token, part_key, "done" if ok else "error")
         if bar is not None and token is not None:
             bar.mark_part("output", part_key, "done" if ok else "error", token)
 
@@ -6527,6 +6745,8 @@ class PumpModePage(BasePage):
                 self.ctx.state.current_max_output_reg_value = value
                 ok = self.write_reg(0x14, value, show_error=False)
                 self._record_pump_output_part("amplitude", ok, token)
+                if progress_token is None:
+                    _report_progress_status(self, token, "done" if ok else "error")
                 return ok
         return False
 
@@ -6535,14 +6755,16 @@ class PumpModePage(BasePage):
         option = self._current_frequency_option()
         if option is None:
             return
-        token = self._begin_pump_output_attempt()
+        token = self._begin_pump_output_attempt(aggregate=True)
         _label, _freq, reg_value, _data_depth_label = option
         frequency_ok = self.write_reg(0x15, reg_value, show_error=False)
         self._record_pump_output_part("frequency", frequency_ok, token)
+        # Preserve the established write order: amplitude is still attempted
+        # after the frequency response, and the two explicit receipts aggregate.
         self._on_amp_changed(progress_token=token)
         if not frequency_ok:
-            # The amplitude write still runs in its existing position, while
-            # retaining the failed frequency outcome for the aggregate step.
+            # Re-assert the failed frequency outcome after amplitude so the
+            # aggregate step stays red (amplitude done must not clear it).
             self._record_pump_output_part("frequency", False, token)
 
     def _current_data_depth_label(self) -> str:
@@ -6599,29 +6821,38 @@ class PumpModePage(BasePage):
         threading.Thread(target=worker, daemon=True).start()
 
     def start_play(self) -> None:
+        if not self.ctx.serial.is_connected or getattr(self, "_preparing", False):
+            return
         bar = getattr(self, "step_progress", None)
         token = None
         if bar is not None and self.ctx.serial.is_connected and not getattr(self, "_preparing", False):
             self._sync_pump_step_progress_params()
             token = bar.begin("start")
+        status_token = _begin_status(self, "playback", progress_token=token)
 
         def started() -> None:
             self._set_button_selected("start_play", True)
-            if bar is not None and token is not None:
+            _finish_status(self, status_token, success=True)
+            if bar is not None and token is not None and not status_token:
                 bar.mark("start", "done", token)
 
         def failed(_error: str) -> None:
-            if bar is not None and token is not None:
+            _finish_status(self, status_token, success=False, error=_error)
+            if bar is not None and token is not None and not status_token:
                 bar.mark("start", "error", token)
 
         self.write_reg_async(0x06, 0x0004, on_success=started, on_failure=failed)
 
     def stop_play(self) -> None:
+        if not self.ctx.serial.is_connected or getattr(self, "_preparing", False):
+            return
+        status_token = _begin_status(self, "playback")
         host = self._pump_step_host()
         stop_context = host._step_progress_context() if host is not None else None
 
         def stopped() -> None:
             self._set_button_selected("start_play", False)
+            _finish_status(self, status_token, success=True)
             if (
                 self.step_progress is not None
                 and stop_context is not None
@@ -6629,4 +6860,7 @@ class PumpModePage(BasePage):
             ):
                 self.step_progress.reset_all()
 
-        self.write_reg_async(0x06, 0x0008, on_success=stopped)
+        self.write_reg_async(
+            0x06, 0x0008, on_success=stopped,
+            on_failure=lambda error: _finish_status(self, status_token, success=False, error=error),
+        )

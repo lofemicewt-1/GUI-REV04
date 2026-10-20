@@ -2856,7 +2856,11 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if progress is None:
             return None
         self._update_step_progress_params()
-        return progress.begin(step_key)
+        token = progress.begin(step_key)
+        event = {"en": "en", "waveform": "waveform", "adc": "adc", "detection": "detection"}.get(step_key)
+        if event is not None:
+            self.begin_status(event, progress_token=token)
+        return token
 
     def _capture_step_progress_token(self, step_key: str) -> Any | None:
         progress = getattr(self, "step_progress", None)
@@ -2895,12 +2899,19 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self._adc_progress_token = token
         else:
             progress.mark("adc", "running", token)
+        self.begin_status("adc", progress_token=token)
         return token
 
     def _mark_step_progress(self, token: Any | None, state: str, *, detail: str = "") -> None:
         if token is None:
             return
         progress = getattr(self, "step_progress", None)
+        # StatusBus feeds the sidebar; the step bar still needs a local mark
+        # because bus delivery is async (UiDispatcher) and tests sync only
+        # pages.step_progress.post_to_ui.
+        report = getattr(self, "report_progress_status", None)
+        if callable(report):
+            report(token, state, detail=detail)
         if progress is not None:
             progress.mark(token.step_key, state, token, detail=detail)
 
@@ -2908,6 +2919,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if token is None:
             return
         progress = getattr(self, "step_progress", None)
+        report_part = getattr(self, "report_progress_part_status", None)
+        if callable(report_part):
+            report_part(token, part_key, state)
         if progress is not None:
             progress.mark_part("adc", part_key, state, token)
 
@@ -3330,11 +3344,14 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         if not path:
             return
+        status_token = self.begin_status("preset")
         try:
             Path(path).write_text(content, encoding="utf-8")
         except Exception as exc:
+            self.finish_status(status_token, success=False, error=str(exc))
             messagebox.showerror(self.tr("error"), str(exc))
             return
+        self.finish_status(status_token, success=True)
         messagebox.showinfo(self.tr("info"), self.tr("register_script_export_success"))
 
     def import_user_preset_script(self) -> None:
@@ -3355,6 +3372,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if not self.ctx.serial.is_connected:
             messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
             return
+        status_token = self.begin_status("preset")
         self._set_page_script_buttons_state("disabled")
 
         def worker() -> None:
@@ -3366,13 +3384,14 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         _run_ui_background_task(
             self,
             worker,
-            on_done=lambda _result: self._finish_page_script_import(None, operations),
-            on_error=lambda error: self._finish_page_script_import(str(error), operations),
+            on_done=lambda _result: self._finish_page_script_import(None, operations, status_token),
+            on_error=lambda error: self._finish_page_script_import(str(error), operations, status_token),
         )
 
-    def _finish_page_script_import(self, error: str | None, operations: list[Any]) -> None:
+    def _finish_page_script_import(self, error: str | None, operations: list[Any], status_token: Any = None) -> None:
         self._set_page_script_buttons_state("normal")
         if error:
+            self.finish_status(status_token, success=False, error=error)
             messagebox.showerror(self.tr("error"), error)
             return
         snapshot = extract_awp1221_page_script(operations)
@@ -3380,8 +3399,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             try:
                 self._apply_page_script_snapshot(snapshot, operations[0].device_addr)
             except Exception as exc:
+                self.finish_status(status_token, success=False, error=str(exc))
                 messagebox.showerror(self.tr("error"), str(exc))
                 return
+        self.finish_status(status_token, success=True)
         messagebox.showinfo(self.tr("info"), self.tr("register_script_import_success"))
 
     def _set_page_script_buttons_state(self, state: str) -> None:
@@ -3815,6 +3836,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if self._sinc_write_will_stop_detection(device_addr):
             self._invalidate_step_progress("detection")
         progress_token = self._begin_step_progress("waveform")
+        self.begin_status("waveform", progress_token=progress_token)
         shared_state, revision = self._begin_sinc_write(device_addr)
         self._set_waveform_write_busy(True)
         _run_ui_background_task(
@@ -7115,6 +7137,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self._write_adc_settings()
             self._sync_realtime_adc_load()
             self._mark_adc_progress_part(progress_token, "settings", "done")
+            self.report_progress_status(progress_token, "done")
         except Exception as exc:
             self._mark_adc_progress_part(progress_token, "settings", "error")
             messagebox.showerror(self.tr("error"), str(exc))
@@ -7212,6 +7235,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self._write_adc_settings()
             self._sync_realtime_adc_load()
             self._mark_adc_progress_part(progress_token, "settings", "done")
+            self.report_progress_status(progress_token, "done")
         except Exception as exc:
             self._mark_adc_progress_part(progress_token, "settings", "error")
             self._show_live_write_error(exc)
@@ -7227,6 +7251,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             else:
                 self._write_adc_stage(stage_index)
             self._mark_adc_progress_part(progress_token, part_key, "done")
+            self.report_progress_status(progress_token, "done")
         except Exception as exc:
             self._mark_adc_progress_part(progress_token, part_key, "error")
             self._show_live_write_error(exc)
@@ -7400,6 +7425,17 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             )
             if token is not None:
                 progress_tokens[step_key] = token
+                if step_key == "adc":
+                    self.begin_status("adc", progress_token=token, aggregate_parts=True)
+                elif step_key == "detection" and command_key == "start_detection":
+                    self.begin_status("detection", progress_token=token)
+        if command_key == "start_detection":
+            if progress_tokens.get("adc") is None:
+                progress_tokens["adc_status"] = self.begin_status("adc")
+            if progress_tokens.get("detection") is None:
+                progress_tokens["detection_status"] = self.begin_status("detection")
+        if command_key == "start_play":
+            progress_tokens["playback_status"] = self.begin_status("playback")
         if command_key == "start_detection":
             self._set_start_detection_busy(True)
         _run_ui_background_task(
@@ -7510,16 +7546,38 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                     "error",
                     detail=error,
                 )
+            elif command_key == "start_play":
+                self.finish_status(progress_tokens.get("playback_status"), success=False, error=error)
+            if command_key == "start_detection":
+                self.finish_status(progress_tokens.get("adc_status"), success=False, error=error)
+                self.finish_status(progress_tokens.get("detection_status"), success=False, error=error)
+            self.report_progress_status(progress_tokens.get("adc"), "error", detail=error)
             messagebox.showerror(self.tr("error"), error)
             return
         if not started:
+            bus = getattr(self.ctx, "status_bus", None)
+            if bus is not None:
+                for key in ("adc", "detection"):
+                    token = self._status_progress_tokens.get(id(progress_tokens.get(key))) if progress_tokens.get(key) is not None else None
+                    if token is not None:
+                        bus.invalidate_context(token=token)
+                if progress_tokens.get("playback_status") is not None:
+                    bus.invalidate_context(token=progress_tokens["playback_status"])
+                for key in ("adc_status", "detection_status"):
+                    if progress_tokens.get(key) is not None:
+                        bus.invalidate_context(token=progress_tokens[key])
             return
         if command_key == "start_detection":
             self._set_detection_state(True, device_addr)
+            # Do not certify ADC parts here: a "start anyway" verified path may
+            # have already marked mismatched groups as error and must keep them.
             self._mark_step_progress(progress_tokens.get("detection"), "done")
+            self.finish_status(progress_tokens.get("detection_status"), success=True)
+            # Sidebar ADC status stays with whatever prompt/rewrite already reported.
             self._sync_realtime_adc_load()
         elif command_key == "start_play":
             self._set_waveform_play_state(True, device_addr)
+            self.finish_status(progress_tokens.get("playback_status"), success=True)
             token = progress_tokens.get("detection")
             progress = getattr(self, "step_progress", None)
             if token is not None and progress is not None:
@@ -7538,12 +7596,16 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
     def _send_control_command(self, command_key: str) -> bool:
         if not self._ensure_connected():
             return False
+        event = "playback" if command_key in {"stop_play", "awp1221_stop_all"} else "detection"
+        status_token = self.begin_status(event)
         try:
             self._ensure_reg_1f_bit3()
             self._write_control_command(command_key)
         except Exception as exc:
+            self.finish_status(status_token, success=False, error=str(exc))
             messagebox.showerror(self.tr("error"), str(exc))
             return False
+        self.finish_status(status_token, success=True)
         return True
 
     def stop_detection(self) -> None:
@@ -8008,12 +8070,21 @@ class AWP1221Page(BasePage):
 
     def _begin_step_progress(self, step_key: str) -> Any | None:
         progress = self._active_step_progress()
-        return progress.begin(step_key) if progress is not None else None
+        if progress is None:
+            return None
+        token = progress.begin(step_key)
+        event = {"en": "en", "waveform": "waveform", "adc": "adc", "detection": "detection"}.get(step_key)
+        if event is not None:
+            self.begin_status(event, progress_token=token)
+        return token
 
     def _mark_step_progress(self, token: Any | None, state: str, *, detail: str = "") -> None:
         if token is None:
             return
         progress = self._active_step_progress()
+        report = getattr(self, "report_progress_status", None)
+        if callable(report):
+            report(token, state, detail=detail)
         if progress is not None:
             progress.mark(token.step_key, state, token, detail=detail)
 
@@ -8431,10 +8502,14 @@ class AWP1221Page(BasePage):
             return
 
         progress_token = self._begin_step_progress("en") if requested else None
+        status_token = None if requested else self.begin_status("en")
         try:
             response = self.ctx.serial.configure_gpio("D4", GPIO_MODE_HIGH if requested else GPIO_MODE_LOW)
         except Exception as exc:
-            self._mark_step_progress(progress_token, "error", detail=str(exc))
+            if requested:
+                self._mark_step_progress(progress_token, "error", detail=str(exc))
+            else:
+                self.finish_status(status_token, success=False, error=str(exc))
             self._set_en_state(None)
             self._invalidate_sinc_for_en_disable()
             self._notify_shared_d4_gpio_panel(None)
@@ -8447,6 +8522,9 @@ class AWP1221Page(BasePage):
                 if not detail:
                     detail = str(getattr(response, "data", "") or "").strip()
                 self._mark_step_progress(progress_token, "error", detail=detail)
+            else:
+                detail = str(getattr(response, "error", "") or getattr(response, "data", "") or "invalid GPIO LOW acknowledgement")
+                self.finish_status(status_token, success=False, error=detail)
             self._set_en_state(None)
             self._invalidate_sinc_for_en_disable()
             self._notify_shared_d4_gpio_panel(None)
@@ -8459,15 +8537,20 @@ class AWP1221Page(BasePage):
 
         if requested:
             self._mark_step_progress(progress_token, "done")
+            ldo_status = self.begin_status("adc")
             try:
                 self._set_en_high_adc_load()
             except Exception as exc:
+                self.finish_status(ldo_status, success=False, error=str(exc))
                 # GPIO ACK already confirmed EN HIGH.  Keep that state visible
                 # even when the follow-up ADC_LDO write fails.
                 self._set_en_state(True)
                 self._notify_shared_d4_gpio_panel(GPIO_MODE_HIGH)
                 messagebox.showerror(self.tr("error"), str(exc))
                 return
+            self.finish_status(ldo_status, success=True)
+        else:
+            self.finish_status(status_token, success=True)
 
         self._set_en_state(requested)
         self._notify_shared_d4_gpio_panel(GPIO_MODE_HIGH if requested else GPIO_MODE_LOW)
@@ -8684,8 +8767,17 @@ class AWP1221Page(BasePage):
         original_addr: str,
         result: tuple[int | None, int | None, str] | None,
         error: str | None = None,
+        *,
+        session: Any = None,
+        status_token: Any = None,
     ) -> None:
         self._set_detection_busy(False)
+        current_session = active_serial_identity(self.ctx, self.page_name)
+        if session is not None and current_session != session:
+            bus = getattr(self.ctx, "status_bus", None)
+            if bus is not None and status_token is not None:
+                bus.invalidate_context(token=status_token)
+            return
         addr, value, last_detail = result or (None, None, "")
         if addr is not None and value is not None:
             self.addr_var.set(f"0x{addr:02X}")
@@ -8693,37 +8785,53 @@ class AWP1221Page(BasePage):
             self.status_var.set(
                 self.tr("chip_detect_success") + f" 0x{addr:02X}: 0x{value:04X}"
             )
+            self.ctx.app.apply_manual_chip_discovery(
+                chip_name="AWP1221", address=addr, page_name=self.page_name,
+                session=session, status_token=status_token,
+            )
             return
         self.addr_var.set(original_addr)
         if error:
             last_detail = error
         suffix = f" {last_detail}" if last_detail else ""
         self.status_var.set(self.tr("chip_detect_failed") + suffix)
+        self.ctx.app.apply_manual_chip_discovery(
+            chip_name=None, address=None, page_name=self.page_name, session=session,
+            error=str(error or last_detail), exception=bool(error), status_token=status_token,
+        )
 
     def detect_chip(self) -> None:
         if not self._ensure_connected():
             return
         original_addr = self.addr_var.get()
+        session = active_serial_identity(self.ctx, self.page_name)
+        status_token = self.begin_status("discovery")
         self._set_detection_busy(True)
         _run_ui_background_task(
             self,
             self._scan_for_chip,
-            on_done=lambda result: self._finish_chip_detection(original_addr, result),
+            on_done=lambda result: self._finish_chip_detection(
+                original_addr, result, session=session, status_token=status_token,
+            ),
             on_error=lambda error: self._finish_chip_detection(
                 original_addr,
                 None,
                 str(error),
+                session=session,
+                status_token=status_token,
             ),
         )
 
     def read_register(self) -> None:
         if not self._ensure_connected():
             return
+        status_token = self.begin_status("register_read")
         try:
             reg = self._reg_addr()
             address = self._device_addr()
             resp = self.ctx.serial.read_register_value(address, reg, bits=16)
             if not resp.ok:
+                self.finish_status(status_token, success=False, error=resp.error)
                 messagebox.showerror(self.tr("error"), resp.error)
                 return
             value = self.ctx.serial.extract_rdataw_value(
@@ -8735,12 +8843,15 @@ class AWP1221Page(BasePage):
             if value is None:
                 raise ValueError(resp.data or "invalid register response")
             self.read_value_var.set(f"0x{value:04X}")
+            self.finish_status(status_token, success=True)
         except Exception as exc:
+            self.finish_status(status_token, success=False, error=str(exc))
             messagebox.showerror(self.tr("error"), str(exc))
 
     def write_register(self) -> None:
         if not self._ensure_connected():
             return
+        status_token = self.begin_status("register_write")
         try:
             register = self._reg_addr()
             resp = self.ctx.serial.write_register_value(
@@ -8756,12 +8867,15 @@ class AWP1221Page(BasePage):
             except Exception:
                 pass
             messagebox.showerror(self.tr("error"), str(exc))
+            self.finish_status(status_token, success=False, error=str(exc))
             return
         if register == AWP1221_GPIO_REGISTER:
             self._invalidate_gpio_settings()
         if not resp.ok:
+            self.finish_status(status_token, success=False, error=resp.error)
             messagebox.showerror(self.tr("error"), resp.error)
             return
+        self.finish_status(status_token, success=True)
         self._reset_step_progress()
 
     def _read_chip_register(self, address: int, register: int) -> int:

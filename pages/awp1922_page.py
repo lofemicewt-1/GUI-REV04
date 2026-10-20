@@ -402,11 +402,32 @@ class AWP1922Page(BasePage):
         if not self._ensure_connected():
             return
 
+        from pages.gpio_controls import active_serial_identity
+
+        session = active_serial_identity(self.ctx, self.page_name)
+        status_token = self.begin_status("discovery")
         addr = self._addr()
         self._log_local(f"READ8 dev=0x{addr:02X} reg=0x00")
-        resp = self.ctx.serial.read_register_value(addr, 0x00, bits=8)
+        try:
+            resp = self.ctx.serial.read_register_value(addr, 0x00, bits=8)
+        except Exception as exc:
+            if session is None or active_serial_identity(self.ctx, self.page_name) != session:
+                bus = getattr(self.ctx, "status_bus", None)
+                if bus is not None and status_token is not None:
+                    bus.invalidate_context(token=status_token)
+                return
+            self._log_local(f"ERROR {exc}")
+            self.finish_status(status_token, success=False, error=str(exc))
+            messagebox.showerror(self.tr("error"), str(exc))
+            return
+        if session is None or active_serial_identity(self.ctx, self.page_name) != session:
+            bus = getattr(self.ctx, "status_bus", None)
+            if bus is not None and status_token is not None:
+                bus.invalidate_context(token=status_token)
+            return
         if not resp.ok:
             self._log_local(f"ERROR {resp.error}")
+            self.finish_status(status_token, success=False, error=resp.error)
             messagebox.showerror(self.tr("error"), resp.error)
             return
 
@@ -420,11 +441,21 @@ class AWP1922Page(BasePage):
         if value is not None:
             self._log_local(f"READ8_DATA reg=0x00 value=0x{value & 0xFF:02X}")
         if value == 0x80:
+            applied = self.ctx.app.apply_manual_chip_discovery(
+                chip_name="AWP1922",
+                address=addr,
+                page_name=self.page_name,
+                session=session,
+                status_token=status_token,
+            )
+            if not applied:
+                return
             self.current_ctrl_reg = 0x80
             self.status_var.set(self.tr("chip_detect_success") + " 0x00=0x80")
         else:
             show = "None" if value is None else f"0x{value:02X}"
             self.status_var.set(self.tr("chip_detect_failed") + f" 0x00={show}")
+            self.finish_status(status_token, success=False, error=f"AWP1922 ID mismatch: {show}")
         self._clear_status(addr)
 
     def _user_shutdown_addrs(self) -> set[int]:

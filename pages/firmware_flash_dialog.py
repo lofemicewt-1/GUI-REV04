@@ -18,6 +18,7 @@ from typing import Any, Callable
 from config.languages import t
 from core import firmware_flasher as ff
 from core.ui_dispatch import post_to_ui
+from core.status_bus import StatusContext
 from pages.base_page import fit_toplevel_to_screen
 
 # Session memory of the last chosen .hex (never persisted to disk).
@@ -55,6 +56,7 @@ class FirmwareFlashDialog(tk.Toplevel):
         self._start_thread = start_thread or self._default_start_thread
         self._session: ff.FlashSession | None = None
         self._port: str = ""
+        self._status_token: Any = None
         self._connect_thread: Any = None
         self._status_key = "firmware_status_ready"
         self._status_kwargs: dict[str, Any] = {}
@@ -265,6 +267,17 @@ class FirmwareFlashDialog(tk.Toplevel):
             messagebox.showwarning(self.tr("error"), self.tr("firmware_busy_locked"), parent=self)
             return False
         self._port = port
+        begin_status = getattr(self.home, "begin_status", None)
+        if callable(begin_status):
+            identity = getattr(self.home, "_connection_identity_for_port", None)
+            try:
+                session = identity(port) if callable(identity) else None
+            except Exception:
+                session = None
+            self._status_token = begin_status(
+                "firmware",
+                context=StatusContext(session or (port,), page_name="home", mode="firmware"),
+            )
         self._flasher.cancel_event.clear()
         self._set_busy(True)
         self._set_progress(0)
@@ -382,6 +395,11 @@ class FirmwareFlashDialog(tk.Toplevel):
             error = self.tr(result.error_key or "firmware_error_avrdude", **(result.error_kwargs or {"code": result.returncode}))
             message_key, kwargs = "firmware_failed", {"error": error}
         final_text = self.tr(message_key, **kwargs)
+        finish_status = getattr(self.home, "finish_status", None)
+        if callable(finish_status):
+            detail = "" if result.ok else final_text
+            finish_status(self._status_token, success=bool(result.ok), error=detail)
+        self._status_token = None
         self._emit_shared_log(final_text)
         self._append_log(final_text)
 

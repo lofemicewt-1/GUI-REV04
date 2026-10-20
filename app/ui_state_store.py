@@ -76,3 +76,38 @@ class UiStateStore:
                 except OSError:
                     pass
 
+    def get_always_show_chip_pages(self, default: bool = False) -> bool:
+        value = self._read().get("always_show_chip_pages", default)
+        return value if isinstance(value, bool) else bool(default)
+
+    def set_always_show_chip_pages(self, value: bool) -> None:
+        data = self._read()
+        data["version"] = 1
+        data["always_show_chip_pages"] = bool(value)
+        self._write(data)
+
+    def _write(self, data: dict[str, Any]) -> None:
+        temporary: str | None = None
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=str(self.path.parent),
+                prefix=f".{self.path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as target:
+                temporary = target.name
+                json.dump(data, target, ensure_ascii=False, indent=2)
+                target.write("\n")
+                target.flush()
+                os.fsync(target.fileno())
+            os.replace(temporary, self.path)
+        except (OSError, TypeError, ValueError):
+            if temporary:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+

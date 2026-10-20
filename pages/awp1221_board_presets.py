@@ -194,6 +194,7 @@ class AWP1221BoardPresetMixin:
             messagebox.showerror(self.tr("error"), str(exc))
             return
         self._board_preset_busy = True
+        status_token = self.begin_status("preset")
         if action in ("read", "apply"):
             self._invalidate_sinc_verified()
         self._set_board_action_buttons_state("disabled")
@@ -217,34 +218,41 @@ class AWP1221BoardPresetMixin:
             self._board_preset_busy = False
             self._set_board_action_buttons_state("normal")
             if error is not None:
+                self.finish_status(status_token, success=False, error=str(error))
                 if action in ("read", "apply"):
                     self._set_detection_state(False, address)
                     self._set_waveform_play_state(False, address)
                 messagebox.showerror(self.tr("error"), str(error))
                 return
-            if action in ("read", "apply"):
-                self._restore_type4_model(result[1])
-                self._restore_type4_applied_registers(result[2])
-                settings_model = self._current_settings_model()
-                if settings_model is not None:
-                    settings_model.mark_applied()
-                self._invalidate_sinc_verified()
-                self._set_detection_state(True, address)
-                self._set_waveform_play_state(False, address)
-                if self._sinc_selected():
-                    from core.awp1221_sinc import awp1221_sinc_plan_key
-                    plan = self._build_current_sinc_plan()
-                    key = awp1221_sinc_plan_key(plan, address)
-                    self._sinc_verified_key = key
-                    shared = self._shared_state_for(address)
-                    if shared is not None:
-                        shared.sinc_key = key
-                self._refresh_waveform_controls()
-            text = (format_preset_summary(result[0]) if action == "read" else
-                    self.tr("board_preset_saved") if action == "save" else
-                    self.tr("board_preset_read").format(slot=slot))
+            try:
+                if action in ("read", "apply"):
+                    self._restore_type4_model(result[1])
+                    self._restore_type4_applied_registers(result[2])
+                    settings_model = self._current_settings_model()
+                    if settings_model is not None:
+                        settings_model.mark_applied()
+                    self._invalidate_sinc_verified()
+                    self._set_detection_state(True, address)
+                    self._set_waveform_play_state(False, address)
+                    if self._sinc_selected():
+                        from core.awp1221_sinc import awp1221_sinc_plan_key
+                        plan = self._build_current_sinc_plan()
+                        key = awp1221_sinc_plan_key(plan, address)
+                        self._sinc_verified_key = key
+                        shared = self._shared_state_for(address)
+                        if shared is not None:
+                            shared.sinc_key = key
+                    self._refresh_waveform_controls()
+                text = (format_preset_summary(result[0]) if action == "read" else
+                        self.tr("board_preset_saved") if action == "save" else
+                        self.tr("board_preset_read").format(slot=slot))
+            except Exception as exc:
+                self.finish_status(status_token, success=False, error=str(exc))
+                messagebox.showerror(self.tr("error"), str(exc))
+                return
             if action == "save" and self._has_independent_advanced_settings():
                 text = f"{text}\n\n{self.tr('preset_slot_advanced_scope_warning')}"
+            self.finish_status(status_token, success=True)
             messagebox.showinfo(self.tr("info"), text)
 
         _run_ui_background_task(self, worker, on_done=finish,

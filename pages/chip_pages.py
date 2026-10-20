@@ -802,6 +802,8 @@ class AWP1921AWP1923Page(BasePage):
         definition = self._current_detail_definition() if self.detail_mode_active() else None
         if definition is not None and not definition.can_read:
             return
+        begin = getattr(self, "begin_status", None)
+        status_token = begin("register_read") if callable(begin) else None
         try:
             reg = self._active_register_address()
             device_addr = self.ctx.state.awp192x_device_addr
@@ -822,10 +824,19 @@ class AWP1921AWP1923Page(BasePage):
                     self._refresh_detail_fields(definition=definition, view="read")
                 else:
                     self.read_value_var.set(f"0x{value & 0xFFFF:04X}")
+                finish = getattr(self, "finish_status", None)
+                if callable(finish):
+                    finish(status_token, success=True)
             else:
+                finish = getattr(self, "finish_status", None)
+                if callable(finish):
+                    finish(status_token, success=False, error=resp.error)
                 from tkinter import messagebox
                 messagebox.showerror(self.tr("error"), resp.error)
         except Exception as exc:
+            finish = getattr(self, "finish_status", None)
+            if callable(finish):
+                finish(status_token, success=False, error=str(exc))
             from tkinter import messagebox
             messagebox.showerror(self.tr("error"), str(exc))
 
@@ -837,6 +848,8 @@ class AWP1921AWP1923Page(BasePage):
         definition = self._current_detail_definition() if self.detail_mode_active() else None
         if definition is not None and not definition.can_write:
             return
+        begin = getattr(self, "begin_status", None)
+        status_token = begin("register_write") if callable(begin) else None
         try:
             reg = self._active_register_address()
             value = self._parse_int(self.write_value_var.get())
@@ -850,14 +863,23 @@ class AWP1921AWP1923Page(BasePage):
                 bits=16,
             )
             if not resp.ok:
+                finish = getattr(self, "finish_status", None)
+                if callable(finish):
+                    finish(status_token, success=False, error=resp.error)
                 from tkinter import messagebox
                 messagebox.showerror(self.tr("error"), resp.error)
             else:
+                finish = getattr(self, "finish_status", None)
+                if callable(finish):
+                    finish(status_token, success=True)
                 for bar in list(self._step_progress_bars):
                     bar.reset_all()
                 if definition is not None:
                     self._refresh_detail_fields(definition=definition, view="write")
         except Exception as exc:
+            finish = getattr(self, "finish_status", None)
+            if callable(finish):
+                finish(status_token, success=False, error=str(exc))
             from tkinter import messagebox
             messagebox.showerror(self.tr("error"), str(exc))
 

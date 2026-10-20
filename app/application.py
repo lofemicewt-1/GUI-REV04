@@ -18,6 +18,8 @@ from core import animation as anim
 from core.ui_dispatch import UiDispatcher, post_to_ui, cancel_pending_ui_jobs
 from styles.fonts import page_title_weight
 from app.state import AppState
+from app.ui_state_store import UiStateStore
+from core.status_bus import StatusBus, StatusContext, StatusMessage
 from config.languages import t
 from core.base_tool import (
     ALLOWED_I2C_SPEEDS,
@@ -54,6 +56,13 @@ from styles.theme import apply_theme
 
 CONNECT_RESULT_POLL_MS = 25
 
+CHIP_NAVIGATION_KEYS = {
+    "AWP1221": "awp1221",
+    "AWP192X": "awp1921_1923",
+    "AWP1018": "awp1018",
+    "AWP1922": "awp1922",
+}
+
 
 @dataclass
 class _ConnectAttempt:
@@ -64,6 +73,7 @@ class _ConnectAttempt:
     # Optional quiet failure handler (firmware reconnect retries); when set
     # it replaces the error message box.
     on_failure: Callable[[str], None] | None = None
+    status_token: Any = None
 
 
 @dataclass
@@ -72,6 +82,7 @@ class ApplicationContext:
     serial: SerialManager | SerialRouter
     colors: dict[str, str]
     app: Any
+    status_bus: StatusBus | None = None
 
 
 @dataclass
@@ -1873,6 +1884,16 @@ class HomePage(BasePage):
         if callable(manager_for_port) and manager_for_port(lost_port) is not None:
             return
 
+        active_page = str(getattr(self.ctx.state, "current_page", "home"))
+        page_selector = getattr(self.ctx.serial, "selected_port_for_page", None)
+        try:
+            active_page_port = page_selector(active_page) if callable(page_selector) else None
+        except TypeError:
+            active_page_port = page_selector() if callable(page_selector) else None
+        if not active_page_port:
+            active_page_port = getattr(self.ctx.state, "selected_port", None)
+        active_page_lost = str(active_page_port or "").strip() == lost_port
+
         self._cancel_continuous_read("connection_changed", port=lost_port)
 
         home_port = getattr(getattr(self, "port_var", None), "get", lambda: "")().strip()
@@ -1913,17 +1934,38 @@ class HomePage(BasePage):
         if flag_belongs_to_lost:
             self._stop_flag_poll()
         self._status_invalidate_port(lost_port, stop_monitor=status_belongs_to_lost)
+        detail = str(error).strip() or "serial transport disconnected"
+        bus = getattr(self.ctx, "status_bus", None)
+        if bus is not None:
+            if active_page_lost:
+                loss_token = bus.begin(
+                    StatusMessage.make("sidebar_status_disconnect_begin"),
+                    context=StatusContext(("lost-port", lost_port), page_name=active_page,
+                                          mode="connection-lost"),
+                    event="disconnect",
+                )
+                bus.invalidate_context(session=lost_port, except_token=loss_token)
+                bus.fail(loss_token, StatusMessage.make("sidebar_status_disconnect_fail", error=detail))
+            else:
+                bus.invalidate_context(session=lost_port)
         connected_ports = getattr(self.ctx.serial, "connected_ports", None)
         self.ctx.state.serial_connected = bool(connected_ports()) if callable(connected_ports) else False
         if getattr(self.ctx.state, "selected_port", None) == lost_port:
             self.ctx.state.selected_port = None
 
-        detail = str(error).strip() or "serial transport disconnected"
         errors = getattr(self, "_serial_disconnect_error_by_port", {})
         first_error = errors.setdefault(lost_port, detail)
         if home_is_lost:
             self.ctx.state.extra["connection_detail"] = f"{lost_port}: disconnected: {first_error}"
             self.ctx.state.extra.pop("selected_port_name", None)
+        if active_page_lost and hasattr(self.ctx.app, "navigation"):
+            group = self.ctx.app.navigation._chip_group_by_page.get(active_page)
+            self.ctx.app.navigation.set_chip_pages_visible(
+                group is not None,
+                keep_group=group,
+                disabled=True,
+            )
+            self.ctx.app.navigation.set_connection_notice("sidebar_disconnected_reconnect")
 
         try:
             self.refresh_ports()
@@ -1946,13 +1988,40 @@ class HomePage(BasePage):
         port = self.port_var.get().strip()
         self._cancel_continuous_read("connection_changed")
         if self._is_selected_port_connected(port):
+            session = self._connection_identity_for_port(port)
+            status_token = self.begin_status(
+                "disconnect",
+                context=StatusContext(session, page_name="home", mode="disconnect"),
+            )
+            bus = getattr(self.ctx, "status_bus", None)
+            if bus is not None and session is not None:
+                bus.invalidate_context(session=session, except_token=status_token)
+            active_page = str(getattr(self.ctx.state, "current_page", "home"))
+            selector = getattr(self.ctx.serial, "selected_port_for_page", None)
+            try:
+                page_port = selector(active_page) if callable(selector) else None
+            except TypeError:
+                page_port = selector() if callable(selector) else None
+            if not page_port:
+                page_port = self.ctx.state.selected_port
+            active_page_lost = str(page_port or "").strip() == port
             self._stop_flag_poll()
             self._status_invalidate_port(port)
             self.ctx.serial.disconnect(port)
+            disconnected = not self._is_selected_port_connected(port)
+            if status_token is not None:
+                self.finish_status(status_token, success=disconnected,
+                                   error="serial transport remained connected" if not disconnected else "")
             self.ctx.state.serial_connected = False
             self.ctx.state.serial_connected = bool(getattr(self.ctx.serial, "connected_ports", lambda: [])())
             self.ctx.state.extra.pop("connection_detail", None)
             self.ctx.state.extra.pop("selected_port_name", None)
+            if disconnected and active_page_lost:
+                navigation = getattr(self.ctx.app, "navigation", None)
+                if navigation is not None:
+                    group = navigation._chip_group_by_page.get(active_page)
+                    navigation.set_chip_pages_visible(group is not None, keep_group=group, disabled=True)
+                    navigation.set_connection_notice("sidebar_disconnected_reconnect")
             if hasattr(self.ctx.app, "navigation"):
                 self.ctx.app.navigation.refresh_language()
             self.refresh_language()
@@ -1979,6 +2048,14 @@ class HomePage(BasePage):
         # UI returns immediately and a late result is discarded (and its port
         # closed) by the worker itself.
         attempt = _ConnectAttempt(port=port)
+        attempt.status_token = self.begin_status(
+            "connect",
+            context=StatusContext(("connect-attempt", port, id(attempt)), page_name="home", mode="connecting"),
+        )
+        navigation = getattr(self.ctx.app, "navigation", None)
+        if navigation is not None:
+            navigation.set_connection_phase("connecting")
+            navigation.set_connection_notice(None)
         previous = getattr(self, "_connect_previous_thread", None)
         self._connect_attempt = attempt
         serial_router = self.ctx.serial
@@ -2020,6 +2097,9 @@ class HomePage(BasePage):
         # for a field swap).  The worker closes the port when it returns.
         with attempt.lock:
             attempt.cancelled.set()
+        bus = getattr(self.ctx, "status_bus", None)
+        if bus is not None and attempt.status_token is not None:
+            bus.invalidate_context(token=attempt.status_token)
         canceller = getattr(self.ctx.serial, "cancel_connect", None)
         if callable(canceller):
             try:
@@ -2027,6 +2107,9 @@ class HomePage(BasePage):
             except Exception:
                 pass
         self._connect_attempt = None
+        navigation = getattr(self.ctx.app, "navigation", None)
+        if navigation is not None:
+            navigation.set_connection_phase("offline")
         self.ctx.state.extra["connection_detail"] = f"{attempt.port}: {self.tr('connect_cancelled')}"
         self._refresh_connect_controls()
 
@@ -2078,12 +2161,28 @@ class HomePage(BasePage):
             self.ctx.state.selected_port = port
             self.ctx.state.extra["selected_port_name"] = self.port_names.get(port, port)
             self.ctx.state.extra["connection_detail"] = f"{port}: {resp.data}"
+            attempt.status_token = self._replace_connect_status_context(attempt.status_token, port)
+            navigation = getattr(self.ctx.app, "navigation", None)
+            if navigation is not None:
+                navigation.set_connection_phase("waiting_ready")
             self._finish_connection_when_ready(port)
         elif str(resp.error).startswith(BLUETOOTH_PORT_ERROR):
+            self.finish_status(attempt.status_token, success=False, error=str(resp.error))
+            navigation = getattr(self.ctx.app, "navigation", None)
+            if navigation is not None:
+                navigation.set_connection_phase("offline")
             messagebox.showwarning(self.tr("error"), self.tr("bluetooth_port_refused", port=port))
         elif attempt.on_failure is not None:
+            self.finish_status(attempt.status_token, success=False, error=str(resp.error))
+            navigation = getattr(self.ctx.app, "navigation", None)
+            if navigation is not None:
+                navigation.set_connection_phase("offline")
             attempt.on_failure(str(resp.error))
         else:
+            self.finish_status(attempt.status_token, success=False, error=str(resp.error))
+            navigation = getattr(self.ctx.app, "navigation", None)
+            if navigation is not None:
+                navigation.set_connection_phase("offline")
             messagebox.showerror(self.tr("error"), resp.error)
 
         self.refresh_language()
@@ -2100,8 +2199,18 @@ class HomePage(BasePage):
 
         if not ready:
             self.ctx.state.extra["connection_detail"] = f"{port}: waiting READY REV04"
+            navigation = getattr(self.ctx.app, "navigation", None)
+            if navigation is not None:
+                navigation.set_connection_phase("waiting_ready")
             self.after(50, self._finish_connection_when_ready, port)
             return
+
+        status_token = getattr(self, "_connect_status_token_by_port", {}).pop(port, None)
+        if status_token is not None:
+            self.finish_status(status_token, success=True)
+        navigation = getattr(self.ctx.app, "navigation", None)
+        if navigation is not None:
+            navigation.set_connection_phase("waiting_ready")
 
         serial = self._serial_for_port(port)
         identity = str(getattr(serial, "board_identity", "")).strip()
@@ -2115,6 +2224,38 @@ class HomePage(BasePage):
         if hasattr(self.ctx.app, "navigation"):
             self.ctx.app.navigation.refresh_language()
         self.refresh_language()
+
+    def _connection_identity_for_port(self, port: str) -> Any:
+        identity = getattr(self.ctx.serial, "connection_identity", None)
+        if callable(identity):
+            try:
+                return identity(port)
+            except Exception:
+                return None
+        return active_serial_identity(self.ctx, "home")
+
+    def _replace_connect_status_context(self, token: Any, port: str) -> Any:
+        # The connect-attempt token deliberately uses its attempt identity until
+        # READY; after the handshake, invalidation follows the real Router session.
+        if token is None:
+            return None
+        session = self._connection_identity_for_port(port)
+        bus = getattr(self.ctx, "status_bus", None)
+        if bus is None:
+            return None
+        if session is None:
+            self._connect_status_token_by_port = getattr(self, "_connect_status_token_by_port", {})
+            self._connect_status_token_by_port[port] = token
+            return token
+        bus.invalidate_context(token=token)
+        token = bus.begin(
+            StatusMessage.make("sidebar_status_connect_begin"),
+            context=StatusContext(session, page_name="home", mode="connecting"),
+            event="connect",
+        )
+        self._connect_status_token_by_port = getattr(self, "_connect_status_token_by_port", {})
+        self._connect_status_token_by_port[port] = token
+        return token
 
     def _probe_status_capability_once(self, port: str, serial: Any | None) -> None:
         """Read CAP exactly once per connected port generation."""
@@ -2826,31 +2967,75 @@ class HomePage(BasePage):
         last_error: str,
         *,
         port: str | None = None,
-    ) -> None:
+        session: Any = None,
+        status_token: Any = None,
+        exception: bool = False,
+    ) -> bool:
+        address: int | None = None
+        chip_name: str | None = None
+        detail = ""
         if found is not None:
-            addr = found.address
-            self.device_addr_var.set(f"0x{addr:02X}")
-            if found.probe.name == "AWP1018":
-                self.ctx.state.awp192x_device_addr = addr
-                self.ctx.state.extra["awp1018_device_addr"] = addr
-                self.ctx.state.extra["connection_detail"] = f"AWP1018 0x{addr:02X}"
-                return
-            if found.probe.name == "AWP192X":
-                self.ctx.state.awp192x_device_addr = addr
-                label = {0x44: "Pull-down", 0x45: "Pull-up", 0x46: "Floating"}[addr]
-                self.ctx.state.extra["connection_detail"] = f"AWP192X {label} 0x{addr:02X}"
-                return
-            self.ctx.state.extra["connection_detail"] = f"AWP1221 0x{addr:02X}"
-            return
-
-        detail = f": {last_error}" if last_error else ""
+            address = int(found.address)
+            chip_name = str(found.probe.name).upper()
+            if chip_name == "AWP1018":
+                detail = f"AWP1018 0x{address:02X}"
+            elif chip_name == "AWP192X":
+                label = {0x44: "Pull-down", 0x45: "Pull-up", 0x46: "Floating"}.get(address, "")
+                detail = f"AWP192X {label} 0x{address:02X}".strip()
+            else:
+                detail = f"AWP1221 0x{address:02X}"
+        else:
+            detail = f": {last_error}" if last_error else ""
         board = port or self.ctx.state.selected_port or self.port_var.get().strip()
-        self.ctx.state.extra["connection_detail"] = f"{board}: board online; supported chip not detected{detail}"
+        if found is None:
+            detail = f"{board}: board online; supported chip not detected{detail}"
+
+        applied = self.ctx.app.apply_chip_discovery_state(
+            chip_name=chip_name,
+            address=address,
+            port=port or board,
+            session=session,
+            page_name="home",
+            connection_detail=detail,
+        )
+        if not applied:
+            bus = getattr(self.ctx, "status_bus", None)
+            if bus is not None and status_token is not None:
+                bus.invalidate_context(token=status_token)
+            return False
+        if address is not None:
+            self.device_addr_var.set(f"0x{address:02X}")
+            if chip_name == "AWP1018":
+                self.ctx.state.extra["awp1018_device_addr"] = address
+            if chip_name == "AWP192X":
+                self.ctx.state.awp192x_device_addr = address
+        bus = getattr(self.ctx, "status_bus", None)
+        if bus is not None and status_token is not None:
+            if exception:
+                bus.fail(status_token, StatusMessage.make("sidebar_status_discovery_fail", error=last_error))
+            elif chip_name is not None:
+                bus.ok(status_token, StatusMessage.make("sidebar_status_discovery_ok"))
+            else:
+                bus.ok(status_token, StatusMessage.make("sidebar_status_discovery_unidentified"))
+        return True
 
     def _detect_awp192x_after_connect(self, port: str, serial: Any | None) -> None:
         """Apply the initial read-only REV04 supported-chip discovery to the GUI."""
-        found, last_error = self._discover_supported_chip(serial)
-        self._apply_supported_chip_discovery(found, last_error, port=port)
+        session = self._connection_identity_for_port(port)
+        token = self.begin_status(
+            "discovery",
+            context=StatusContext(session, page_name="home", mode="discovery"),
+        )
+        try:
+            found, last_error = self._discover_supported_chip(serial)
+        except Exception as exc:
+            self._apply_supported_chip_discovery(
+                None, str(exc), port=port, session=session, status_token=token, exception=True,
+            )
+            return
+        self._apply_supported_chip_discovery(
+            found, last_error, port=port, session=session, status_token=token,
+        )
 
     def _read_detect_id(
         self,
@@ -3878,6 +4063,10 @@ class SettingsPage(BasePage):
         self.theme_var = tk.StringVar(value=self._theme_labels.get(preference, "light（浅色）"))
         self.font_size_var = tk.IntVar(value=self.ctx.state.font_size)
         self.animations_var = tk.BooleanVar(value=bool(self.ctx.state.extra.get("animations_enabled", True)))
+        store = getattr(self.ctx.app, "ui_state_store", None)
+        self.always_show_chip_pages_var = tk.BooleanVar(
+            value=store.get_always_show_chip_pages(default=False) if store is not None else False
+        )
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -3924,12 +4113,27 @@ class SettingsPage(BasePage):
         self.animations_check = ttk.Checkbutton(panel, variable=self.animations_var,
                                                command=self._apply_animations_toggle)
         self.animations_check.grid(row=3, column=1, sticky="w", pady=8)
-        self.apply_btn.grid(row=4, column=0, columnspan=2, sticky="w", pady=(14, 0))
+        self.always_show_chip_pages_check = ttk.Checkbutton(
+            panel,
+            variable=self.always_show_chip_pages_var,
+            command=self._apply_chip_visibility_override,
+        )
+        self.always_show_chip_pages_check.grid(row=4, column=1, sticky="w", pady=8)
+        self.apply_btn.grid(row=5, column=0, columnspan=2, sticky="w", pady=(14, 0))
 
         self.refresh_language()
 
     def _apply_animations_toggle(self) -> None:
         self.ctx.app.set_animations(bool(self.animations_var.get()))
+
+    def _apply_chip_visibility_override(self) -> None:
+        enabled = bool(self.always_show_chip_pages_var.get())
+        store = getattr(self.ctx.app, "ui_state_store", None)
+        if store is not None:
+            store.set_always_show_chip_pages(enabled)
+        navigation = getattr(self.ctx.app, "navigation", None)
+        if navigation is not None:
+            navigation.set_developer_visibility_override(enabled)
 
     def apply_settings(self) -> None:
         self._apply_animations_toggle()
@@ -3952,6 +4156,7 @@ class SettingsPage(BasePage):
         self.apply_btn.configure(text="Apply")
         self.animations_label.configure(text=self.tr("animations_setting"))
         self.animations_check.configure(text=self.tr("animations_enabled"))
+        self.always_show_chip_pages_check.configure(text=self.tr("settings_always_show_chip_pages"))
 
 
 def _resolve_theme(theme: str) -> str:
@@ -4002,6 +4207,7 @@ class PiezoApplication:
 
         self.state = AppState()
         self.serial = SerialRouter(self.state, timeout=0.9)
+        self.ui_state_store = UiStateStore()
         self.i2c_bridge = LocalI2cBridge(self.serial._current_manager)
         self.i2c_bridge.start()
         self.colors = apply_theme(self.root, self.state.theme, self.state.font_size, self.state.ui_scale)
@@ -4011,9 +4217,13 @@ class PiezoApplication:
             serial=self.serial,
             colors=self.colors,
             app=self,
+            status_bus=StatusBus(self.root),
         )
 
         self.navigation = Navigation(self.root, self.ctx)
+        self.navigation.set_developer_visibility_override(
+            self.ui_state_store.get_always_show_chip_pages(default=False)
+        )
         self.micro_anim = MicroAnimations(self.root, self.animator, lambda: self.colors,
                                          lambda w: str(w.cget("style")).startswith("Sidebar"))
         from app.viewport_presentation import ViewportPresentation
@@ -4055,6 +4265,101 @@ class PiezoApplication:
             else:
                 self.navigation.register_page(name, name, lambda cls=cls: cls(content, self.ctx),
                                               sidebar_button=sidebar)
+
+    def apply_chip_discovery_state(
+        self,
+        *,
+        chip_name: str | None,
+        address: int | None,
+        port: str | None,
+        session: Any,
+        page_name: str,
+        connection_detail: str,
+    ) -> bool:
+        """Guard discovery commits against page-port and manager generation changes."""
+        selected_port = None
+        selector = getattr(self.serial, "selected_port_for_page", None)
+        if callable(selector):
+            try:
+                selected_port = selector(page_name)
+            except TypeError:
+                selected_port = selector()
+            if not selected_port:
+                return False
+        if port and selected_port and str(selected_port).strip() != str(port).strip():
+            return False
+        if not port or session is None:
+            return False
+        identity_reader = getattr(self.serial, "connection_identity", None)
+        try:
+            current_session = identity_reader(port) if callable(identity_reader) else None
+        except Exception:
+            return False
+        if current_session is None:
+            return False
+        from core.status_bus import normalized_port_session
+        if normalized_port_session(session) != normalized_port_session(current_session):
+            return False
+
+        self.state.extra["connection_detail"] = connection_detail
+        navigation = getattr(self, "navigation", None)
+        if navigation is not None:
+            if chip_name in CHIP_NAVIGATION_KEYS:
+                navigation.set_chip_pages_visible(True, highlight=CHIP_NAVIGATION_KEYS[chip_name])
+                navigation.set_connection_notice(None)
+            else:
+                navigation.set_chip_pages_visible(True)
+                navigation.set_connection_notice("sidebar_chip_unidentified_en_hint")
+        return True
+
+    def apply_manual_chip_discovery(
+        self,
+        *,
+        chip_name: str | None,
+        address: int | None,
+        page_name: str,
+        session: Any,
+        error: str = "",
+        exception: bool = False,
+        status_token: Any = None,
+    ) -> bool:
+        selector = getattr(self.serial, "selected_port_for_page", None)
+        try:
+            port = selector(page_name) if callable(selector) else self.state.selected_port
+        except TypeError:
+            port = selector() if callable(selector) else self.state.selected_port
+        detail = (
+            f"{chip_name} 0x{int(address):02X}" if chip_name and address is not None
+            else f"{port or page_name}: board online; supported chip not detected{(': ' + error) if error else ''}"
+        )
+        applied = self.apply_chip_discovery_state(
+            chip_name=chip_name,
+            address=address,
+            port=port,
+            session=session,
+            page_name=page_name,
+            connection_detail=detail,
+        )
+        if not applied:
+            if status_token is not None and self.ctx.status_bus is not None:
+                self.ctx.status_bus.invalidate_context(token=status_token)
+            return False
+        bus = getattr(self.ctx, "status_bus", None)
+        if bus is not None:
+            token = status_token
+            if token is None:
+                token = bus.begin(
+                    StatusMessage.make("sidebar_status_discovery_begin"),
+                    context=StatusContext(session, address, "manual-discovery", page_name=page_name),
+                    event="discovery",
+                )
+            if exception:
+                bus.fail(token, StatusMessage.make("sidebar_status_discovery_fail", error=error))
+            elif chip_name:
+                bus.ok(token, StatusMessage.make("sidebar_status_discovery_ok"))
+            else:
+                bus.ok(token, StatusMessage.make("sidebar_status_discovery_unidentified"))
+        return True
 
     def set_animations(self, enabled: bool) -> None:
         self.state.extra["animations_enabled"] = bool(enabled)
@@ -4349,6 +4654,8 @@ class PiezoApplication:
         self.transitions.close()
         self.micro_anim.close()
         self.navigation.close()
+        if self.ctx.status_bus is not None:
+            self.ctx.status_bus.close()
         self.animator.stop()
         if self._resize_after is not None:
             try:
