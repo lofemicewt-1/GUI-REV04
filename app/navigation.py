@@ -512,7 +512,6 @@ class Navigation:
             if current_page is not None and hasattr(current_page, "on_hide"):
                 current_page.on_hide()
 
-        page = self.pages[name]
         for other in self.pages.built_values():
             if other is not page:
                 other.grid_remove()
@@ -538,6 +537,15 @@ class Navigation:
         page = dict.get(self.pages, self.ctx.state.current_page)
         if page is None or not page.winfo_ismapped() or page.winfo_height() <= 1:
             return False
+        if getattr(page, "_mode_scroll_layout_job", None) is not None:
+            return False
+        mode_pages = getattr(page, "mode_pages", None)
+        current_mode = getattr(page, "current_mode", None)
+        active_mode = dict.get(mode_pages, current_mode) if isinstance(mode_pages, dict) and current_mode else None
+        if active_mode is not None:
+            has_pending_layout = getattr(active_mode, "_has_pending_layout_work", None)
+            if callable(has_pending_layout) and has_pending_layout():
+                return False
         if getattr(page, "pin_window_footer", False) and (
             self.content.winfo_width() != self.content_canvas.winfo_width()
             or self.content.winfo_height() != self.content_canvas.winfo_height()

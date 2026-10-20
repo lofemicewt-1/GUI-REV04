@@ -128,6 +128,8 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         self.owner = owner
         self.source = "ram"
         self._button_import_fingerprint = None
+        self._preview_job = None
+        self._button_plot_drawn = None
         super().__init__(parent, ctx, embedded=True, storage=storage)
         self.set_write_observer(
             lambda: owner._begin_button_progress_step("waveform"),
@@ -240,10 +242,11 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         for variable in [*self.serial_slice_vars, *self.serial_repeat_vars]:
             variable.trace_add("write", lambda *_: self._on_serial_param_changed())
             variable.trace_add("write", lambda *_: self.owner._on_button_progress_inputs_changed())
-        self.canvas.bind("<Configure>", lambda _: self._redraw_active_plot())
+        self.canvas.bind("<Configure>", self._queue_plot_redraw, add="+")
         self._button_layout_job: str | None = None
         self._button_layout_signature: tuple[Any, ...] | None = None
         self.bind("<Configure>", self._queue_button_layout, add="+")
+        self.bind("<Destroy>", self._on_waveform_destroy, add="+")
         self.refresh_language()
         self._update_waveform_specific_fields()
 
@@ -292,6 +295,76 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         self._button_layout_signature = None
         self._queue_button_layout()
 
+    def _on_param_changed(self) -> None:
+        self._update_waveform_specific_fields()
+        self._update_end_addr()
+        self._notify_metrics_changed()
+        if self._plot_mode == "current" and self.waveform_type_var.get() != "serial":
+            self._queue_plot_redraw()
+
+    def _on_serial_param_changed(self) -> None:
+        self._notify_metrics_changed()
+        if self.waveform_type_var.get() == "serial":
+            self._plot_mode = "current"
+            self._queue_plot_redraw()
+
+    def _queue_plot_redraw(self, _event=None) -> None:
+        if self._preview_job is not None:
+            return
+
+        def redraw():
+            self._preview_job = None
+            try:
+                if self.winfo_exists():
+                    self._redraw_active_plot()
+            except tk.TclError:
+                pass
+
+        try:
+            self._preview_job = self.after_idle(redraw)
+        except tk.TclError:
+            self._preview_job = None
+
+    def _cancel_pending_preview(self) -> None:
+        job, self._preview_job = self._preview_job, None
+        if job is not None:
+            try:
+                self.after_cancel(job)
+            except tk.TclError:
+                pass
+
+    def _on_waveform_destroy(self, event) -> None:
+        if getattr(event, "widget", None) is self:
+            self._cancel_pending_preview()
+
+    def _active_plot_signature(self):
+        canvas = getattr(self, "canvas", None)
+        if canvas is None:
+            return None
+        try:
+            size = (canvas.winfo_width(), canvas.winfo_height())
+        except tk.TclError:
+            return None
+        variable_names = (
+            "waveform_type_var", "slice_var", "points_var", "start_phase_var", "end_phase_var",
+            "offset_var", "voltage_amplitude_var", "sinc_positive_voltage_var", "sinc_negative_voltage_var",
+            "sinc_points1_var", "sinc_points2_var", "sinc_points3_var", "start_addr_var", "end_addr_var",
+            "write_points_per_batch_var", "fill_zero_tail_var",
+        )
+        values = tuple(str(getattr(self, name).get()) for name in variable_names)
+        serial = tuple(str(variable.get()) for variable in (*self.serial_slice_vars, *self.serial_repeat_vars))
+        imported = tuple(self._imported_values or ())
+        colors = self.colors
+        theme = tuple(colors.get(key) for key in ("primary", "border", "canvas_bg", "muted"))
+        owner_values = (
+            str(getattr(self.owner, "duration_var").get()),
+            str(getattr(self.owner, "max_voltage_var").get()),
+        )
+        return (
+            size, values, serial, imported, tuple(self._chip_voltages), self._plot_mode,
+            self._preview_imported_waveform, getattr(self, "source", "ram"), owner_values, theme, self.language,
+        )
+
     def select_source(self, source):
         self._plot_mode = "current"
         self.source = source
@@ -304,7 +377,7 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             self._preview_imported_waveform = False
             self.waveform_type_var.set("sinc" if source == "sinc" else "sine")
         self._update_waveform_specific_fields()
-        self._preview_waveform()
+        self._queue_plot_redraw()
         self._notify_metrics_changed()
         self.owner._sync_button_step_progress_params()
         self.owner._reconcile_rom_waveform_progress()
@@ -387,10 +460,15 @@ class ButtonWaveformPage(WaveformGeneratorPage):
     def _redraw_active_plot(self):
         if not hasattr(self, "canvas"):
             return
+        signature = self._active_plot_signature()
+        if signature is None or signature == self._button_plot_drawn:
+            return
         if self.waveform_type_var.get() == "serial":
+            self._button_plot_drawn = signature
             self._preview_serial_waveform()
             return
         if self._plot_mode == "chip" and self._chip_voltages:
+            self._button_plot_drawn = signature
             self._draw_plot(self._chip_voltages)
         else:
             self._preview_waveform()
@@ -398,6 +476,10 @@ class ButtonWaveformPage(WaveformGeneratorPage):
     def _preview_waveform(self):
         if not hasattr(self, "canvas"):
             return
+        signature = self._active_plot_signature()
+        if signature is None or signature == self._button_plot_drawn:
+            return
+        self._button_plot_drawn = signature
         if self.source == "rom":
             peak = next(v for label, v, _ in self.owner.amp_options if label == self.owner.max_voltage_var.get())
             data = [peak * math.sin(2*math.pi*i/1024) for i in range(1024)]
@@ -468,7 +550,7 @@ class ButtonModeView:
         self.waveform_page.grid(row=0, column=0, sticky="nsew")
         self.waveform_page.metrics_revision_var.trace_add("write", lambda *_: self._on_button_runtime_waveform_changed())
         for variable in (self.duration_var, self.max_voltage_var):
-            variable.trace_add("write", lambda *_: self.waveform_page._redraw_active_plot())
+            variable.trace_add("write", lambda *_: self.waveform_page._queue_plot_redraw())
         middle = ttk.Frame(body, style="App.TFrame")
         middle.grid(row=1, column=0, sticky="ew", pady=10)
         self._register_module_spacing_widget(middle, before=True)
@@ -530,8 +612,18 @@ class ButtonModeView:
             entry = ttk.Entry(cell, textvariable=variable, width=4)
             entry.grid(row=1, column=0, sticky="w", pady=3)
             self._repeat_entries[key] = entry
-            combo = ttk.Combobox(cell, textvariable=wave, values=self._slice_options(), state="readonly", width=8)
+            combo = ttk.Combobox(cell, values=self._slice_options(), state="readonly", width=18)
             combo.grid(row=1, column=1, padx=(5,0), pady=3)
+            self._bind_waveform_choice(
+                combo,
+                wave,
+                tuple(self._slice_options()),
+                label_keys={
+                    "slice0": "r2c_custom_waveform",
+                    "0x1F": "r2c_rom_sine",
+                },
+                aliases={"ROM sin": "0x1F"},
+            )
             self._bind_repeat_playback_tooltip([label, entry, combo], variable, wave)
         endless = ttk.Checkbutton(params, variable=self.endless_play_var)
         endless.grid(row=3, column=0, sticky="w")

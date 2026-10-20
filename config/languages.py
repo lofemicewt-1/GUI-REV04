@@ -1880,3 +1880,9 @@ _install_r2_13(LANGUAGES)
 from config.lang_r2_15 import install as _install_r2_15
 
 _install_r2_15(LANGUAGES)
+
+# Round-2 item 11 Button waveform narrowing strings.
+from config.lang_r2_c import install as _install_r2_c
+
+_install_r2_c(LANGUAGES)
+
