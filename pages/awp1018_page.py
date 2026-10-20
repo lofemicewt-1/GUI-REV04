@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import nullcontext
+from copy import deepcopy
 
 import math
 import queue
@@ -47,6 +49,9 @@ from core.base_tool import (
     execute_register_script_operations,
 )
 from pages.base_page import BasePage, SimpleTooltip, VerticalScrollArea, fit_toplevel_to_screen
+from pages.button_mode_chrome import ResponsiveCardGrid
+from pages.chip_settings_model import ChipSettingsStore
+from pages.preset_toolbar import PresetToolbar
 from pages.waveform_preview import PreviewSegment, compact_preview, draw_omissions
 from pages.gpio_controls import GpioControlGroup, GpioControlPanel, active_serial_identity
 from styles.fonts import page_title_weight
@@ -69,6 +74,8 @@ class AWP1018Page(BasePage):
         self.current_mode = "awp1018_normal_mode"
         self.mode_buttons: dict[str, ttk.Button] = {}
         self.mode_pages = LazyPages(self._install_mode_page)
+        self.button_settings_store = ChipSettingsStore()
+        self._board_slot_by_connection: dict[tuple[Any, ...], int] = {}
         self._labels: dict[str, ttk.Label] = {}
         self._buttons: dict[str, ttk.Button] = {}
         self._preparing = defer_build
@@ -131,6 +138,9 @@ class AWP1018Page(BasePage):
             export_page_settings=self.export_settings,
             sync_decoded_settings=self._sync_decoded_page_settings,
             gpio_group=self.gpio_controls,
+            settings_store=self.button_settings_store,
+            board_slot_provider=self._get_board_slot_selection,
+            on_board_slot_selected=self._on_button_board_slot_selected,
             on_gpio_mode_success=self._on_gpio_mode_success,
             on_gpio_mode_failure=self._on_gpio_mode_failure,
             defer_build=defer_build,
@@ -143,6 +153,9 @@ class AWP1018Page(BasePage):
             export_page_settings=self.export_settings,
             sync_decoded_settings=self._sync_decoded_page_settings,
             gpio_group=self.gpio_controls,
+            settings_store=self.button_settings_store,
+            board_slot_provider=self._get_board_slot_selection,
+            on_board_slot_selected=self._on_button_board_slot_selected,
             on_gpio_mode_success=self._on_gpio_mode_success,
             on_gpio_mode_failure=self._on_gpio_mode_failure,
             defer_build=defer_build,
@@ -286,8 +299,80 @@ class AWP1018Page(BasePage):
 
     def _on_addr_changed(self) -> None:
         addr = self._addr()
+        previous_addr_value = self.ctx.state.extra.get(
+            "awp1018_device_addr",
+            self.ctx.state.awp192x_device_addr,
+        )
+        try:
+            previous_addr = (
+                int(previous_addr_value, 0)
+                if isinstance(previous_addr_value, str)
+                else int(previous_addr_value)
+            ) & 0xFF
+        except (TypeError, ValueError):
+            previous_addr = addr
+        if previous_addr != addr:
+            current_page = dict.get(self.mode_pages, self.current_mode)
+            on_hide = getattr(current_page, "on_hide", None)
+            if callable(on_hide):
+                on_hide()
+            for page in self.mode_pages.built_values():
+                save_draft = getattr(page, "save_button_draft", None)
+                if callable(save_draft):
+                    save_draft()
         self.ctx.state.extra["awp1018_device_addr"] = addr
         self.ctx.state.awp192x_device_addr = addr
+        if previous_addr != addr:
+            page = dict.get(self.mode_pages, self.current_mode)
+            activate_draft = getattr(page, "activate_button_draft", None)
+            if callable(activate_draft):
+                activate_draft()
+
+    def _board_connection_identity(self) -> tuple[Any, ...]:
+        identity = active_serial_identity(self.ctx, self.page_name)
+        if identity is not None:
+            return tuple(identity)
+        selected_port = getattr(self.ctx.state, "selected_port", None)
+        selector = getattr(self.ctx.serial, "selected_port_for_page", None)
+        if callable(selector):
+            try:
+                selected_port = selector(self.page_name)
+            except TypeError:
+                selected_port = selector()
+        return ("offline", str(selected_port or ""))
+
+    def _get_board_slot_selection(
+        self,
+        board_identity: tuple[Any, ...],
+        model_slot: int | str | None = None,
+    ) -> int:
+        stored = self._board_slot_by_connection.get(board_identity)
+        if stored is None:
+            try:
+                stored = int(model_slot) if model_slot is not None else 0
+            except (TypeError, ValueError):
+                stored = 0
+            stored = max(0, min(2, stored))
+            self._board_slot_by_connection[board_identity] = stored
+        return stored
+
+    def _on_button_board_slot_selected(self, mode: str, slot: int | str) -> None:
+        try:
+            selected = int(slot)
+        except (TypeError, ValueError):
+            return
+        selected = max(0, min(2, selected))
+        identity = self._board_connection_identity()
+        self._board_slot_by_connection[identity] = selected
+        for page in self.mode_pages.built_values():
+            if getattr(page, "_draft_board_identity", None) != identity:
+                continue
+            model = getattr(page, "_draft_model", None)
+            if model is not None:
+                model.set_slot_selection(selected)
+            toolbar = getattr(page, "preset_toolbar", None)
+            if toolbar is not None:
+                toolbar.slot_var.set(str(selected))
 
     def _ensure_connected(self) -> bool:
         if not self.ctx.serial.is_connected:
@@ -501,6 +586,7 @@ class AWP1018Page(BasePage):
             self.show_mode(mode_key)
             if not page.import_settings(preset.settings):
                 return
+            page.save_button_draft()
         except Exception as exc:
             messagebox.showerror(
                 self.tr("error"),
@@ -629,6 +715,9 @@ class AWP1018Page(BasePage):
             self._on_addr_changed()
             self.show_mode(mode_key, update_chip=False)
             apply_settings(register_values, descriptors)
+            save_draft = getattr(page, "save_button_draft", None)
+            if callable(save_draft):
+                save_draft()
         except Exception:
             self.addr_var.set(previous_address)
             try:
@@ -772,6 +861,16 @@ class AWP1018Page(BasePage):
     def show_mode(self, mode: str, *, update_chip: bool = True) -> None:
         if mode not in self.mode_pages:
             return
+        self.mode_scroll.clamp_width = mode != "full_mode"
+        previous_mode = self.current_mode
+        previous_page = self.mode_pages.get(previous_mode)
+        if previous_mode != mode and previous_page is not None:
+            on_hide = getattr(previous_page, "on_hide", None)
+            if callable(on_hide):
+                on_hide()
+            save_draft = getattr(previous_page, "save_button_draft", None)
+            if callable(save_draft):
+                save_draft()
         self.current_mode = mode
         if update_chip and mode == "awp1018_diff_mode":
             self._set_diff_mode_registers(True)
@@ -781,6 +880,9 @@ class AWP1018Page(BasePage):
             page.grid_remove()
         page = self.mode_pages[mode]
         page.grid()
+        activate_draft = getattr(page, "activate_button_draft", None)
+        if callable(activate_draft):
+            activate_draft()
         if update_chip and mode != "awp1018_diff_mode" and hasattr(page, "on_show"):
             page.on_show()
         self._sync_mode_button_styles()
@@ -891,10 +993,22 @@ class AWP1018Page(BasePage):
             sync_mode(None)
 
     def _on_serial_selector_changed(self, control: dict[str, Any]) -> None:
+        current_page = dict.get(self.mode_pages, self.current_mode)
+        on_hide = getattr(current_page, "on_hide", None)
+        if callable(on_hide):
+            on_hide()
+        for page in self.mode_pages.built_values():
+            save_draft = getattr(page, "save_button_draft", None)
+            if callable(save_draft):
+                save_draft()
         super()._on_serial_selector_changed(control)
         gpio_controls = getattr(self, "gpio_controls", None)
         if gpio_controls is not None:
             gpio_controls.invalidate_modes()
+        page = self.mode_pages.get(self.current_mode)
+        activate_draft = getattr(page, "activate_button_draft", None)
+        if callable(activate_draft):
+            activate_draft()
 
     def on_show(self) -> None:
         if getattr(self, "_prepared_mode_pending", False):
@@ -905,8 +1019,20 @@ class AWP1018Page(BasePage):
             gpio_controls.invalidate_modes()
         self._on_addr_changed()
         page = self.mode_pages.get(self.current_mode)
+        activate_draft = getattr(page, "activate_button_draft", None)
+        if callable(activate_draft):
+            activate_draft()
         if self.current_mode != "awp1018_diff_mode" and page is not None and hasattr(page, "on_show"):
             page.on_show()
+
+    def on_hide(self) -> None:
+        for page in self.mode_pages.built_values():
+            on_hide = getattr(page, "on_hide", None)
+            if callable(on_hide):
+                on_hide()
+            save_draft = getattr(page, "save_button_draft", None)
+            if callable(save_draft):
+                save_draft()
 
     def refresh_language(self) -> None:
         super().refresh_language()
@@ -1088,6 +1214,9 @@ class AWP1018NormalModePage(BasePage):
             None,
         ] | None = None,
         gpio_group: GpioControlGroup | None = None,
+        settings_store: ChipSettingsStore | None = None,
+        board_slot_provider: Callable[[tuple[Any, ...], int | str | None], int] | None = None,
+        on_board_slot_selected: Callable[[str, int | str], None] | None = None,
         on_gpio_mode_success: Callable[[str, str], None] | None = None,
         on_gpio_mode_failure: Callable[[str], None] | None = None,
         defer_build: bool = False,
@@ -1100,12 +1229,26 @@ class AWP1018NormalModePage(BasePage):
             lambda _address, _registers, _descriptors: None
         )
         self._gpio_group = gpio_group
+        self._settings_store = settings_store or ChipSettingsStore()
+        self._board_slot_provider = board_slot_provider
+        self._on_board_slot_selected_callback = on_board_slot_selected
         self._on_gpio_mode_success = on_gpio_mode_success
         self._on_gpio_mode_failure = on_gpio_mode_failure
+        self.button_mode_key = "awp1018_diff_mode" if diff_mode else "awp1018_normal_mode"
+        self.channel_count = 4 if diff_mode else 8
+        self.supports_live_adc_read = bool(diff_mode)
+        self._draft_model = None
+        self._draft_board_identity: tuple[Any, ...] | None = None
+        self._draft_restoring = False
+        self._initial_button_settings: dict[str, Any] | None = None
+        self._initial_button_stage = "Stage0"
 
         self.stage_vars: dict[str, dict[str, tk.Variable]] = {}
         self.active_stage = tk.StringVar(value="Stage0")
-        self.channel_vars = [tk.BooleanVar(value=False) for _index in range(4 if diff_mode else 8)]
+        self.channel_vars = [tk.BooleanVar(value=False) for _index in range(self.channel_count)]
+        self.channel_start_stage_vars = [
+            tk.StringVar(value="Stage0") for _index in range(self.channel_count)
+        ]
         self.stage_group_start_vars = {
             stage: [tk.BooleanVar(value=stage == "Stage0") for _index in range(len(self.channel_vars))]
             for stage in ("Stage0", "Stage1", "Stage2", "Stage3")
@@ -1168,17 +1311,27 @@ class AWP1018NormalModePage(BasePage):
         self._stage_debounce_checks: dict[str, dict[str, ttk.Checkbutton]] = {}
         self._stage_group_checks: dict[str, dict[int, ttk.Checkbutton]] = {}
         self._channel_checks: dict[int, ttk.Checkbutton] = {}
+        self._channel_start_combos: dict[int, ttk.Combobox] = {}
+        self._channel_mapping_labels: dict[int, ttk.Label] = {}
         self._diff_status_titles: dict[int, tk.Label] = {}
         self._diff_status_frames: dict[int, tk.Frame] = {}
         self._diff_status_value_vars: dict[int, tk.StringVar] = {}
         self._tooltips: list[SimpleTooltip] = []
         self._loading_settings = defer_build
         self._diff_detect_active = False
+        self._diff_sample_active = False
         self._diff_value_poll_job: str | None = None
         self._diff_status_blink_job: str | None = None
+        self._diff_sample_cancel: threading.Event | None = None
+        self._diff_sample_thread: threading.Thread | None = None
+        self._diff_sample_channels_lock = threading.Lock()
+        self._diff_sample_channels: tuple[int, ...] = ()
+        self._diff_sample_generation = 0
+        self._diff_status_result_queue: queue.Queue[tuple[int, str, Any]] = queue.Queue(maxsize=1)
         self.board_slot_var = tk.StringVar(value="0")
         self.board_slot_combo: ttk.Combobox | None = None
         self._board_preset_buttons: dict[str, ttk.Button] = {}
+        self.preset_toolbar: PresetToolbar | None = None
         self._board_preset_result_queue: queue.Queue[tuple[str, str, Any]] = queue.Queue()
         self._board_preset_poll_active = False
         self._rom_draw_job: str | None = None
@@ -1202,73 +1355,164 @@ class AWP1018NormalModePage(BasePage):
     def _trace_stage_threshold(self, stage: str, kind: str, variable: tk.StringVar) -> None:
         variable.trace_add("write", lambda *_args, s=stage, k=kind: self._on_stage_threshold_changed(s, k))
 
+    def save_button_draft(self) -> None:
+        if self.page_name == "full_mode" or self._draft_model is None:
+            return
+        if self._draft_model.device_key != self._settings_store.current_device_key:
+            return
+        try:
+            self._draft_model.update_shared(
+                {
+                    "page_settings": self.export_settings(),
+                    "active_stage": str(self.active_stage.get()),
+                }
+            )
+            if self.preset_toolbar is not None:
+                self._draft_model.set_slot_selection(self.preset_toolbar.selected_slot)
+        except (tk.TclError, ValueError, TypeError):
+            return
+
+    def activate_button_draft(self) -> None:
+        if self.page_name == "full_mode" or self._draft_restoring:
+            return
+        if self._initial_button_settings is None:
+            self._initial_button_settings = self.export_settings()
+            self._initial_button_stage = str(self.active_stage.get())
+        board_identity = self._board_identity()
+        connection = ("awp1018_button", board_identity, self.button_mode_key)
+        model = self._settings_store.select_device(connection, self._device_addr())
+        self._draft_model = model
+        self._draft_board_identity = board_identity
+        saved_settings = model.shared.get("page_settings")
+        self._draft_restoring = True
+        try:
+            if isinstance(saved_settings, dict):
+                self.import_settings(saved_settings, apply_to_chip=False)
+                active_stage = str(model.shared.get("active_stage", "Stage0"))
+                if active_stage in self._stage_frames:
+                    self._show_stage(active_stage)
+            else:
+                initial_settings = deepcopy(self._initial_button_settings)
+                initial_settings["slice_definitions"] = self._export_slice_definitions()
+                model.update_shared(
+                    {
+                        "page_settings": initial_settings,
+                        "active_stage": self._initial_button_stage,
+                    }
+                )
+                self.import_settings(initial_settings, apply_to_chip=False)
+            selected_slot = (
+                self._board_slot_provider(board_identity, model.slot_selection)
+                if callable(self._board_slot_provider)
+                else (int(model.slot_selection) if model.slot_selection is not None else 0)
+            )
+            selected_slot = max(0, min(2, int(selected_slot)))
+            model.set_slot_selection(selected_slot)
+            if self.preset_toolbar is not None:
+                self.preset_toolbar.slot_var.set(str(selected_slot))
+            if callable(self._on_board_slot_selected_callback):
+                self._on_board_slot_selected_callback(self.button_mode_key, selected_slot)
+        except (tk.TclError, ValueError, TypeError, KeyError):
+            return
+        finally:
+            self._draft_restoring = False
+
     def _build_preset_header(self, parent: tk.Misc) -> ttk.Frame:
-        title_key = "awp1018_diff_mode" if self.diff_mode else self.page_name
+        title_key = self.button_mode_key
         header = self.make_title(parent, title_key, show_logo=False)
         header.columnconfigure(0, weight=0)
         header.columnconfigure(1, weight=1)
 
         preset_frame = self.make_preset_frame(header)
-
+        board_identity = self._board_identity()
+        selected_slot = (
+            self._board_slot_provider(board_identity, None)
+            if callable(self._board_slot_provider)
+            else 0
+        )
+        self.preset_toolbar = PresetToolbar(
+            preset_frame,
+            translate=lambda key: self.tr(key),
+            callbacks={
+                "software_preset_1": lambda: self.apply_software_preset(0),
+                "software_preset_2": lambda: self.apply_software_preset(1),
+                "software_preset_3": lambda: self.apply_software_preset(2),
+                "import_page_settings": self.import_page_settings,
+                "export_page_settings": self.export_page_settings,
+                "save_slot": self.save_board_preset,
+                "set_active_slot": self.set_board_preset_active,
+                "apply_slot": self.apply_board_preset,
+                "read_and_apply": self.read_board_preset,
+            },
+            capabilities={
+                "software_preset_1": True,
+                "software_preset_2": True,
+                "software_preset_3": True,
+                "import_page_settings": True,
+                "export_page_settings": True,
+                "slot_selection": True,
+                "save_slot": True,
+                "set_active_slot": True,
+                "apply_slot": True,
+                "read_and_apply": True,
+            },
+            tooltip_keys={
+                "import_page_settings": "button_mode_import_page_settings_tooltip",
+                "export_page_settings": "button_mode_export_page_settings_tooltip",
+                "save_slot": "save_no_gui_settings_tooltip",
+                "set_active_slot": "set_boot_settings_tooltip",
+                "apply_slot": "apply_current_settings_tooltip",
+                "read_and_apply": "board_preset_read_tooltip",
+            },
+            slot_values=(0, 1, 2),
+            selected_slot=selected_slot,
+            on_slot_selected=lambda slot: self._on_board_slot_selected(slot),
+        )
+        self.preset_toolbar.grid(row=0, column=0, sticky="ew")
+        self.board_slot_var = self.preset_toolbar.slot_var
+        self.board_slot_combo = self.preset_toolbar.slot_combo
+        self._labels["board_slot"] = self.preset_toolbar.slot_label
         for index in range(3):
             key = f"button_mode_preset_{index + 1}"
-            button = ttk.Button(
-                preset_frame,
-                style="Bg.TButton",
-                command=lambda preset_index=index: self.apply_software_preset(preset_index),
-            )
-            button.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 6, 0))
+            button = self.preset_toolbar.buttons[f"software_preset_{index + 1}"]
             self._buttons[key] = button
             self._bind_software_preset_tooltip(button, index)
-
-        import_button = ttk.Button(
-            preset_frame,
-            style="Bg.TButton",
-            command=self.import_page_settings,
-        )
-        import_button.grid(row=0, column=3, sticky="ew", padx=(6, 0))
-        self._buttons["button_mode_import_user_preset"] = import_button
-        self._bind_page_action_tooltip(import_button, "button_mode_import_user_preset")
-
-        export_button = ttk.Button(
-            preset_frame,
-            style="Bg.TButton",
-            command=self.export_page_settings,
-        )
-        export_button.grid(row=0, column=4, sticky="ew", padx=(6, 0))
-        self._buttons["button_mode_export_user_preset"] = export_button
-        self._bind_page_action_tooltip(export_button, "button_mode_export_user_preset")
-
-        slot_cell = ttk.Frame(preset_frame, style="App.TFrame")
-        slot_cell.grid(row=1, column=0, sticky="ew", pady=(self._module_spacing(), 0))
-
-        board_slot_label = ttk.Label(slot_cell, style="App.TLabel")
-        board_slot_label.grid(row=0, column=0, sticky="w", padx=(0, 6))
-        self._labels["board_slot"] = board_slot_label
-
-        self.board_slot_combo = ttk.Combobox(
-            slot_cell,
-            textvariable=self.board_slot_var,
-            values=["0", "1", "2"],
-            state="readonly",
-            width=4,
-        )
-        self.board_slot_combo.grid(row=0, column=1, sticky="w")
-
-        actions = (
-            ("save_to_board", self.save_board_preset),
-            ("set_active", self.set_board_preset_active),
-            ("apply_slot", self.apply_board_preset),
-            ("read_slot", self.read_board_preset),
-        )
-        for column, (key, command) in enumerate(actions, start=1):
-            button = ttk.Button(preset_frame, style="Bg.TButton", command=command)
-            button.grid(row=1, column=column, sticky="ew", pady=(self._module_spacing(), 0), padx=(6, 0))
-            self._buttons[key] = button
-            self._board_preset_buttons[key] = button
-            self._bind_board_preset_tooltip(button, key)
+        self._buttons["button_mode_import_user_preset"] = self.preset_toolbar.buttons[
+            "import_page_settings"
+        ]
+        self._buttons["button_mode_export_user_preset"] = self.preset_toolbar.buttons[
+            "export_page_settings"
+        ]
+        self._board_preset_buttons = {
+            "save_to_board": self.preset_toolbar.buttons["save_slot"],
+            "set_active": self.preset_toolbar.buttons["set_active_slot"],
+            "apply_slot": self.preset_toolbar.buttons["apply_slot"],
+            "read_slot": self.preset_toolbar.buttons["read_and_apply"],
+        }
 
         return header
+
+    def _board_identity(self) -> tuple[Any, ...]:
+        identity = active_serial_identity(self.ctx, "awp1018")
+        if identity is not None:
+            return tuple(identity)
+        selected_port = getattr(self.ctx.state, "selected_port", None)
+        selector = getattr(self.ctx.serial, "selected_port_for_page", None)
+        if callable(selector):
+            try:
+                selected_port = selector("awp1018")
+            except TypeError:
+                selected_port = selector()
+        return ("offline", str(selected_port or ""))
+
+    def _on_board_slot_selected(self, slot: int | str) -> None:
+        if callable(self._on_board_slot_selected_callback):
+            self._on_board_slot_selected_callback(self.button_mode_key, slot)
+        if self._draft_model is not None:
+            try:
+                self._draft_model.set_slot_selection(int(slot))
+            except (TypeError, ValueError):
+                pass
 
     def _attach_gpio_controls(self, parent: tk.Misc, row: int, *, columnspan: int = 4) -> int:
         group = getattr(self, "_gpio_group", None)
@@ -1301,92 +1545,78 @@ class AWP1018NormalModePage(BasePage):
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
         yield
-        body.columnconfigure(0, weight=1, minsize=640, uniform="awp1018_columns")
-        body.columnconfigure(1, weight=1, minsize=640, uniform="awp1018_columns")
-        body.rowconfigure(0, weight=1)
-
-        left = ttk.Frame(body, style="Panel.TFrame", padding=14)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        left.columnconfigure(1, weight=2, minsize=145)
-        yield
-        left.columnconfigure(3, weight=2, minsize=145)
-
-        right = ttk.Frame(body, style="Panel.TFrame", padding=10)
-        right.grid(row=0, column=1, sticky="nsew")
-        right.rowconfigure(0, weight=1)
-        right.rowconfigure(1, weight=0)
-        right.columnconfigure(0, weight=1)
-        yield
-
+        body.columnconfigure(0, weight=1)
         row = 0
-        yield from self._build_adc_channel_selector_steps(left, row)
-        row += 1
-        row = self._add_section_title(left, row, "awp1018_adc_threshold_detection")
-        yield from self._build_stage_selector_steps(left, row)
-        row += 1
-        self.stage_container = ttk.Frame(left, style="Panel.TFrame")
-        self.stage_container.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(4, 8))
-        self._register_module_spacing_widget(self.stage_container, before=True, after=True)
-        yield
-        self.stage_container.columnconfigure(0, weight=1)
-        for stage in ("Stage0", "Stage1", "Stage2", "Stage3"):
-            yield from self._build_stage_frame_steps(stage)
+        yield from self._build_button_channel_selector_steps(body, row)
         row += 1
 
-        row = self._add_section_title(left, row, "full_mode_adc")
-        yield
-        yield from self._build_adc_timing_row_steps(left, row)
-        row += 1
-        yield from self._build_zero_return_bit_row_steps(left, row)
-        row += 1
-        yield from self._build_arbitration_return_time_row_steps(left, row)
-        row += 1
-        yield
-
-        zps_check = ttk.Checkbutton(left, variable=self.zps_enable_var, command=self._on_zps_enable_changed)
-        zps_check.grid(row=row, column=0, columnspan=4, sticky="w", pady=(12, 7))
-        self._checks["awp1018_zps_enable"] = zps_check
+        waveform_panel = ttk.Frame(body, style="Panel.TFrame", padding=12)
+        waveform_panel.grid(
+            row=row,
+            column=0,
+            sticky="ew",
+            pady=(0, self._module_spacing()),
+        )
+        waveform_panel.columnconfigure(0, weight=1)
+        yield from self._build_rom_selector_steps(waveform_panel)
         row += 1
 
-        interrupt_check = ttk.Checkbutton(left, variable=self.interrupt_enable_var, command=self._on_interrupt_enable_changed)
-        interrupt_check.grid(row=row, column=0, columnspan=4, sticky="w", pady=(4, 7))
+        self._adc_split = ttk.Frame(body, style="App.TFrame")
+        self._adc_split.grid(
+            row=row,
+            column=0,
+            sticky="ew",
+            pady=(0, self._module_spacing()),
+        )
+        self._adc_split.columnconfigure(1, weight=1)
+        self._adc_legend_panel = ttk.Frame(self._adc_split, style="Panel.TFrame", padding=12)
+        self._adc_editor_panel = ttk.Frame(self._adc_split, style="Panel.TFrame", padding=14)
+        self._adc_legend_panel.columnconfigure(0, weight=1)
+        self._adc_editor_panel.columnconfigure(1, weight=1)
         yield
-        self._checks["awp1018_interrupt_enable"] = interrupt_check
+        yield from self._build_button_adc_legend_steps(self._adc_legend_panel)
+        yield from self._build_button_adc_editor_steps(self._adc_editor_panel)
+        self._adc_split.bind("<Configure>", self._queue_adc_split_layout, add="+")
+        self._queue_adc_split_layout()
         row += 1
 
+        status_panel = ttk.Frame(body, style="Panel.TFrame", padding=12)
+        status_panel.grid(
+            row=row,
+            column=0,
+            sticky="ew",
+            pady=(0, self._module_spacing()),
+        )
+        status_panel.columnconfigure(0, weight=1)
+        yield from self._build_button_readings_status_steps(status_panel)
+        row += 1
+
+        controls_panel = ttk.Frame(body, style="Panel.TFrame", padding=12)
+        controls_panel.grid(
+            row=row,
+            column=0,
+            sticky="ew",
+            pady=(0, self._module_spacing()),
+        )
+        controls_panel.columnconfigure(0, weight=1)
         self.make_module_title_row(
-            left,
+            controls_panel,
             "awp1018_function_controls",
             step=4,
             step_total=4,
             help_key="awp1018_help_function_control",
-            row=row,
+            row=0,
             columnspan=4,
-            pady=(10 if row else 0, 4),
+            pady=(0, 6),
         )
+        yield from self._build_control_buttons_steps(controls_panel, 1)
+        self._attach_gpio_controls(controls_panel, 2)
         row += 1
-        yield from self._build_control_buttons_steps(left, row)
-        row += 1
-        if self.diff_mode:
-            self._build_diff_channel_status(left, row)
-            row += 1
-        row = self._attach_gpio_controls(left, row)
-        yield
 
-        self.tabs = ttk.Notebook(right)
-        self.tabs.grid(row=0, column=0, sticky="nsew")
-
-        selector_tab = ttk.Frame(self.tabs, style="Panel.TFrame", padding=14)
-        selector_tab.rowconfigure(1, weight=1)
-        selector_tab.columnconfigure(0, weight=1)
-        yield from self._build_rom_selector_steps(selector_tab)
-        yield
-
-        self.tabs.add(selector_tab, text=self.tr("awp1018_waveform_selector"))
-
-        log_frame = self.make_serial_log(right, height=7, subscribe=True)
-        log_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        log_frame = self.make_serial_log(body, height=7, subscribe=True)
+        log_frame.grid(row=row, column=0, sticky="ew", pady=(0, 8))
         self._register_module_spacing_widget(log_frame, before=True, after=False)
+        yield
 
         self.rom_waveform_var.trace_add("write", self._queue_rom_waveform_draw)
         self.rom_waveform_var.trace_add("write", lambda *_: self._refresh_rom_depth_options())
@@ -1449,6 +1679,9 @@ class AWP1018NormalModePage(BasePage):
             pass
 
     def _build_adc_channel_selector_steps(self, parent: tk.Misc, row: int) -> Iterator[None]:
+        if self.page_name != "full_mode":
+            yield from self._build_button_channel_selector_steps(parent, row)
+            return
         section = ttk.Frame(parent, style="Panel.TFrame")
         section.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(4, 8))
         title_row, _title = self.make_module_title_row(
@@ -1472,6 +1705,240 @@ class AWP1018NormalModePage(BasePage):
             check.grid(row=index // 4, column=index % 4, sticky="w", padx=(0, 8), pady=2)
             self._channel_checks[index] = check
         yield
+
+    def _build_button_channel_selector_steps(
+        self,
+        parent: tk.Misc,
+        row: int,
+    ) -> Iterator[None]:
+        section = ttk.Frame(parent, style="Panel.TFrame", padding=10)
+        section.grid(row=row, column=0, sticky="ew", pady=(0, self._module_spacing()))
+        section.columnconfigure(0, weight=1)
+        title_row, _title = self.make_module_title_row(
+            section,
+            "awp1018_channel_select",
+            step=1,
+            step_total=4,
+            help_key="awp1018_help_full_channel",
+            row=0,
+            columnspan=4,
+            pady=(0, 6),
+        )
+        title_row.grid_configure(sticky="ew")
+        card_grid = ResponsiveCardGrid(
+            section,
+            item_count=self.channel_count,
+            max_columns=4,
+            min_card_width=174,
+            gap=8,
+        )
+        card_grid.grid(row=1, column=0, columnspan=4, sticky="ew")
+        self._channel_card_grid = card_grid
+        stage_values = [f"Stage{index}" for index in range(4)]
+        for index, variable in enumerate(self.channel_vars):
+            card = ttk.LabelFrame(card_grid, padding=(8, 5))
+            card.columnconfigure(0, weight=1)
+            check = ttk.Checkbutton(
+                card,
+                text=self.tr("awp1018_channel_label", index=index),
+                variable=variable,
+                command=self._on_channel_select_changed,
+            )
+            check.grid(row=0, column=0, sticky="w", pady=(0, 3))
+            self._channel_checks[index] = check
+
+            mapping_label = ttk.Label(card, style="Panel.TLabel")
+            mapping_label.grid(row=1, column=0, sticky="w", pady=(2, 1))
+            self._channel_mapping_labels[index] = mapping_label
+            start_combo = ttk.Combobox(
+                card,
+                textvariable=self.channel_start_stage_vars[index],
+                values=stage_values,
+                state="readonly",
+                width=9,
+            )
+            start_combo.grid(row=2, column=0, sticky="ew")
+            start_combo.bind(
+                "<<ComboboxSelected>>",
+                lambda _event, channel=index: self._on_channel_start_stage_changed(channel),
+            )
+            self._channel_start_combos[index] = start_combo
+            card_grid.add_card(card)
+        yield
+
+    def _build_button_adc_legend_steps(self, parent: tk.Misc) -> Iterator[None]:
+        title_row, _title = self.make_module_title_row(
+            parent,
+            "awp1221_adc_diagram",
+            step=3,
+            step_total=4,
+            role="reference",
+            help_key="awp1221_help_adc_legend",
+            row=0,
+            columnspan=2,
+            pady=(0, 6),
+        )
+        title_row.grid_configure(sticky="ew")
+        hint = ttk.Label(parent, style="Muted.TLabel", wraplength=240, justify="left")
+        hint.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        self._labels["awp1221_adc_diagram_hint"] = hint
+        yield
+        canvas = tk.Canvas(
+            parent,
+            height=148,
+            background=self.colors["canvas_bg"],
+            highlightthickness=1,
+            highlightbackground=self.colors["border"],
+            borderwidth=0,
+        )
+        canvas.grid(row=2, column=0, columnspan=2, sticky="ew")
+        parent.columnconfigure(0, weight=1)
+        self._adc_legend_canvas = canvas
+        canvas.bind("<Configure>", self._draw_adc_threshold_legend, add="+")
+
+        self._adc_legend_swatches: dict[str, tk.Label] = {}
+        for row, key, color in (
+            (3, "awp1221_diagram_press", self.colors["primary"]),
+            (4, "awp1221_diagram_release", "#7c3aed"),
+        ):
+            swatch = tk.Label(parent, width=2, background=color, borderwidth=0)
+            swatch.grid(row=row, column=0, sticky="w", pady=(5, 0))
+            self._adc_legend_swatches[key] = swatch
+            label = ttk.Label(parent, style="Panel.TLabel")
+            label.grid(row=row, column=1, sticky="w", padx=(7, 0), pady=(5, 0))
+            self._labels[key] = label
+        self._draw_adc_threshold_legend()
+
+    def _draw_adc_threshold_legend(self, _event: tk.Event | None = None) -> None:
+        canvas = getattr(self, "_adc_legend_canvas", None)
+        if canvas is None:
+            return
+        try:
+            width = max(180, int(canvas.winfo_width()))
+            height = max(110, int(canvas.winfo_height()))
+            canvas.delete("all")
+            left, right = 24, width - 16
+            top, bottom = 16, height - 22
+            canvas.create_line(left, top, left, bottom, fill=self.colors["border"])
+            canvas.create_line(
+                left,
+                bottom,
+                right,
+                bottom,
+                fill=self.colors["border"],
+                arrow=tk.LAST,
+            )
+            press_y = top + (bottom - top) * 0.36
+            release_y = top + (bottom - top) * 0.68
+            canvas.create_line(
+                left + 2,
+                press_y,
+                right,
+                press_y,
+                fill=self.colors["primary"],
+                width=2,
+                dash=(5, 3),
+            )
+            canvas.create_line(
+                left + 2,
+                release_y,
+                right,
+                release_y,
+                fill="#7c3aed",
+                width=2,
+                dash=(5, 3),
+            )
+            canvas.create_text(
+                left + 8,
+                press_y - 8,
+                anchor="sw",
+                text="P",
+                fill=self.colors["text"],
+            )
+            canvas.create_text(
+                left + 8,
+                release_y - 8,
+                anchor="sw",
+                text="R",
+                fill=self.colors["text"],
+            )
+        except tk.TclError:
+            return
+
+    def _build_button_adc_editor_steps(self, parent: tk.Misc) -> Iterator[None]:
+        for column in (0, 2, 4):
+            parent.columnconfigure(column, weight=0, minsize=92)
+        for column in (1, 3, 5):
+            parent.columnconfigure(column, weight=1, minsize=110)
+        self.make_module_title_row(
+            parent,
+            "awp1018_adc_threshold_detection",
+            step=3,
+            step_total=4,
+            help_key="awp1018_help_button_detection",
+            row=0,
+            columnspan=6,
+            pady=(0, 6),
+        )
+        yield
+        yield from self._build_stage_selector_steps(parent, 1)
+        self.stage_container = ttk.Frame(parent, style="Panel.TFrame")
+        self.stage_container.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(2, 7))
+        self.stage_container.columnconfigure(0, weight=1)
+        for stage in ("Stage0", "Stage1", "Stage2", "Stage3"):
+            yield from self._build_stage_frame_steps(stage)
+
+        yield from self._build_adc_timing_row_steps(parent, 3)
+        yield from self._build_zero_return_bit_row_steps(parent, 4)
+        yield from self._build_arbitration_return_time_row_steps(parent, 5)
+        zps_check = ttk.Checkbutton(
+            parent,
+            variable=self.zps_enable_var,
+            command=self._on_zps_enable_changed,
+        )
+        zps_check.grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 4))
+        self._checks["awp1018_zps_enable"] = zps_check
+        yield
+        interrupt_check = ttk.Checkbutton(
+            parent,
+            variable=self.interrupt_enable_var,
+            command=self._on_interrupt_enable_changed,
+        )
+        interrupt_check.grid(row=6, column=3, columnspan=3, sticky="w", pady=(8, 4))
+        self._checks["awp1018_interrupt_enable"] = interrupt_check
+
+    def _queue_adc_split_layout(self, _event: tk.Event | None = None) -> None:
+        if getattr(self, "_adc_split_layout_job", None) is not None:
+            return
+        try:
+            self._adc_split_layout_job = self.after_idle(self._reflow_adc_split)
+        except tk.TclError:
+            self._adc_split_layout_job = None
+
+    def _reflow_adc_split(self) -> None:
+        self._adc_split_layout_job = None
+        split = getattr(self, "_adc_split", None)
+        legend = getattr(self, "_adc_legend_panel", None)
+        editor = getattr(self, "_adc_editor_panel", None)
+        if split is None or legend is None or editor is None:
+            return
+        try:
+            width = int(split.winfo_width())
+            if width <= 1:
+                return
+            side_by_side = width >= legend.winfo_reqwidth() + editor.winfo_reqwidth() + 24
+            if side_by_side:
+                legend.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+                editor.grid(row=0, column=1, sticky="nsew")
+                split.columnconfigure(0, weight=0)
+                split.columnconfigure(1, weight=1)
+            else:
+                legend.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+                editor.grid(row=1, column=0, columnspan=2, sticky="ew")
+                split.columnconfigure(0, weight=1)
+                split.columnconfigure(1, weight=0)
+        except tk.TclError:
+            return
 
     def _add_help_button(self, parent: tk.Misc, row: int, column: int, text_key: str) -> None:
         label = ttk.Label(parent, text=self.tr("awp1018_help_symbol"), style="Muted.TLabel", cursor="question_arrow")
@@ -1762,24 +2229,25 @@ class AWP1018NormalModePage(BasePage):
         self._checks[f"{stage}_release_debounce_enable"] = release_debounce_check
         self._stage_debounce_checks[stage] = {"press": press_debounce_check, "release": release_debounce_check}
 
-        group_label = ttk.Label(frame, style="Panel.TLabel")
-        yield
-        group_label.grid(row=4, column=0, sticky="nw", pady=5, padx=(0, 8))
-        self._labels[f"{stage}_group_start"] = group_label
+        if self.page_name == "full_mode":
+            group_label = ttk.Label(frame, style="Panel.TLabel")
+            yield
+            group_label.grid(row=4, column=0, sticky="nw", pady=5, padx=(0, 8))
+            self._labels[f"{stage}_group_start"] = group_label
 
-        group_frame = ttk.Frame(frame, style="Panel.TFrame")
-        group_frame.grid(row=4, column=1, columnspan=5, sticky="ew", pady=5)
-        self._stage_group_checks[stage] = {}
-        for group, variable in enumerate(self.stage_group_start_vars[stage]):
-            group_frame.columnconfigure(group % 4, weight=1)
-            check = ttk.Checkbutton(
-                group_frame,
-                variable=variable,
-                command=lambda s=stage, g=group: self._on_stage_group_start_changed(s, g),
-            )
-            check.grid(row=group // 4, column=group % 4, sticky="w", padx=(0, 8), pady=2)
-            self._stage_group_checks[stage][group] = check
-        yield
+            group_frame = ttk.Frame(frame, style="Panel.TFrame")
+            group_frame.grid(row=4, column=1, columnspan=5, sticky="ew", pady=5)
+            self._stage_group_checks[stage] = {}
+            for group, variable in enumerate(self.stage_group_start_vars[stage]):
+                group_frame.columnconfigure(group % 4, weight=1)
+                check = ttk.Checkbutton(
+                    group_frame,
+                    variable=variable,
+                    command=lambda s=stage, g=group: self._on_stage_group_start_changed(s, g),
+                )
+                check.grid(row=group // 4, column=group % 4, sticky="w", padx=(0, 8), pady=2)
+                self._stage_group_checks[stage][group] = check
+            yield
 
         waveform_var.trace_add(
             "write",
@@ -1812,16 +2280,11 @@ class AWP1018NormalModePage(BasePage):
             ("stop_play", self.stop_play, "Secondary.TButton"),
             ("awp1018_stop_all", self.stop_all, "Danger.TButton"),
         ]
-        if self.diff_mode:
-            actions.append(("awp1018_realtime_display", self.start_realtime_display, "Primary.TButton"))
         yield
         for index, (key, command, style) in enumerate(actions):
-            is_full_width = key in {"awp1018_stop_all", "awp1018_realtime_display"}
+            is_full_width = key == "awp1018_stop_all"
             grid_row = index // 2
             grid_col = index % 2
-            if key == "awp1018_realtime_display":
-                grid_row = 3
-                grid_col = 0
             btn = ttk.Button(frame, style=style, command=command)
             btn.grid(
                 row=grid_row,
@@ -1931,29 +2394,42 @@ class AWP1018NormalModePage(BasePage):
         self._draw_rom_waveform()
         return self.apply_rom_waveform_selection()
 
-    def _build_diff_channel_status(self, parent: tk.Misc, row: int) -> None:
-        frame = ttk.Frame(parent, style="Panel.TFrame")
-        frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(10, 0))
-        self._register_module_spacing_widget(frame, before=True, after=False)
-        for channel in range(4):
-            frame.columnconfigure(channel, weight=1, uniform="diff_channel_status")
-            value_var = tk.StringVar(value="0")
+    def _build_button_readings_status_steps(self, parent: tk.Misc) -> Iterator[None]:
+        help_key = "awp1221_help_adc_readings" if self.supports_live_adc_read else "awp1018_help_button_adc"
+        title_row, _title = self.make_module_title_row(
+            parent,
+            "awp1221_adc_readings",
+            step=3,
+            step_total=4,
+            role="verify",
+            help_key=help_key,
+            row=0,
+            columnspan=4,
+            pady=(0, 6),
+        )
+        title_row.grid_configure(sticky="ew")
+        card_grid = ResponsiveCardGrid(
+            parent,
+            item_count=self.channel_count,
+            max_columns=4,
+            min_card_width=92,
+            gap=8,
+        )
+        card_grid.grid(row=1, column=0, columnspan=4, sticky="ew")
+        self._status_card_grid = card_grid
+        yield
+        for channel in range(self.channel_count):
+            value_var = tk.StringVar(value="")
             box = tk.Frame(
-                frame,
+                card_grid,
                 height=54,
                 bg=self.STATUS_IDLE_COLOR,
                 highlightthickness=1,
                 highlightbackground=self.colors["border"],
             )
-            box.grid(row=0, column=channel, sticky="ew", padx=(0 if channel == 0 else 6, 0))
-            # Keep the compact 54px baseline at normal scaling, but allow the
-            # two text rows to request more height when Tk logical scaling or
-            # a larger user font makes their glyph boxes taller.  The parent
-            # mode scroll area carries the resulting extra content height.
             box.columnconfigure(0, weight=1)
             box.rowconfigure(0, weight=1)
             box.rowconfigure(1, weight=1)
-
             title = tk.Label(
                 box,
                 text=self.tr("awp1018_channel_label", index=channel),
@@ -1969,10 +2445,35 @@ class AWP1018NormalModePage(BasePage):
                 font=("Microsoft YaHei UI", 11, "bold"),
             )
             value.grid(row=1, column=0, sticky="n")
-
+            card_grid.add_card(box)
             self._diff_status_frames[channel] = box
             self._diff_status_titles[channel] = title
             self._diff_status_value_vars[channel] = value_var
+
+        if self.supports_live_adc_read:
+            start_button = ttk.Button(
+                parent,
+                style="Primary.TButton",
+                command=self.start_realtime_display,
+            )
+            start_button.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(9, 0), padx=(0, 5))
+            self._buttons["awp1018_realtime_display"] = start_button
+            stop_button = ttk.Button(
+                parent,
+                style="Secondary.TButton",
+                command=self.stop_realtime_display,
+            )
+            stop_button.grid(row=2, column=2, columnspan=2, sticky="ew", pady=(9, 0), padx=(5, 0))
+            self._buttons["adc_stop_realtime"] = stop_button
+        else:
+            unsupported = ttk.Label(
+                parent,
+                style="Panel.TLabel",
+                wraplength=540,
+                justify="left",
+            )
+            unsupported.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(9, 0))
+            self._labels["awp1018_normal_8ch_live_read_unsupported"] = unsupported
 
     def _show_stage(self, stage: str) -> None:
         self.active_stage.set(stage)
@@ -1995,7 +2496,20 @@ class AWP1018NormalModePage(BasePage):
         for other_stage, other_variables in self.stage_group_start_vars.items():
             if other_stage != stage:
                 other_variables[group].set(False)
+        if 0 <= group < len(self.channel_start_stage_vars):
+            self.channel_start_stage_vars[group].set(stage)
         self._write_group_start_register(show_error=False)
+
+    def _on_channel_start_stage_changed(self, channel: int) -> None:
+        if not 0 <= channel < len(self.channel_vars):
+            return
+        stage = str(self.channel_start_stage_vars[channel].get())
+        if stage not in {"Stage0", "Stage1", "Stage2", "Stage3"}:
+            return
+        for stage_name, variables in self.stage_group_start_vars.items():
+            variables[channel].set(stage_name == stage)
+        if not self._loading_settings:
+            self._write_group_start_register(show_error=False)
 
     def _group_start_stage_indices(self) -> list[int]:
         indices: list[int] = []
@@ -3341,6 +3855,11 @@ class AWP1018NormalModePage(BasePage):
                             self.stage_group_start_vars[stage][group],
                             stage_index == selected_stage,
                         )
+                    if group < len(self.channel_start_stage_vars):
+                        set_variable(
+                            self.channel_start_stage_vars[group],
+                            f"Stage{selected_stage}",
+                        )
 
             if 0x22 in normalized_registers:
                 reg22 = normalized_registers[0x22]
@@ -3518,7 +4037,7 @@ class AWP1018NormalModePage(BasePage):
         set_variable(self.rom_offset_var, offset_options[(word3 >> 5) & 0x7F])
         set_variable(self.rom_amplitude_var, amplitude_options[word3 & 0x1F])
 
-    def import_settings(self, data: dict[str, Any]) -> bool:
+    def import_settings(self, data: dict[str, Any], *, apply_to_chip: bool = True) -> bool:
         settings = self._validate_imported_settings(data)
         stages = settings["stages"]
         general = settings["general"]
@@ -3543,6 +4062,8 @@ class AWP1018NormalModePage(BasePage):
             for group, stage_name in enumerate(settings["group_start_stages"]):
                 for stage in ("Stage0", "Stage1", "Stage2", "Stage3"):
                     self.stage_group_start_vars[stage][group].set(stage == stage_name)
+                if group < len(self.channel_start_stage_vars):
+                    self.channel_start_stage_vars[group].set(stage_name)
 
             self._pending_import_slice_definitions = dict(settings["slice_definitions"])
             definition_cache = self._slice_definition_cache()
@@ -3600,7 +4121,7 @@ class AWP1018NormalModePage(BasePage):
             self._refresh_diff_waveform_controls()
         self._show_stage(self.active_stage.get())
         self._draw_rom_waveform()
-        return self._write_imported_settings_to_chip()
+        return self._write_imported_settings_to_chip() if apply_to_chip else True
 
     def _normalize_imported_amplitude(self, value: Any) -> str:
         text = str(value)
@@ -4710,6 +5231,9 @@ class AWP1018NormalModePage(BasePage):
         self.write_reg(0x07, value, show_error=False)
         if self.diff_mode and self._diff_detect_active:
             self._set_diff_ready_colors()
+        if self.diff_mode and self._diff_sample_active:
+            self._refresh_diff_sample_channels()
+            self._set_diff_ready_colors()
 
     def _on_return_bit_config_changed(self) -> None:
         try:
@@ -4993,19 +5517,53 @@ class AWP1018NormalModePage(BasePage):
     def _start_diff_status_monitor(self) -> None:
         if not self.diff_mode:
             return
-        self._diff_detect_active = True
+        self._diff_sample_active = True
+        self._refresh_diff_sample_channels()
         self._set_diff_ready_colors()
         self._cancel_diff_status_jobs()
-        self._poll_diff_channel_values()
+        self._diff_sample_generation += 1
+        generation = self._diff_sample_generation
+        cancel = threading.Event()
+        self._diff_sample_cancel = cancel
+        address = self._device_addr()
+        board_identity = self._board_identity()
+        serial = self._diff_sample_transport()
+        self._set_button_selected("awp1018_realtime_display", True)
+        self._diff_value_poll_job = self.after(50, self._poll_diff_sample_results)
+        self._diff_sample_thread = threading.Thread(
+            target=self._diff_sample_loop,
+            args=(cancel, generation, address, board_identity, serial),
+            daemon=True,
+        )
+        self._diff_sample_thread.start()
+
+    def _diff_sample_transport(self) -> Any:
+        serial = self.ctx.serial
+        selected_port = getattr(serial, "selected_port_for_page", None)
+        manager_for_port = getattr(serial, "manager_for_port", None)
+        if callable(selected_port) and callable(manager_for_port):
+            try:
+                port = selected_port("awp1018")
+            except TypeError:
+                port = selected_port()
+            manager = manager_for_port(port)
+            if manager is not None:
+                return manager
+        return serial
 
     def _stop_diff_status_monitor(self) -> None:
         if not self.diff_mode:
             return
         self._diff_detect_active = False
+        self._diff_sample_active = False
         self._cancel_diff_status_jobs()
+        self._set_button_selected("awp1018_realtime_display", False)
         self._set_all_diff_channel_colors(self.STATUS_IDLE_COLOR)
 
     def _cancel_diff_status_jobs(self) -> None:
+        cancel = self._diff_sample_cancel
+        if cancel is not None:
+            cancel.set()
         for job_attr in ("_diff_value_poll_job", "_diff_status_blink_job"):
             job = getattr(self, job_attr, None)
             if job is not None:
@@ -5015,47 +5573,143 @@ class AWP1018NormalModePage(BasePage):
                     pass
                 setattr(self, job_attr, None)
 
-    def _poll_diff_channel_values(self) -> None:
+    def _refresh_diff_sample_channels(self) -> None:
+        channels = tuple(self._enabled_diff_channels())
+        with self._diff_sample_channels_lock:
+            self._diff_sample_channels = channels
+
+    def _publish_diff_sample_result(self, generation: int, status: str, payload: Any) -> None:
+        try:
+            self._diff_status_result_queue.put_nowait((generation, status, payload))
+        except queue.Full:
+            try:
+                self._diff_status_result_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._diff_status_result_queue.put_nowait((generation, status, payload))
+            except queue.Full:
+                pass
+
+    def _diff_sample_loop(
+        self,
+        cancel: threading.Event,
+        generation: int,
+        address: int,
+        board_identity: tuple[Any, ...],
+        serial: Any,
+    ) -> None:
+        while not cancel.is_set():
+            if not serial.is_connected or self._board_identity() != board_identity:
+                self._publish_diff_sample_result(generation, "disconnected", None)
+                return
+            with self._diff_sample_channels_lock:
+                channels = self._diff_sample_channels
+            values: list[tuple[int, int | None]] = []
+            transaction_factory = getattr(serial, "snapshot_transaction", None)
+            for channel in channels:
+                if cancel.is_set():
+                    return
+                transaction = transaction_factory() if callable(transaction_factory) else nullcontext()
+                try:
+                    with transaction:
+                        if cancel.is_set():
+                            return
+                        select_value = (channel & 0x03) << 13
+                        write_response = serial.write_register_value(
+                            address,
+                            0x24,
+                            select_value,
+                            bits=16,
+                        )
+                        if not write_response.ok:
+                            values.append((channel, None))
+                            if not serial.is_connected:
+                                self._publish_diff_sample_result(generation, "disconnected", None)
+                                return
+                            continue
+                        read_response = serial.read_register_value(address, 0x24, bits=16)
+                        if not read_response.ok:
+                            values.append((channel, None))
+                            if not serial.is_connected:
+                                self._publish_diff_sample_result(generation, "disconnected", None)
+                                return
+                            continue
+                        raw_value = serial.extract_rdataw_value(
+                            read_response.data,
+                            device_addr=address,
+                            reg_addr=0x24,
+                            bits=16,
+                        )
+                        if raw_value is None:
+                            values.append((channel, None))
+                            continue
+                        values.append((channel, self._adc12_to_signed(raw_value & 0x0FFF)))
+                except Exception:
+                    if not cancel.is_set():
+                        self._publish_diff_sample_result(generation, "error", None)
+                    return
+            if cancel.is_set():
+                return
+            if not serial.is_connected or self._board_identity() != board_identity:
+                self._publish_diff_sample_result(generation, "disconnected", None)
+                return
+            self._publish_diff_sample_result(generation, "values", values)
+            cancel.wait(0.12)
+
+    def _poll_diff_sample_results(self) -> None:
         self._diff_value_poll_job = None
-        if not self._diff_detect_active or not self.ctx.serial.is_connected:
+        if not self._diff_sample_active:
             return
-
-        enabled_channels = set(self._enabled_diff_channels())
-        for channel in range(4):
-            if channel not in enabled_channels:
-                self._set_diff_channel_color(channel, self.STATUS_IDLE_COLOR)
-                continue
-            self._read_and_update_diff_channel_adc(channel)
-
-        if self._diff_detect_active:
-            self._diff_value_poll_job = self.after(100, self._poll_diff_channel_values)
+        latest: tuple[int, str, Any] | None = None
+        while True:
+            try:
+                latest = self._diff_status_result_queue.get_nowait()
+            except queue.Empty:
+                break
+        if latest is not None:
+            generation, status, payload = latest
+            if generation == self._diff_sample_generation:
+                if status == "disconnected":
+                    self.stop_realtime_display()
+                    return
+                if status == "error":
+                    for channel in self._enabled_diff_channels():
+                        self._set_diff_channel_color(channel, self.STATUS_TIMEOUT_COLOR)
+                    self.stop_realtime_display()
+                    return
+                elif status == "values":
+                    current_channels = set(self._enabled_diff_channels())
+                    for channel in range(4):
+                        if channel not in current_channels:
+                            self._set_diff_channel_color(channel, self.STATUS_IDLE_COLOR)
+                    for channel, value in payload:
+                        if channel not in current_channels:
+                            continue
+                        if value is None:
+                            self._set_diff_channel_color(channel, self.STATUS_TIMEOUT_COLOR)
+                            continue
+                        value_var = self._diff_status_value_vars.get(channel)
+                        if value_var is not None:
+                            value_var.set(str(value))
+                        self._set_diff_channel_color(channel, self.STATUS_READY_COLOR)
+        if not self.ctx.serial.is_connected:
+            self.stop_realtime_display()
+            return
+        if self._diff_sample_active:
+            self._diff_value_poll_job = self.after(50, self._poll_diff_sample_results)
 
     def _read_selected_diff_channel_adc_values(self) -> list[tuple[int, int]]:
         values: list[tuple[int, int]] = []
-        enabled_channels = set(self._enabled_diff_channels())
-        for channel in range(4):
-            if channel not in enabled_channels:
-                self._set_diff_channel_color(channel, self.STATUS_IDLE_COLOR)
+        for channel in self._enabled_diff_channels():
+            value_var = self._diff_status_value_vars.get(channel)
+            if value_var is None:
                 continue
-            adc_value = self._read_and_update_diff_channel_adc(channel)
-            if adc_value is not None:
-                values.append((channel, adc_value))
+            try:
+                values.append((channel, int(value_var.get(), 10)))
+            except ValueError:
+                continue
         return values
-
-    def _read_and_update_diff_channel_adc(self, channel: int) -> int | None:
-        select_value = (channel & 0x03) << 13
-        if not self.write_reg(0x24, select_value, show_error=False):
-            self._set_diff_channel_color(channel, self.STATUS_TIMEOUT_COLOR)
-            return None
-        value = self.read_reg(0x24, show_error=False)
-        if value is None:
-            self._set_diff_channel_color(channel, self.STATUS_TIMEOUT_COLOR)
-            return None
-        adc_value = self._adc12_to_signed(value & 0x0FFF)
-        value_var = self._diff_status_value_vars.get(channel)
-        if value_var is not None:
-            value_var.set(str(adc_value))
-        return adc_value
 
     @staticmethod
     def _adc12_to_signed(value: int) -> int:
@@ -5115,7 +5769,7 @@ class AWP1018NormalModePage(BasePage):
 
     def _restore_diff_ready_after_blink(self) -> None:
         self._diff_status_blink_job = None
-        if self._diff_detect_active:
+        if self._diff_detect_active or self._diff_sample_active:
             self._set_diff_ready_colors()
 
     def _sync_stage_defaults_before_run(self) -> bool:
@@ -5176,20 +5830,41 @@ class AWP1018NormalModePage(BasePage):
             self._set_button_selected("start_detection", True)
             if self.diff_mode:
                 self._diff_detect_active = True
-                self._cancel_diff_status_jobs()
                 self._set_diff_ready_colors()
 
     def start_realtime_display(self) -> None:
         if not self.diff_mode:
             return
+        if self._diff_sample_active:
+            return
+        if not self._ensure_connected():
+            return
         self._start_diff_status_monitor()
-        self._set_button_selected("awp1018_realtime_display", True)
+
+    def stop_realtime_display(self) -> None:
+        if not self.diff_mode:
+            return
+        self._diff_sample_active = False
+        cancel = self._diff_sample_cancel
+        if cancel is not None:
+            cancel.set()
+        if self._diff_value_poll_job is not None:
+            try:
+                self.after_cancel(self._diff_value_poll_job)
+            except Exception:
+                pass
+            self._diff_value_poll_job = None
+        self._set_button_selected("awp1018_realtime_display", False)
+        if self._diff_detect_active:
+            self._set_diff_ready_colors()
+        else:
+            self._set_all_diff_channel_colors(self.STATUS_IDLE_COLOR)
 
     def stop_detection(self) -> None:
+        if self.diff_mode:
+            self._stop_diff_status_monitor()
         if self.write_reg(0x02, 0x0002):
             self._set_button_selected("start_detection", False)
-            self._set_button_selected("awp1018_realtime_display", False)
-            self._stop_diff_status_monitor()
 
     def start_play(self) -> None:
         self.write_reg_async(0x02, 0x0004)
@@ -5198,13 +5873,14 @@ class AWP1018NormalModePage(BasePage):
         self.write_reg_async(0x02, 0x0008)
 
     def stop_all(self) -> None:
+        if self.diff_mode:
+            self._stop_diff_status_monitor()
         self.write_reg_async(
             0x02,
             0x0010,
             on_success=lambda: (
                 self._set_button_selected("start_detection", False),
                 self._set_button_selected("awp1018_realtime_display", False),
-                self._stop_diff_status_monitor(),
             ),
         )
 
@@ -5607,10 +6283,14 @@ class AWP1018NormalModePage(BasePage):
             fill=colors["muted"],
         )
 
-    def destroy(self) -> None:
-        self._cancel_rom_draw_job()
+    def on_hide(self) -> None:
+        self.save_button_draft()
         if self.diff_mode:
             self._stop_diff_status_monitor()
+
+    def destroy(self) -> None:
+        self.on_hide()
+        self._cancel_rom_draw_job()
         try:
             self.ctx.serial.remove_log_listener(self._handle_serial_status_log)
         except Exception:
@@ -5619,6 +6299,8 @@ class AWP1018NormalModePage(BasePage):
 
     def refresh_language(self) -> None:
         super().refresh_language()
+        if self.preset_toolbar is not None:
+            self.preset_toolbar.refresh_language()
         for key, label in self._labels.items():
             if key.endswith("_high"):
                 label.configure(text=self.tr("awp1018_stage_high_threshold"))
@@ -5664,6 +6346,9 @@ class AWP1018NormalModePage(BasePage):
         for channel, check in self._channel_checks.items():
             check.configure(text=self.tr("awp1018_channel_label", index=channel))
 
+        for channel, label in self._channel_mapping_labels.items():
+            label.configure(text=self.tr("awp1018_group_channel_label", index=channel))
+
         for checks in self._stage_group_checks.values():
             for group, check in checks.items():
                 check.configure(text=self.tr("awp1018_group_channel_label", index=group))
@@ -5693,6 +6378,23 @@ class AWP1018NormalModePage(BasePage):
 
     def refresh_theme(self) -> None:
         super().refresh_theme()
+        legend = getattr(self, "_adc_legend_canvas", None)
+        if legend is not None:
+            legend.configure(
+                background=self.colors["canvas_bg"],
+                highlightbackground=self.colors["border"],
+            )
+            self._draw_adc_threshold_legend()
+        for key, swatch in getattr(self, "_adc_legend_swatches", {}).items():
+            color = self.colors["primary"] if key == "awp1221_diagram_press" else "#7c3aed"
+            swatch.configure(background=color)
+        for frame in self._diff_status_frames.values():
+            frame.configure(highlightbackground=self.colors["border"])
+            for child in frame.winfo_children():
+                try:
+                    child.configure(fg=self.colors["text"])
+                except tk.TclError:
+                    pass
         if hasattr(self, "rom_canvas"):
             self.rom_canvas.configure(
                 bg=self.colors["canvas_bg"],
