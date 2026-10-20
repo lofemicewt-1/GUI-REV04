@@ -45,7 +45,7 @@ class UiStateStoreTests(unittest.TestCase):
 
     def test_temporary_small_viewport_collapse_does_not_change_preference(self) -> None:
         root = tk.Tk()
-        root.geometry("440x260+0+0")
+        root.geometry("1280x720+0+0")
         root.deiconify()
         colors = apply_theme(root, "light", 10, 1.0)
         ctx = type("Context", (), {})()
@@ -66,7 +66,12 @@ class UiStateStoreTests(unittest.TestCase):
                 self.assertFalse(trapezoid.expanded)
                 self.assertTrue(store.get_trapezoid_expanded("chip"))
 
-                root.geometry("900x600+0+0")
+                trapezoid.set_expanded(True)
+                root.update()
+                self.assertTrue(trapezoid.expanded)
+                self.assertTrue(store.get_trapezoid_expanded("chip"))
+
+                root.geometry("1600x900+0+0")
                 root.update()
                 self.assertTrue(trapezoid.expanded)
                 self.assertTrue(store.get_trapezoid_expanded("chip"))

@@ -110,9 +110,9 @@ class AWP1018Page(BasePage):
 
         self.mode_scroll, self.mode_container = self.make_vertical_scroll_area(
             self,
-            horizontal=True,
-            min_content_width=1320,
+            horizontal=False,
             propagate_height=True,
+            clamp_width=True,
         )
         self.mode_scroll.grid(row=1, column=0, sticky="nsew")
         yield
@@ -3335,7 +3335,9 @@ class AWP1018NormalModePage(BasePage):
         )
         title_row.grid_configure(sticky="ew")
         parent = selector_body
+        self._rom_selector_body = selector_body
         parent.columnconfigure(0, weight=0, minsize=280 if self.diff_mode else 340)
+        # Tk grid has no maxsize; waveform column expands within outer content cap.
         parent.columnconfigure(1, weight=1)
         parent.rowconfigure(0, weight=1)
 
@@ -7098,6 +7100,10 @@ class AWP1018NormalModePage(BasePage):
             )
             self._draw_rom_waveform()
 
+    def refresh_layout(self) -> None:
+        super().refresh_layout()
+        # Waveform column soft-capped by outer content max; Tk has no grid maxsize.
+
 
 class AWP1018FullModePage(AWP1018NormalModePage):
     page_name = "full_mode"
@@ -7139,10 +7145,10 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         # other Full Mode columns.  A fixed zero-weight column leaves its
         # inner scroll area 10 px narrower than the ADC form at ordinary
         # desktop widths, even though the outer page has spare space.
-        body.columnconfigure(0, weight=2, minsize=760)
-        body.columnconfigure(1, weight=4, minsize=360)
+        body.columnconfigure(0, weight=2, minsize=0)
+        body.columnconfigure(1, weight=4, minsize=0)
         yield
-        body.columnconfigure(2, weight=3, minsize=360)
+        body.columnconfigure(2, weight=3, minsize=0)
         body.rowconfigure(0, weight=1)
 
         left = self._make_full_scroll_column(body, 0, padx=(0, 12), propagate_width=True)
@@ -7150,6 +7156,10 @@ class AWP1018FullModePage(AWP1018NormalModePage):
 
         right = ttk.Frame(body, style="Panel.TFrame", padding=0)
         right.grid(row=0, column=2, sticky="nsew")
+        self._full_layout_body = body
+        self._full_layout_panels = (left._piezo_full_column_panel, middle._piezo_full_column_panel, right)
+        self._full_layout_signature = None
+        body.bind("<Configure>", self._queue_full_columns_reflow, add="+")
         yield
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=3)
@@ -7192,7 +7202,50 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         scroll, content = self.make_vertical_scroll_area(panel, propagate_width=propagate_width)
         scroll.grid(row=0, column=0, sticky="nsew")
         content.configure(style="Panel.TFrame", padding=14)
+        content._piezo_full_column_panel = panel
         return content
+
+    def _queue_full_columns_reflow(self, _event: tk.Event | None = None) -> None:
+        if getattr(self, "_full_layout_job", None) is not None:
+            return
+        try:
+            self._full_layout_job = self.after_idle(self._reflow_full_columns)
+        except tk.TclError:
+            self._full_layout_job = None
+
+    def _reflow_full_columns(self) -> None:
+        self._full_layout_job = None
+        body = getattr(self, "_full_layout_body", None)
+        panels = getattr(self, "_full_layout_panels", ())
+        if body is None or len(panels) != 3:
+            return
+        try:
+            width = int(body.winfo_width())
+            if width <= 1:
+                return
+            side_by_side = width >= 1200
+            if side_by_side == self._full_layout_signature:
+                return
+            self._full_layout_signature = side_by_side
+            if side_by_side:
+                for column, weight in enumerate((2, 4, 3)):
+                    body.columnconfigure(column, weight=weight, minsize=0, uniform="full_mode_cols")
+                for column, panel in enumerate(panels):
+                    panel.grid_configure(row=0, column=column, columnspan=1, sticky="nsew", padx=(0, 12) if column < 2 else 0, pady=0)
+                body.rowconfigure(0, weight=1)
+                body.rowconfigure(1, weight=0)
+                body.rowconfigure(2, weight=0)
+            else:
+                body.columnconfigure(0, weight=1, minsize=0, uniform="")
+                body.columnconfigure(1, weight=0, minsize=0, uniform="")
+                body.columnconfigure(2, weight=0, minsize=0, uniform="")
+                body.rowconfigure(0, weight=0)
+                body.rowconfigure(1, weight=0)
+                body.rowconfigure(2, weight=1)
+                for row, panel in enumerate(panels):
+                    panel.grid_configure(row=row, column=0, columnspan=3, sticky="nsew", padx=0, pady=(0, 12) if row < 2 else 0)
+        except tk.TclError:
+            return
 
     def _build_full_left_column(self, left: tk.Misc) -> None:
         left.columnconfigure(1, weight=2, minsize=145)

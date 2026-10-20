@@ -11,6 +11,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Hashable, Literal, Mapping, Sequence, Any
 
+from app.window_layout import is_compact_window
 from app.ui_state_store import UiStateStore
 from core.ui_dispatch import post_to_ui
 
@@ -90,6 +91,9 @@ class Trapezoid:
         self._layout_job: str | None = None
         self._viewport_bind_id: str | None = None
         self._forced_collapsed = False
+        self._responsive_collapsed = False
+        self._responsive_override: bool | None = None
+        self._last_layout_signature: tuple[Any, ...] | None = None
         self._desired_expanded = self.store.get_trapezoid_expanded(state_key, default=False)
         self._owning_area = self._nearest_scroll_area(canvas)
         self._old_scroll_extra: int | None = None
@@ -206,14 +210,26 @@ class Trapezoid:
     def _on_viewport_configure(self, _event: tk.Event | None = None) -> None:
         try:
             width, height = int(self.canvas.winfo_width()), int(self.canvas.winfo_height())
+            root = self.host.winfo_toplevel()
+            root_width, root_height = int(root.winfo_width()), int(root.winfo_height())
         except (tk.TclError, ValueError):
             return
         if width <= 1 or height <= 1:
             return
+        responsive_changed = False
+        if root_width > 1 and root_height > 1:
+            responsive = is_compact_window(root_width, root_height)
+            if responsive != self._responsive_collapsed:
+                self._responsive_collapsed = responsive
+                self._responsive_override = None
+                responsive_changed = True
         group_height = max(1, int(self.floating_group.winfo_reqheight()))
         forced = width < 560 or height < max(300, group_height + 110)
-        if forced != self._forced_collapsed:
+        forced_changed = forced != self._forced_collapsed
+        if forced_changed:
             self._forced_collapsed = forced
+            self._apply_expanded_state()
+        elif responsive_changed:
             self._apply_expanded_state()
         self._queue_layout()
 
@@ -233,12 +249,19 @@ class Trapezoid:
         if persist:
             self._desired_expanded = value
             self.store.set_trapezoid_expanded(self.state_key, value)
+        if self._responsive_collapsed and not self._forced_collapsed:
+            # Small-window auto-collapse is a temporary presentation default.
+            # Explicit user input can still expand it during this compact interval.
+            self._responsive_override = value
         self._apply_expanded_state(requested=value if not persist else None)
 
     def _apply_expanded_state(self, requested: bool | None = None) -> None:
         desired = self._desired_expanded if requested is None else bool(requested)
+        if self._responsive_collapsed:
+            desired = self._responsive_override if self._responsive_override is not None else False
         actual = desired and not self._forced_collapsed
         self._expanded = actual
+        self._last_layout_signature = None
         try:
             self._draw_button()
             if actual:
@@ -264,6 +287,18 @@ class Trapezoid:
             # Placed as a canvas child, this group is pinned to the viewport;
             # it is outside the scrolling content window.
             natural_width = max(1, int(self.floating_group.winfo_reqwidth()))
+            group_height = max(1, int(self.floating_group.winfo_reqheight()))
+            panel_width_request = max(1, int(self.panel.winfo_reqwidth()))
+            panel_height_request = max(1, int(self.panel.winfo_reqheight()))
+            state = getattr(getattr(self.host, "ctx", None), "state", None)
+            signature = (
+                width, height, natural_width, group_height,
+                panel_width_request, panel_height_request, bool(self.expanded),
+                float(getattr(state, "ui_scale", 1.0) or 1.0),
+            )
+            if signature == self._last_layout_signature:
+                return
+            self._last_layout_signature = signature
             group_width = min(natural_width, max(1, width - 16))
             self.floating_group.place(
                 relx=0.5,
@@ -277,7 +312,6 @@ class Trapezoid:
                 cell_width = max(72, (group_width - 104) // max(1, len(bar.steps)))
                 for cell in bar._cells.values():
                     cell.configure(wraplength=cell_width)
-            group_height = max(1, int(self.floating_group.winfo_reqheight()))
             if self.expanded:
                 panel_width = min(max(280, int(self.panel.winfo_reqwidth()) + 20), max(240, width - 24))
                 max_panel_height = max(80, height - group_height - 24)
@@ -323,6 +357,13 @@ class Trapezoid:
 
     def refresh_theme(self) -> None:
         self._draw_button()
+        self._last_layout_signature = None
+        self._queue_layout()
+
+    def refresh_layout(self) -> None:
+        self._last_layout_signature = None
+        self._draw_button()
+        self._on_viewport_configure()
         self._queue_layout()
 
     def destroy(self) -> None:

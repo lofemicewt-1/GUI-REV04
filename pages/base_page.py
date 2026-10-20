@@ -1397,6 +1397,19 @@ class BasePage(ttk.Frame):
         self._active_step_page: Any = None
         self._floating_group: ttk.Frame | None = None
         self._pending_module_step_target: tk.Misc | None = None
+        self._layout_dirty = True
+        self._centered_panels: list[tk.Misc] = []
+        self._layout_children: list[BasePage] = []
+        self._layout_owner: BasePage | None = None
+        ancestor: tk.Misc | None = parent
+        while ancestor is not None:
+            if isinstance(ancestor, BasePage):
+                self._layout_owner = ancestor
+                ancestor._layout_children.append(self)
+                break
+            ancestor = getattr(ancestor, "master", None)
+        self.bind("<Configure>", self._queue_header_layout, add="+")
+        self.bind("<Map>", self._on_page_map, add="+")
 
     @property
     def language(self) -> str:
@@ -2180,8 +2193,75 @@ class BasePage(ttk.Frame):
         except tk.TclError:
             self._header_layout_job = None
 
+    def _on_page_map(self, event: tk.Event | None = None) -> None:
+        if event is not None and event.widget is not self:
+            return
+        if self._layout_dirty:
+            self.refresh_layout()
+
+    def register_centered_panel(self, panel: tk.Misc) -> None:
+        """Center a naturally sized content panel when there is spare width."""
+        if panel not in self._centered_panels:
+            self._centered_panels.append(panel)
+        self._sync_centered_panels()
+
+    def _sync_centered_panels(self) -> None:
+        try:
+            available = int(self.winfo_width())
+        except tk.TclError:
+            return
+        if available <= 1:
+            return
+        live: list[tk.Misc] = []
+        for panel in self._centered_panels:
+            try:
+                if not int(panel.winfo_exists()):
+                    continue
+                live.append(panel)
+                if panel.winfo_manager() != "grid":
+                    continue
+                requested = max(1, int(panel.winfo_reqwidth()))
+                sticky = "n" if available >= requested + 32 else "nsew"
+                if str(panel.grid_info().get("sticky", "")) != sticky:
+                    panel.grid_configure(sticky=sticky)
+            except tk.TclError:
+                continue
+        self._centered_panels = live
+
+    def invalidate_layout(self) -> None:
+        """Mark cached descendants dirty without constructing or activating them."""
+        if self._layout_dirty:
+            return
+        self._layout_dirty = True
+        for child in tuple(self._layout_children):
+            child.invalidate_layout()
+
+    def refresh_layout(self) -> None:
+        """Refresh geometry hooks for the already-built, currently visible page tree."""
+        self._layout_dirty = False
+        self._queue_header_layout()
+        self._sync_centered_panels()
+        for area in tuple(self._vertical_scroll_areas):
+            try:
+                if area.winfo_ismapped():
+                    area._queue_scroll_layout()
+            except tk.TclError:
+                continue
+        trapezoid = getattr(self, "trapezoid", None)
+        if trapezoid is not None:
+            trapezoid.refresh_layout()
+        for child in tuple(self._layout_children):
+            try:
+                if child.winfo_ismapped():
+                    child.refresh_layout()
+                else:
+                    child.invalidate_layout()
+            except tk.TclError:
+                child.invalidate_layout()
+
     def _run_header_layout(self) -> None:
         self._header_layout_job = None
+        self._sync_centered_panels()
         self._sync_title_spacing_widgets()
         self._sync_module_spacing_widgets()
         for header in tuple(self._chrome_headers):
@@ -2691,6 +2771,16 @@ class BasePage(ttk.Frame):
             pass
 
     def destroy(self) -> None:
+        owner = self._layout_owner
+        if owner is not None:
+            try:
+                owner._layout_children.remove(self)
+            except ValueError:
+                pass
+            self._layout_owner = None
+        for child in tuple(self._layout_children):
+            child._layout_owner = None
+        self._layout_children.clear()
         if self._header_layout_job is not None:
             try:
                 self.after_cancel(self._header_layout_job)

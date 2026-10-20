@@ -170,8 +170,10 @@ class WaveformGeneratorPage(BasePage):
             header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
         body = ttk.Frame(self, style="App.TFrame")
+        self._body_layout_frame = body
         body.grid(row=1 if not self.embedded else 0, column=0, sticky="nsew")
         body.columnconfigure(0, weight=0)
+        # Tk grid has no maxsize; waveform column expands within outer content cap.
         body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
 
@@ -367,6 +369,10 @@ class WaveformGeneratorPage(BasePage):
 
         self.refresh_language()
         self._update_waveform_specific_fields()
+
+    def refresh_layout(self) -> None:
+        super().refresh_layout()
+        # Waveform column soft-capped by outer content max; Tk has no grid maxsize.
 
     def _add_labeled_entry(
         self,

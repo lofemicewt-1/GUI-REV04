@@ -18,6 +18,7 @@ from core import animation as anim
 from core.ui_dispatch import UiDispatcher, post_to_ui, cancel_pending_ui_jobs
 from styles.fonts import page_title_weight
 from app.state import AppState
+from app.window_layout import ui_scale_for_width
 from app.ui_state_store import UiStateStore
 from core.status_bus import StatusBus, StatusContext, StatusMessage
 from config.languages import t
@@ -232,6 +233,7 @@ class HomePage(BasePage):
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
         panel.grid(row=1, column=0, sticky="nsew")
         self.main_panel = panel
+        self.register_centered_panel(panel)
         panel.columnconfigure(0, weight=1)
 
         main_title = ttk.Label(panel, style="SectionTitle.TLabel")
@@ -4077,6 +4079,7 @@ class SettingsPage(BasePage):
 
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
         panel.grid(row=1, column=0, sticky="nsew")
+        self.register_centered_panel(panel)
         panel.columnconfigure(1, weight=1)
 
         self.lang_label = ttk.Label(panel, style="Panel.TLabel")
@@ -4196,8 +4199,6 @@ class PiezoApplication:
         initial_height = min(980, max(360, screen_height - 120))
         self.root.geometry(f"{initial_width}x{initial_height}")
         self.root.minsize(480, 320)
-        self._base_width = 1700
-        self._base_height = 980
         self._resize_after: str | None = None
         self._last_visual_scale = 1.0
         self._last_root_size: tuple[int, int] = (0, 0)
@@ -4426,14 +4427,15 @@ class PiezoApplication:
                 self._apply_visual_settings()
 
     def _window_scale(self) -> float:
-        width = max(1, self.root.winfo_width())
-        height = max(1, self.root.winfo_height())
-        if width <= 1 or height <= 1:
-            return 1.0
-        ratio = min(width / self._base_width, height / self._base_height)
-        return max(0.85, min(1.25, ratio))
+        return ui_scale_for_width(max(1, self.root.winfo_width()))
 
-    def _apply_visual_settings(self, *, refresh_widget_fonts: bool = True, scale: float | None = None) -> None:
+    def _apply_visual_settings(
+        self,
+        *,
+        refresh_widget_fonts: bool = True,
+        scale: float | None = None,
+        refresh_navigation_theme: bool = True,
+    ) -> None:
         if scale is None:
             scale = self._window_scale()
         previous_theme = getattr(self.root, "_piezo_theme", None)
@@ -4447,9 +4449,14 @@ class PiezoApplication:
             self._last_applied_font_size = self.state.font_size
             self.colors = apply_theme(self.root, self.state.theme, self.state.font_size, scale)
             self.ctx.colors = self.colors
-            self.navigation.refresh_theme()
-            if refresh_widget_fonts:
-                self._refresh_widget_fonts()
+            if refresh_navigation_theme:
+                self.navigation.refresh_theme()
+                if refresh_widget_fonts:
+                    self._refresh_widget_fonts()
+            else:
+                if refresh_widget_fonts:
+                    self._refresh_widget_fonts()
+                self.navigation.refresh_layout()
         finally:
             if applying_theme and nav is not None:
                 self._schedule_brand_settle(nav)
@@ -4492,21 +4499,28 @@ class PiezoApplication:
         if size == self._last_root_size:
             return
         self._last_root_size = size
-        nav = getattr(self, 'navigation', None)
-        if nav is not None and nav._preparation is not None:
-            nav.cancel_pending_navigation()
         if self._resize_after is not None:
             try:
                 self.root.after_cancel(self._resize_after)
             except tk.TclError:
                 pass
-        self._resize_after = self.root.after(16, self._refresh_after_resize)
+        self._resize_after = self.root.after(32, self._refresh_after_resize)
 
     def _refresh_after_resize(self) -> None:
         self._resize_after = None
         nav = getattr(self, "navigation", None)
         if nav is not None:
-            nav._sync_content_window()
+            scale = self._window_scale()
+            if scale != float(getattr(self.state, "ui_scale", 1.0) or 1.0):
+                # Apply font and spacing tiers only when crossing a breakpoint.
+                # The resize path updates layout but never activates or refills a page.
+                self._apply_visual_settings(
+                    refresh_widget_fonts=True,
+                    scale=scale,
+                    refresh_navigation_theme=False,
+                )
+            else:
+                nav.refresh_layout()
             if getattr(self.state, "current_page", "") == "home":
                 nav._align_home_panel()
 

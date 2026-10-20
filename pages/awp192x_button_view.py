@@ -15,6 +15,7 @@ from pages.adc_legend import AdcLegend
 from pages.awp192x_realtime import AWP192xADCVoltageWindow
 from pages.waveform_generator import WaveformGeneratorPage, WAVEFORM_WRITE_POINT_OPTIONS
 from pages.waveform_preview import compact_preview, draw_omissions
+from app.window_layout import scaled_waveform_max_width
 
 
 def draw_timed_waveform(canvas, colors, tr, segments, point_us):
@@ -135,6 +136,7 @@ class ButtonWaveformPage(WaveformGeneratorPage):
 
     def _build_ui(self):
         self.columnconfigure(0, weight=0, minsize=550)
+        # Tk grid has no maxsize; waveform column expands within outer content cap.
         self.columnconfigure(1, weight=1, minsize=380)
         self.rowconfigure(0, weight=1)
         self.controls = ttk.Frame(self, style="Panel.TFrame", padding=8)
@@ -208,6 +210,7 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             self._buttons[key] = btn
         self.verify_waveform_button = self._buttons["verify_written_waveform"]
         plot = ttk.Frame(self, style="Panel.TFrame", padding=8)
+        self.plot_panel = plot
         plot.grid(row=0, column=1, sticky="nsew")
         plot.columnconfigure(0, weight=1)
         plot.rowconfigure(1, weight=1)
@@ -238,8 +241,56 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             variable.trace_add("write", lambda *_: self._on_serial_param_changed())
             variable.trace_add("write", lambda *_: self.owner._on_button_progress_inputs_changed())
         self.canvas.bind("<Configure>", lambda _: self._redraw_active_plot())
+        self._button_layout_job: str | None = None
+        self._button_layout_signature: tuple[Any, ...] | None = None
+        self.bind("<Configure>", self._queue_button_layout, add="+")
         self.refresh_language()
         self._update_waveform_specific_fields()
+
+    def _queue_button_layout(self, _event: tk.Event | None = None) -> None:
+        if self._button_layout_job is not None:
+            return
+        try:
+            self._button_layout_job = self.after_idle(self._reflow_button_layout)
+        except tk.TclError:
+            self._button_layout_job = None
+
+    def _reflow_button_layout(self) -> None:
+        self._button_layout_job = None
+        try:
+            available = int(self.winfo_width())
+            if available <= 1:
+                return
+            scale = float(getattr(self.ctx.state, "ui_scale", 1.0) or 1.0)
+            side_by_side = available >= max(
+                900,
+                int(self.controls.winfo_reqwidth()) + int(self.plot_panel.winfo_reqwidth()) + 20,
+            )
+            signature = (side_by_side, scaled_waveform_max_width(scale))
+            if signature == self._button_layout_signature:
+                return
+            self._button_layout_signature = signature
+            if side_by_side:
+                self.columnconfigure(0, weight=0, minsize=550)
+                self.columnconfigure(1, weight=1, minsize=380)
+                self.rowconfigure(0, weight=1)
+                self.rowconfigure(1, weight=0)
+                self.controls.grid_configure(row=0, column=0, columnspan=1, sticky="nsew")
+                self.plot_panel.grid_configure(row=0, column=1, columnspan=1, sticky="nsew")
+            else:
+                self.columnconfigure(0, weight=1, minsize=0)
+                self.columnconfigure(1, weight=0, minsize=0)
+                self.rowconfigure(0, weight=0)
+                self.rowconfigure(1, weight=1)
+                self.controls.grid_configure(row=0, column=0, columnspan=2, sticky="ew")
+                self.plot_panel.grid_configure(row=1, column=0, columnspan=2, sticky="nsew")
+        except tk.TclError:
+            return
+
+    def refresh_layout(self) -> None:
+        super().refresh_layout()
+        self._button_layout_signature = None
+        self._queue_button_layout()
 
     def select_source(self, source):
         self._plot_mode = "current"
@@ -454,6 +505,11 @@ class ButtonModeView:
             help_key="awp192x_help_button_params",
         )
         yield
+        self._button_adc_split = middle
+        self._button_adc_panels = (diagram_section, params_section)
+        self._button_adc_split_job = None
+        self._button_adc_split_signature = None
+        middle.bind("<Configure>", self._queue_button_adc_split_reflow, add="+")
         for col in range(4):
             params.columnconfigure(col, weight=1)
         self._button_field(params, 0, 0, "press_threshold", self.press_threshold_var, value=self.press_threshold_hex_var)

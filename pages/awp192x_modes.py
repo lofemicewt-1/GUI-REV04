@@ -1720,6 +1720,43 @@ class ButtonModePage(ButtonModeView, BasePage):
         self._refresh_preset_tooltip_theme()
         self._refresh_button_view()
 
+    def _queue_button_adc_split_reflow(self, _event: tk.Event | None = None) -> None:
+        if getattr(self, "_button_adc_split_job", None) is not None:
+            return
+        try:
+            self._button_adc_split_job = self.after_idle(self._reflow_button_adc_split)
+        except tk.TclError:
+            self._button_adc_split_job = None
+
+    def _reflow_button_adc_split(self) -> None:
+        self._button_adc_split_job = None
+        split = getattr(self, "_button_adc_split", None)
+        panels = getattr(self, "_button_adc_panels", ())
+        if split is None or len(panels) != 2:
+            return
+        try:
+            width = int(split.winfo_width())
+            if width <= 1:
+                return
+            legend, settings = panels
+            measured = int(legend.winfo_reqwidth()) + int(settings.winfo_reqwidth()) + 24
+            side_by_side = width >= max(900, measured)
+            if side_by_side == self._button_adc_split_signature:
+                return
+            self._button_adc_split_signature = side_by_side
+            if side_by_side:
+                split.columnconfigure(0, weight=2, uniform="adc_sections")
+                split.columnconfigure(1, weight=3, uniform="adc_sections")
+                legend.grid_configure(row=0, column=0, columnspan=1, sticky="nsew", padx=(0, 10), pady=0)
+                settings.grid_configure(row=0, column=1, columnspan=1, sticky="nsew", padx=0, pady=0)
+            else:
+                split.columnconfigure(0, weight=1, uniform="")
+                split.columnconfigure(1, weight=0, uniform="")
+                legend.grid_configure(row=0, column=0, columnspan=2, sticky="ew", padx=0, pady=(0, 8))
+                settings.grid_configure(row=1, column=0, columnspan=2, sticky="ew", padx=0, pady=0)
+        except tk.TclError:
+            return
+
     def destroy(self) -> None:
         self._button_adc_generation += 1
         if hasattr(self, "_sense_live_generation"):
@@ -4754,6 +4791,7 @@ class FullModePage(ButtonModePage):
         body = ttk.Frame(self, style="App.TFrame")
         yield
         body.grid(row=1, column=0, sticky="nsew")
+        self._full_mode_body = body
         body.columnconfigure(0, weight=3, uniform="full_mode_cols")
         body.columnconfigure(1, weight=4, uniform="full_mode_cols")
         body.columnconfigure(2, weight=3, uniform="full_mode_cols")
@@ -4815,6 +4853,9 @@ class FullModePage(ButtonModePage):
 
         right = ttk.Frame(body, style="Panel.TFrame", padding=14)
         right.grid(row=0, column=2, sticky="nsew")
+        self._full_mode_panels = (left_panel, middle, right)
+        self._full_mode_layout_signature = None
+        body.bind("<Configure>", self._queue_full_mode_reflow, add="+")
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=3)
         right.rowconfigure(1, weight=2)
@@ -5631,6 +5672,59 @@ class FullModePage(ButtonModePage):
         for label, key in getattr(self, "_full_direct_labels", []):
             label.configure(text=self.tr(key))
         attach_glossary_tooltips(self, self.tr, self._tooltips)
+
+    def _queue_full_mode_reflow(self, _event: tk.Event | None = None) -> None:
+        if getattr(self, "_full_mode_layout_job", None) is not None:
+            return
+        try:
+            self._full_mode_layout_job = self.after_idle(self._reflow_full_mode_columns)
+        except tk.TclError:
+            self._full_mode_layout_job = None
+
+    def _reflow_full_mode_columns(self) -> None:
+        self._full_mode_layout_job = None
+        body = getattr(self, "_full_mode_body", None)
+        panels = getattr(self, "_full_mode_panels", ())
+        if body is None or len(panels) != 3:
+            return
+        try:
+            width = int(body.winfo_width())
+            if width <= 1:
+                return
+            side_by_side = width >= 1160
+            if side_by_side == self._full_mode_layout_signature:
+                return
+            self._full_mode_layout_signature = side_by_side
+            if side_by_side:
+                for column, weight in enumerate((3, 4, 3)):
+                    body.columnconfigure(column, weight=weight, uniform="full_mode_cols")
+                    panels[column].grid_configure(
+                        row=0,
+                        column=column,
+                        columnspan=1,
+                        sticky="nsew",
+                        padx=(0, 12) if column < 2 else 0,
+                        pady=0,
+                    )
+                for row in (1, 2):
+                    body.rowconfigure(row, weight=0)
+                body.rowconfigure(0, weight=1)
+            else:
+                body.columnconfigure(0, weight=1, uniform="")
+                body.columnconfigure(1, weight=0, uniform="")
+                body.columnconfigure(2, weight=0, uniform="")
+                for row, panel in enumerate(panels):
+                    body.rowconfigure(row, weight=1)
+                    panel.grid_configure(
+                        row=row,
+                        column=0,
+                        columnspan=3,
+                        sticky="nsew",
+                        padx=0,
+                        pady=(0, 12) if row < 2 else 0,
+                    )
+        except tk.TclError:
+            return
 
     def _style_only_action(self) -> None:
         pass
@@ -6544,6 +6638,7 @@ class PumpModePage(BasePage):
         panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
         panel.grid(row=1, column=0, sticky="nsew")
         yield
+        self.register_centered_panel(panel)
         panel.columnconfigure(1, weight=1)
 
         self.make_module_title_row(

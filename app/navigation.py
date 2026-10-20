@@ -11,6 +11,7 @@ from typing import Any, Callable
 from core import animation as anim
 from core.lazy_pages import LazyPages
 from app.sidebar_motion import SidebarMotion
+from app.window_layout import scaled_content_max_width
 
 from config.app_info import APP_VERSION
 from config.languages import t
@@ -500,6 +501,10 @@ class Navigation:
         page = self.pages[name]
         current_name = self.ctx.state.current_page
         if current_name == name and page.winfo_ismapped():
+            if getattr(page, "_layout_dirty", False):
+                refresh = getattr(page, "refresh_layout", None)
+                if callable(refresh):
+                    refresh()
             self._sync_content_window()
             return
         if current_name != name:
@@ -514,6 +519,10 @@ class Navigation:
         page.grid()
         page.lift()
         self.ctx.state.current_page = name
+        if getattr(page, "_layout_dirty", False):
+            refresh = getattr(page, "refresh_layout", None)
+            if callable(refresh):
+                refresh()
         focus = self.root.focus_get()
         if focus is not None and self._is_content_widget(focus):
             self.buttons.get(name, self._settings_button).focus_set()
@@ -590,16 +599,28 @@ class Navigation:
         self._title_canvas.grid_configure(pady=(0, self._scaled(8)))
         self.content_canvas.configure(bg=self.ctx.colors["bg"], yscrollincrement=1)
         self._relayout_sidebar()
+        self._refresh_settings_button()
         self._brand_state = None
         if not self._suspend_brand_configure:
             self._redraw_sidebar_brand()
-        for page in self.pages.built_values():
-            sync = getattr(page, "_sync_header_chrome", None)
-            if callable(sync):
-                sync()
-            logos = getattr(page, "_refresh_header_logos", None)
-            if callable(logos):
-                logos()
+        current_name = getattr(self.ctx.state, "current_page", "")
+        for name, page in ((name, dict.get(self.pages, name)) for name in self.pages.keys()):
+            if page is None:
+                continue
+            if name == current_name:
+                refresh = getattr(page, "refresh_layout", None)
+                if callable(refresh):
+                    refresh()
+                sync = getattr(page, "_sync_header_chrome", None)
+                if callable(sync):
+                    sync()
+                logos = getattr(page, "_refresh_header_logos", None)
+                if callable(logos):
+                    logos()
+            else:
+                invalidate = getattr(page, "invalidate_layout", None)
+                if callable(invalidate):
+                    invalidate()
         self._sync_content_window()
         self._sync_sidebar_scroll_region()
         try:
@@ -928,7 +949,8 @@ class Navigation:
             if not self._page_visible(name):
                 btn.grid_remove()
                 continue
-            pady = (0, 3) if index == 0 else 3
+            gap = self._scaled(3)
+            pady = (0, gap) if index == 0 else gap
             btn.grid(row=row, column=0, sticky="ew", pady=pady)
             row += 1
             if name == self._mode_anchor and self._mode_visible and self._mode_sidebar_allowed():
@@ -1321,12 +1343,12 @@ class Navigation:
             current_name = getattr(self.ctx.state, "current_page", "")
             page = dict.get(self.pages, current_name)
             padx, pady = self._pad(16, 8)
-            required_width = max(1, page.winfo_reqwidth()+2*padx) if page is not None else 1
             required_height = max(1, page.winfo_reqheight()+2*pady) if page is not None else 1
             pin = bool(getattr(page, "pin_window_footer", False)) if page is not None else False
-            window_width = canvas_width if pin else max(canvas_width, required_width)
+            window_width = scaled_content_max_width(self._scale(), canvas_width)
             window_height = canvas_height if pin else max(canvas_height, required_height)
-            state = (canvas_width, canvas_height, required_width, required_height, current_name, pin)
+            window_x = max(0, (canvas_width - window_width) // 2)
+            state = (canvas_width, canvas_height, window_width, window_height, window_x, current_name, pin)
             if state == self._last_canvas_state:
                 return
             self._last_canvas_state = state
@@ -1338,10 +1360,15 @@ class Navigation:
                                  for key in ("width", "height"))
             if current_size != (window_width, window_height):
                 self.content_canvas.itemconfigure(self.content_window, width=window_width, height=window_height)
-            region = (0, 0, window_width, window_height)
+            current_coords = tuple(float(value) for value in self.content_canvas.coords(self.content_window))
+            if current_coords != (float(window_x), 0.0):
+                self.content_canvas.coords(self.content_window, window_x, 0)
+            # The application owns one outer vertical viewport. Pages reflow
+            # within its clamped width; they do not grow an outer x-scrollbar.
+            region = (0, 0, canvas_width, window_height)
             if tuple(map(float, self.content_canvas.tk.splitlist(self.content_canvas.cget("scrollregion")))) != region:
                 self.content_canvas.configure(scrollregion=region)
-            self._update_scrollbars((not pin) and required_width > canvas_width, (not pin) and required_height > canvas_height)
+            self._update_scrollbars(False, (not pin) and required_height > canvas_height)
         except tk.TclError:
             pass
 

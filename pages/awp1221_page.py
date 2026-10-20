@@ -1231,6 +1231,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
+        self._full_layout_body = body
         # Keep the ADC controls and waveform/log area close to the same width.
         body.columnconfigure(0, weight=1, uniform="awp1221_full_mode_panels")
         body.columnconfigure(1, weight=1, uniform="awp1221_full_mode_panels")
@@ -1297,6 +1298,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         right.columnconfigure(0, weight=1)
         right.rowconfigure(1, weight=3)
         right.rowconfigure(2, weight=2)
+        self._full_layout_panels = (left_scroll, right)
+        self._full_layout_signature = None
+        body.bind("<Configure>", self._queue_full_layout_reflow, add="+")
         yield
         _basic_title_row, _basic_title = self.make_module_title_row(
             right,
@@ -1426,6 +1430,11 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             help_key="awp1221_help_adc_params",
         )
         adc_panel_section.grid_configure(column=1, sticky="nsew")
+        self._button_adc_split = middle
+        self._button_adc_panels = (diagram_section, adc_panel_section)
+        self._button_adc_split_job = None
+        self._button_adc_split_signature = None
+        middle.bind("<Configure>", self._queue_button_adc_split_reflow, add="+")
         adc_panel.columnconfigure(0, weight=1)
         yield
         yield from self._build_button_adc_panel_steps(adc_panel, row=0)
@@ -1803,6 +1812,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._waveform_selector_shell = ttk.Frame(parent, style="Panel.TFrame")
         self._waveform_selector_shell.grid(row=0, column=0, columnspan=2, sticky="nsew")
         self._waveform_selector_shell.columnconfigure(0, weight=1)
+        # Tk grid has no maxsize; waveform column expands within outer content cap.
+        self._waveform_selector_shell.columnconfigure(1, weight=1)
         yield
         self._waveform_selector_shell.columnconfigure(1, weight=1)
         self._waveform_selector_shell.rowconfigure(1, weight=1)
@@ -6262,6 +6273,47 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             child.grid_configure(row=index // 2, column=index % 2, sticky="w",
                                  padx=(0, 8), pady=2)
 
+    def _queue_full_layout_reflow(self, _event: tk.Event | None = None) -> None:
+        if getattr(self, "_full_layout_job", None) is not None:
+            return
+        try:
+            self._full_layout_job = self.after_idle(self._reflow_full_layout)
+        except tk.TclError:
+            self._full_layout_job = None
+
+    def _reflow_full_layout(self) -> None:
+        self._full_layout_job = None
+        body = getattr(self, "_full_layout_body", None)
+        panels = getattr(self, "_full_layout_panels", ())
+        if body is None or len(panels) != 2:
+            return
+        try:
+            width = int(body.winfo_width())
+            if width <= 1:
+                return
+            left, right = panels
+            minimum = max(1040, int(left.winfo_reqwidth()) + int(right.winfo_reqwidth()) + 32)
+            side_by_side = width >= minimum
+            if side_by_side == self._full_layout_signature:
+                return
+            self._full_layout_signature = side_by_side
+            if side_by_side:
+                body.columnconfigure(0, weight=1, uniform="awp1221_full_mode_panels")
+                body.columnconfigure(1, weight=1, uniform="awp1221_full_mode_panels")
+                body.rowconfigure(0, weight=1)
+                body.rowconfigure(1, weight=0)
+                left.grid_configure(row=0, column=0, columnspan=1, sticky="nsew", padx=(0, 12), pady=0)
+                right.grid_configure(row=0, column=1, columnspan=1, sticky="nsew", padx=0, pady=0)
+            else:
+                body.columnconfigure(0, weight=1, uniform="")
+                body.columnconfigure(1, weight=0, uniform="")
+                body.rowconfigure(0, weight=0)
+                body.rowconfigure(1, weight=1)
+                left.grid_configure(row=0, column=0, columnspan=2, sticky="ew", padx=0, pady=(0, 12))
+                right.grid_configure(row=1, column=0, columnspan=2, sticky="nsew", padx=0, pady=0)
+        except tk.TclError:
+            return
+
     def _queue_button_adc_reflow(self, section: ttk.Frame, _event: tk.Event | None = None) -> None:
         if (
             getattr(self, "_button_adc_reflow_job", None) is not None
@@ -6281,6 +6333,43 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self._button_adc_reflow_job = self.after_idle(run)
         except tk.TclError:
             self._button_adc_reflow_job = None
+
+    def _queue_button_adc_split_reflow(self, _event: tk.Event | None = None) -> None:
+        if getattr(self, "_button_adc_split_job", None) is not None:
+            return
+        try:
+            self._button_adc_split_job = self.after_idle(self._reflow_button_adc_split)
+        except tk.TclError:
+            self._button_adc_split_job = None
+
+    def _reflow_button_adc_split(self) -> None:
+        self._button_adc_split_job = None
+        split = getattr(self, "_button_adc_split", None)
+        panels = getattr(self, "_button_adc_panels", ())
+        if split is None or len(panels) != 2:
+            return
+        try:
+            width = int(split.winfo_width())
+            if width <= 1:
+                return
+            legend, settings = panels
+            measured_minimum = int(legend.winfo_reqwidth()) + int(settings.winfo_reqwidth()) + 28
+            side_by_side = width >= max(920, measured_minimum)
+            if side_by_side == getattr(self, "_button_adc_split_signature", None):
+                return
+            self._button_adc_split_signature = side_by_side
+            if side_by_side:
+                split.columnconfigure(0, weight=2, uniform="button_adc_panels")
+                split.columnconfigure(1, weight=3, uniform="button_adc_panels")
+                legend.grid_configure(row=0, column=0, columnspan=1, sticky="nsew", padx=(0, 10), pady=0)
+                settings.grid_configure(row=0, column=1, columnspan=1, sticky="nsew", padx=0, pady=0)
+            else:
+                split.columnconfigure(0, weight=1, uniform="")
+                split.columnconfigure(1, weight=0, uniform="")
+                legend.grid_configure(row=0, column=0, columnspan=2, sticky="ew", padx=0, pady=(0, 8))
+                settings.grid_configure(row=1, column=0, columnspan=2, sticky="ew", padx=0, pady=0)
+        except tk.TclError:
+            return
 
     def _button_adc_decision_width(self, section: ttk.Frame) -> int:
         try:
@@ -7743,6 +7832,11 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             except tk.TclError:
                 pass
 
+    def refresh_layout(self) -> None:
+        super().refresh_layout()
+        # Waveform column width is soft-capped by the outer content max width;
+        # Tk grid_columnconfigure has no maxsize option.
+
 
 class AWP1221Page(BasePage):
     page_name = "awp1221"
@@ -7802,7 +7896,7 @@ class AWP1221Page(BasePage):
         # bottom controls at 640x480 or when the user enlarged the font.
         self.mode_scroll, mode_container = self.make_vertical_scroll_area(
             self,
-            horizontal=True,
+            horizontal=False,
             propagate_height=True,
             clamp_width=True,
         )

@@ -211,7 +211,9 @@ class AWP1921AWP1923Page(BasePage):
         header = self.make_title(self, "awp1921_1923")
         header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
 
-        self.mode_scroll, self.mode_container = self.make_vertical_scroll_area(self, propagate_width=True)
+        self.mode_scroll, self.mode_container = self.make_vertical_scroll_area(
+            self, horizontal=False, propagate_width=True, clamp_width=True,
+        )
         self.mode_scroll.grid(row=1, column=0, sticky="nsew")
         yield
 
