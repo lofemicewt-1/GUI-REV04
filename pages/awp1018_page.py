@@ -2303,7 +2303,17 @@ class AWP1018NormalModePage(BasePage):
             width = int(split.winfo_width())
             if width <= 1:
                 return
-            side_by_side = width >= legend.winfo_reqwidth() + editor.winfo_reqwidth() + 24
+            # Fixed thresholds avoid measured-reqwidth feedback with AdcLegend redraws.
+            previous = getattr(self, "_adc_split_signature", None)
+            if previous is True:
+                side_by_side = width >= 980
+            elif previous is False:
+                side_by_side = width >= 1180
+            else:
+                side_by_side = width >= 1100
+            if side_by_side == previous:
+                return
+            self._adc_split_signature = side_by_side
             if side_by_side:
                 legend.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
                 editor.grid(row=0, column=1, sticky="nsew")
@@ -2876,13 +2886,6 @@ class AWP1018NormalModePage(BasePage):
         if stage not in getattr(self, "_stage_frames", {}):
             return
         self._show_stage(stage)
-        progress = getattr(self, "step_progress", None)
-        scroll_to_step = getattr(progress, "scroll_to_step", None)
-        if callable(scroll_to_step):
-            try:
-                scroll_to_step("adc")
-            except (tk.TclError, KeyError, TypeError, ValueError):
-                pass
 
     def _on_stage_group_start_changed(self, stage: str, group: int) -> None:
         variables = self.stage_group_start_vars.get(stage)

@@ -93,25 +93,37 @@ class AdcLegendClickTests(unittest.TestCase):
 
         self.assertEqual(activated, ["Stage1"])
 
-    def test_rule_table_stage_cell_click_dispatches_and_has_hand_cursor(self):
+    def test_whole_rule_table_row_clicks_and_highlights_only_that_row(self):
         root = self.make_root()
         activated = []
         legend = self.make_legend(root, activated.append)
-        cell = next(
-            child
-            for child in legend._table.winfo_children()
-            if str(child.grid_info().get("row")) == "1" and str(child.grid_info().get("column")) == "0"
-        )
+        row = legend._rule_rows[1]
+        other = legend._rule_rows[2]
+        background = row[0].cget("background")
+        for cell in row:
+            cell.event_generate("<Enter>", x=2, y=2)
+            root.update_idletasks()
+            root.update()
+            self.assertTrue(all(str(item.cget("cursor")) == "hand2" for item in row))
+            self.assertTrue(all(item.cget("background") != background for item in row))
+            # Exclusive hover: only the active row stays tinted.
+            self.assertTrue(all(item.cget("background") == background for item in other))
+            cell.event_generate("<Button-1>", x=2, y=2)
+            root.update_idletasks()
+            root.update()
+            cell.event_generate("<Leave>", x=2, y=2)
+            root.update_idletasks()
+            root.update()
+            self.assertTrue(all(str(item.cget("cursor")) == "" for item in row))
+            self.assertTrue(all(item.cget("background") == background for item in row))
+        self.assertEqual(activated, ["Stage0"] * 4)
 
-        cell.event_generate("<Enter>")
-        root.update()
-        self.assertEqual(str(cell.cget("cursor")), "hand2")
-        cell.event_generate("<Button-1>")
-        root.update()
-        self.assertEqual(activated, ["Stage0"])
-        cell.event_generate("<Leave>")
-        root.update()
-        self.assertEqual(str(cell.cget("cursor")), "")
+    def assert_adc_target_is_legend(self, page, key):
+        # Resolve through the same metadata path used by scroll_to_step.
+        progress = page.step_progress
+        metadata = progress._module_targets(page)
+        ordinal = progress._data[key].spec.ordinal
+        self.assertIs(metadata[ordinal]["target"], page.adc_legend.canvas)
 
     def test_canvas_stage_hover_uses_hand_cursor(self):
         root = self.make_root()
@@ -148,7 +160,7 @@ class AdcLegendClickTests(unittest.TestCase):
         page._activate_button_stage_from_legend("Stage2")
 
         page._show_button_stage.assert_called_once_with(1)
-        page.step_progress.scroll_to_step.assert_called_once_with("adc")
+        page.step_progress.scroll_to_step.assert_not_called()
 
     def test_awp1018_legend_callback_selects_built_stage(self):
         page = object.__new__(AWP1018NormalModePage)
@@ -160,7 +172,7 @@ class AdcLegendClickTests(unittest.TestCase):
         page._activate_stage_from_legend("Stage4")
 
         page._show_stage.assert_called_once_with("Stage1")
-        page.step_progress.scroll_to_step.assert_called_once_with("adc")
+        page.step_progress.scroll_to_step.assert_not_called()
 
     def test_awp192x_legend_callback_activates_press_or_release_settings(self):
         page = object.__new__(ButtonModeView)
@@ -170,7 +182,7 @@ class AdcLegendClickTests(unittest.TestCase):
         page._activate_button_adc_stage("Stage1")
         self.assertEqual(page._active_adc_stage_id, "Stage1")
         page._button_adc_stage_fields["Stage1"].focus_set.assert_called_once_with()
-        page.step_progress.scroll_to_step.assert_called_once_with("config")
+        page.step_progress.scroll_to_step.assert_not_called()
 
         page._activate_button_adc_stage("Stage2")
         self.assertEqual(page._active_adc_stage_id, "Stage1")
@@ -183,6 +195,7 @@ class AdcLegendClickTests(unittest.TestCase):
         page = host.mode_pages["button_mode"]
         app.root.update()
 
+        self.assert_adc_target_is_legend(page, "adc")
         self.assertTrue(callable(page.adc_legend._on_stage_activate))
         page.adc_legend.activate_stage("Stage1")
         app.root.update_idletasks()
@@ -196,6 +209,7 @@ class AdcLegendClickTests(unittest.TestCase):
         page = host.mode_pages["awp1018_normal_mode"]
         app.root.update()
 
+        self.assert_adc_target_is_legend(page, "adc")
         self.assertTrue(callable(page.adc_legend._on_stage_activate))
         page.adc_legend.activate_stage("Stage1")
         app.root.update_idletasks()
@@ -210,6 +224,7 @@ class AdcLegendClickTests(unittest.TestCase):
         page = host.mode_pages["button_mode"]
         app.root.update()
 
+        self.assert_adc_target_is_legend(page, "config")
         self.assertTrue(callable(page.adc_legend._on_stage_activate))
         field = page._button_adc_stage_fields["Stage1"]
         with mock.patch.object(field, "focus_set") as focus_set:

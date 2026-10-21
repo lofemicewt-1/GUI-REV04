@@ -2199,13 +2199,6 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if stage_index not in frames or stage_index >= len(getattr(self, "_button_stage_vars", ())):
             return
         self._show_button_stage(stage_index)
-        progress = getattr(self, "step_progress", None)
-        scroll_to_step = getattr(progress, "scroll_to_step", None)
-        if callable(scroll_to_step):
-            try:
-                scroll_to_step("adc")
-            except (tk.TclError, KeyError, TypeError, ValueError):
-                pass
 
     def _read_adc_value(self, register: int, device_addr: int | None = None) -> int:
         address = self.device_addr() if device_addr is None else device_addr
@@ -6358,9 +6351,15 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             if width <= 1:
                 return
             legend, settings = panels
-            measured_minimum = int(legend.winfo_reqwidth()) + int(settings.winfo_reqwidth()) + 28
-            side_by_side = width >= max(920, measured_minimum)
-            if side_by_side == getattr(self, "_button_adc_split_signature", None):
+            previous = getattr(self, "_button_adc_split_signature", None)
+            # Fixed thresholds: measured reqwidth fed back through legend redraws.
+            if previous is True:
+                side_by_side = width >= 980
+            elif previous is False:
+                side_by_side = width >= 1180
+            else:
+                side_by_side = width >= max(1100, 920)
+            if side_by_side == previous:
                 return
             self._button_adc_split_signature = side_by_side
             if side_by_side:

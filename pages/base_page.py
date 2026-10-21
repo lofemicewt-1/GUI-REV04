@@ -1649,6 +1649,11 @@ class BasePage(ttk.Frame):
         self._refresh_module_title(self._module_title_bindings[-1])
         if step is not None:
             metadata_target = self._pending_module_step_target
+            # ADC navigation starts at the diagram; Stage activation only edits settings.
+            if title_key in {"awp1221_button_adc_settings", "awp1018_adc_threshold_detection"}:
+                legend = getattr(self, "adc_legend", None)
+                if legend is not None:
+                    metadata_target = legend.canvas
             self._module_step_metadata.append({
                 "page": self,
                 "ordinal": int(step),

@@ -1925,9 +1925,14 @@ class ButtonModePage(ButtonModeView, BasePage):
             if width <= 1:
                 return
             legend, settings = panels
-            measured = int(legend.winfo_reqwidth()) + int(settings.winfo_reqwidth()) + 24
-            side_by_side = width >= max(900, measured)
-            if side_by_side == self._button_adc_split_signature:
+            previous = self._button_adc_split_signature
+            if previous is True:
+                side_by_side = width >= 960
+            elif previous is False:
+                side_by_side = width >= 1160
+            else:
+                side_by_side = width >= 1080
+            if side_by_side == previous:
                 return
             self._button_adc_split_signature = side_by_side
             if side_by_side:

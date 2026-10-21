@@ -5,7 +5,9 @@ import tkinter as tk
 from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+from tkinter import font as tkfont
+from pages import adc_legend as legend_module
 
 from pages.adc_legend import AdcLegend
 from pages.awp1018_page import AWP1018NormalModePage
@@ -86,6 +88,65 @@ class AdcLegendRenderingTests(unittest.TestCase):
         )
         root.update()
         self.assertEqual(len(legend.canvas.find_withtag("transition")), 3)
+
+    def test_connector_image_cache_and_native_fallback(self):
+        root = self.make_root()
+        legend = AdcLegend(root, self.translate, get_colors("light"))
+        legend.pack(fill="x")
+        legend.set_rules([
+            dict(id="Stage0", condition="press", threshold=1, target="Stage1"),
+            dict(id="Stage1", condition="release", threshold=0, target="Stage0"),
+        ], {})
+        root.update()
+        if legend_module.ImageTk is not None:
+            self.assertEqual(len(legend.canvas.find_withtag("connector_image")), 1)
+            photo = legend._connector_photo
+            legend._render_diagram()
+            self.assertIs(legend._connector_photo, photo)
+            image_item = legend.canvas.find_withtag("connector_image")[0]
+            self.assertEqual(legend.canvas.find_all()[0], image_item)
+            self.assertTrue(all(legend.canvas.itemcget(item, "state") == "hidden"
+                                for item in legend.canvas.find_withtag("transition")))
+        with patch.object(legend_module, "ImageTk", None):
+            legend._diagram_signature = None
+            legend._render_locked_width = None
+            legend._connector_cache = None
+            legend._render_diagram()
+            self.assertFalse(legend.canvas.find_withtag("connector_image"))
+            for item in legend.canvas.find_withtag("transition"):
+                self.assertNotEqual(legend.canvas.itemcget(item, "state"), "hidden")
+                self.assertEqual(legend.canvas.itemcget(item, "smooth"), "true")
+                self.assertGreaterEqual(int(legend.canvas.itemcget(item, "splinesteps")), 36)
+
+        if legend_module.ImageTk is not None:
+            legend._diagram_signature = None
+            legend._render_locked_width = None
+            legend._connector_cache = None
+            legend._render_diagram()
+            self.assertEqual(len(legend.canvas.find_withtag("connector_image")), 1)
+            self.assertIsNotNone(legend._connector_photo)
+
+    def test_measured_rule_columns_fit_at_requested_window_widths(self):
+        from config.languages import t
+
+        root = self.make_root()
+        legend = AdcLegend(root, lambda key, **kw: t("zh", key, **kw), get_colors("light"))
+        legend.pack(fill="x")
+        legend.set_rules([
+            dict(id="Stage0", condition="press", threshold=-128, unit="ADC · 高 / 12 位",
+                 waveform="正常振动", target="Stage1"),
+            dict(id="Stage1", condition="release", threshold=128, unit="ADC · 低 / 12 位",
+                 waveform="强振动", target="Stage0"),
+        ], {"Stage0": ["通道 1"]}, preview_stage="Stage0")
+        for width in (1024, 1366, 1920):
+            root.geometry(f"{width}x720")
+            root.update()
+            for cell in legend._table.winfo_children():
+                column = int(cell.grid_info()["column"])
+                font = tkfont.Font(root=root, font=cell.cget("font"))
+                self.assertLessEqual(font.measure(cell.cget("text")) + 16,
+                                     legend._column_widths[column])
+                self.assertLessEqual(cell.winfo_x() + cell.winfo_width(), legend._table.winfo_width())
 
     def test_invalid_conditions_and_thresholds_render_as_unknown(self):
         root = self.make_root()

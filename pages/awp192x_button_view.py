@@ -791,13 +791,6 @@ class ButtonModeView:
             field.focus_set()
         except tk.TclError:
             pass
-        progress = getattr(self, "step_progress", None)
-        scroll_to_step = getattr(progress, "scroll_to_step", None)
-        if callable(scroll_to_step):
-            try:
-                scroll_to_step("config")
-            except (tk.TclError, KeyError, TypeError, ValueError):
-                pass
 
     def _set_button_adc_display(self, value):
         code = value & 0xFFF
