@@ -744,16 +744,13 @@ class ButtonModeView:
         yield
         close.grid(row=2, column=0, columnspan=2, sticky="ew", padx=3, pady=3)
         self.bind_text(close, "awp192x_close_all")
-        details = ttk.Frame(body, style="Panel.TFrame", padding=8)
+        details = self.make_serial_log(
+            body, height=4, subscribe=True, collapsed=True,
+            toggle_command=self._toggle_button_log,
+        )
         details.grid(row=3, column=0, sticky="ew", pady=(10,0))
-        details.columnconfigure(0, weight=1)
-        toggle = ttk.Button(details, command=self._toggle_button_log, style="Secondary.TButton")
         yield
-        toggle.grid(row=0, column=0, sticky="w")
-        self.bind_text(toggle, "awp1221_communication_log")
-        self._button_log = self.make_serial_log(details, height=4, subscribe=True)
-        self._button_log.grid(row=1, column=0, sticky="ew", pady=(6,0))
-        self._button_log.grid_remove()
+        self._button_log = self._serial_log_body
         self._button_graph_window = None
         yield
         self._button_graph_gpio_level = None
@@ -897,11 +894,7 @@ class ButtonModeView:
         self.stop_play()
 
     def _toggle_button_log(self):
-        panel = self._button_log
-        if panel.winfo_manager():
-            panel.grid_remove()
-        else:
-            panel.grid()
+        self._toggle_serial_log()
         self.after_idle(self._sync_button_log)
 
     def _sync_button_log(self):

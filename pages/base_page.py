@@ -2634,36 +2634,45 @@ class BasePage(ttk.Frame):
         height: int = 7,
         width: int | None = None,
         subscribe: bool = True,
+        collapsed: bool = False,
+        toggle_command: Callable[[], None] | None = None,
     ) -> ttk.Frame:
-        frame = ttk.Frame(parent, style="Panel.TFrame")
+        frame = ttk.Frame(parent, style="Module.TFrame", padding=10)
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(1, weight=1)
 
-        toolbar = WrappingGroupBar(frame)
+        # Keep the title/help/toggle together at their natural width. Only the
+        # spacer shrinks; generic module headings deliberately wrap elsewhere.
+        toolbar = ttk.Frame(frame, style="ModuleTitleRow.TFrame")
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        title_group = toolbar.add_group()
-        # Help only — do not attach role=troubleshoot here: the role suffix
-        # lengthens the WrappingGroupBar title and can oscillate forever with
-        # the page scroll area on AWP1922 (and similar two-column pages).
-        _title_row, _title = self.make_module_title_row(
-            title_group,
-            "serial_log",
-            help_key="module_help_serial_log",
+        toolbar.columnconfigure(3, weight=1)
+        title = ttk.Label(toolbar, style="ModuleTitle.TLabel", wraplength=0)
+        title.grid(row=0, column=0, sticky="w")
+        self.bind_text(title, "serial_log")
+        help_button = self.make_module_help_button(toolbar, "module_help_serial_log", column=1)
+        help_button.grid_configure(padx=(8, 4))
+        toggle = ttk.Button(
+            toolbar, style="Secondary.TButton", width=2,
+            text="▸" if collapsed else "▾",
+            command=toggle_command or self._toggle_serial_log,
         )
+        toggle.grid(row=0, column=2, sticky="w")
 
-        clear_group = toolbar.add_group()
-        clear_btn = ttk.Button(clear_group, style="Secondary.TButton", command=self.clear_serial_log)
-        clear_btn.grid(row=0, column=0, sticky="w")
+        clear_btn = ttk.Button(toolbar, style="Secondary.TButton", command=self.clear_serial_log)
+        clear_btn.grid(row=0, column=4, sticky="e", padx=(8, 6))
         self.bind_text(clear_btn, "clear_serial_log")
 
-        export_group = toolbar.add_group()
-        export_btn = ttk.Button(export_group, style="Secondary.TButton", command=self.export_serial_log)
-        export_btn.grid(row=0, column=0, sticky="w")
+        export_btn = ttk.Button(toolbar, style="Secondary.TButton", command=self.export_serial_log)
+        export_btn.grid(row=0, column=5, sticky="e")
         self.bind_text(export_btn, "export_serial_log")
 
+        body = ttk.Frame(frame, style="Panel.TFrame")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
         text_width = 8 if width is None else width
         text = tk.Text(
-            frame,
+            body,
             height=height,
             width=text_width,
             wrap="none",
@@ -2671,12 +2680,21 @@ class BasePage(ttk.Frame):
             highlightthickness=1,
             font=("Consolas", int(getattr(self.winfo_toplevel(), "_piezo_mono_font_size", 9))),
         )
-        text.grid(row=1, column=0, sticky="nsew")
-        xscroll = ttk.Scrollbar(frame, orient="horizontal", command=text.xview)
-        xscroll.grid(row=2, column=0, sticky="ew")
-        text.configure(xscrollcommand=xscroll.set, state="disabled")
+        text.grid(row=0, column=0, sticky="nsew")
+        xscroll = ttk.Scrollbar(body, orient="horizontal", command=text.xview)
+        xscroll.grid(row=1, column=0, sticky="ew")
+        yscroll = ttk.Scrollbar(body, orient="vertical", command=text.yview)
+        yscroll.grid(row=0, column=1, sticky="ns")
+        text.configure(xscrollcommand=xscroll.set, yscrollcommand=yscroll.set, state="disabled")
+        self._serial_log_frame = frame
+        self._serial_log_header = toolbar
+        self._serial_log_title = title
+        self._serial_log_body = body
+        self._serial_log_toggle = toggle
         self._serial_log_text = text
         self._refresh_serial_log_theme()
+        if collapsed:
+            body.grid_remove()
 
         if subscribe:
             self._serial_log_listener = self.append_serial_log
@@ -2687,6 +2705,15 @@ class BasePage(ttk.Frame):
                 self.append_serial_log(line)
 
         return frame
+
+    def _toggle_serial_log(self) -> None:
+        body = self._serial_log_body
+        if body.winfo_manager():
+            body.grid_remove()
+            self._serial_log_toggle.configure(text="▸")
+        else:
+            body.grid()
+            self._serial_log_toggle.configure(text="▾")
 
     def export_serial_log(self) -> None:
         text = self._serial_log_text
@@ -2836,12 +2863,17 @@ class BasePage(ttk.Frame):
     def _refresh_serial_log_theme(self) -> None:
         if self._serial_log_text is None:
             return
+        family = (
+            "Consolas" if "Consolas" in tkfont.families(self)
+            else tkfont.nametofont("TkFixedFont", root=self).actual("family")
+        )
+        self._serial_log_text._piezo_mono_font_family = family
         self._serial_log_text.configure(
             bg=self.colors["panel_alt"],
             fg=self.colors["text"],
             insertbackground=self.colors["text"],
             highlightbackground=self.colors["border"],
-            font=("Consolas", int(getattr(self.winfo_toplevel(), "_piezo_mono_font_size", 9))),
+            font=(family, int(getattr(self.winfo_toplevel(), "_piezo_mono_font_size", 9))),
         )
 
     def _logo_path_for_theme(self) -> Path | None:

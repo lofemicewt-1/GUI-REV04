@@ -1338,7 +1338,6 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         log_frame = self.make_serial_log(right, height=7, subscribe=True)
         log_frame.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
         self._register_module_spacing_widget(log_frame, before=True, after=False)
-        self._hide_serial_log_hscroll(log_frame)
 
         self._show_stage(0)
         self.refresh_language()
@@ -1490,47 +1489,22 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         switches.columnconfigure(0, weight=1)
         yield from self._build_control_buttons_steps(switches, row=0)
 
-        details = ttk.Frame(body, style="Panel.TFrame", padding=10)
+        details = self.make_serial_log(
+            body, height=3, subscribe=True, collapsed=True,
+            toggle_command=self._toggle_communication_log,
+        )
         yield
         details.grid(row=4, column=0, sticky="ew", pady=(10, 0))
         self._register_module_spacing_widget(details, before=True, after=False)
-        details.columnconfigure(0, weight=1)
-        extra = ttk.Frame(details, style="Panel.TFrame")
-        extra.columnconfigure(0, weight=1)
-        self._communication_log_panel = extra
-        toggle = ttk.Button(details, style="Secondary.TButton",
-                            command=self._toggle_communication_log)
-        yield
-        toggle.grid(row=0, column=0, sticky="w")
-        self._register_text(toggle, "awp1221_communication_log")
-        self._communication_log_toggle = toggle
-        log_frame = self.make_serial_log(extra, height=3, subscribe=True)
-        log_frame.grid(row=0, column=0, sticky="ew", pady=(8, 0))
-        self._hide_serial_log_hscroll(log_frame)
+        self._communication_log_panel = self._serial_log_body
+        self._communication_log_toggle = self._serial_log_toggle
         yield
         self._mount_button_step_progress()
         self.refresh_language()
         self._schedule_button_rom_preview()
 
-    def _hide_serial_log_hscroll(self, frame: ttk.Frame) -> None:
-        text = getattr(self, "_serial_log_text", None)
-        if text is not None:
-            text.configure(wrap="word")
-        for child in frame.winfo_children():
-            if child.winfo_class() != "TScrollbar":
-                continue
-            try:
-                if str(child.cget("orient")) == "horizontal":
-                    child.grid_remove()
-            except tk.TclError:
-                pass
-
     def _toggle_communication_log(self) -> None:
-        panel = self._communication_log_panel
-        if panel.winfo_manager():
-            panel.grid_remove()
-        else:
-            panel.grid(row=1, column=0, sticky="ew")
+        self._toggle_serial_log()
         self._queue_communication_log_layout()
 
     def _queue_communication_log_layout(self, _event: tk.Event | None = None) -> None:

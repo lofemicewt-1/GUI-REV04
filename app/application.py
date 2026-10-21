@@ -4588,7 +4588,7 @@ class PiezoApplication:
 
         def target_font(widget: tk.Misc, style_name: str, parts: tuple[str, ...], spec: str) -> tuple[Any, ...] | None:
             if isinstance(widget, tk.Text):
-                return ("Consolas", mono_size)
+                return (getattr(widget, "_piezo_mono_font_family", "Consolas"), mono_size)
             if isinstance(widget, ttk.Label):
                 if style_name in {"Wordmark.TLabel", "ChipTitle.TLabel"}:
                     return None
