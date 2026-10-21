@@ -20,6 +20,14 @@ class CommunicationLogTranslationTests(unittest.TestCase):
 
 
 class CommunicationLogSectionTests(unittest.TestCase):
+    CASES = (
+        ("awp1221", "button_mode"), ("awp1221", "full_mode"),
+        ("awp1018", "awp1018_normal_mode"), ("awp1018", "awp1018_diff_mode"),
+        ("awp1018", "full_mode"), ("awp1921_1923", "button_mode"),
+        ("awp1921_1923", "pump_mode"), ("awp1921_1923", "full_mode"),
+        ("awp1922", None),
+    )
+
     @classmethod
     def setUpClass(cls):
         cls.context = mocked_application()
@@ -46,14 +54,7 @@ class CommunicationLogSectionTests(unittest.TestCase):
         return host.mode_pages[mode] if mode else host
 
     def test_single_unwrapped_header_and_both_scrollbars_on_all_chip_modes(self):
-        cases = (
-            ("awp1221", "button_mode"), ("awp1221", "full_mode"),
-            ("awp1018", "awp1018_normal_mode"), ("awp1018", "awp1018_diff_mode"),
-            ("awp1018", "full_mode"), ("awp1921_1923", "button_mode"),
-            ("awp1921_1923", "pump_mode"), ("awp1921_1923", "full_mode"),
-            ("awp1922", None),
-        )
-        for chip, mode in cases:
+        for chip, mode in self.CASES:
             with self.subTest(chip=chip, mode=mode):
                 page = self.page(chip, mode)
                 if not page._serial_log_body.winfo_manager():
@@ -84,6 +85,32 @@ class CommunicationLogSectionTests(unittest.TestCase):
                 scrollbars = [w for w in text.master.winfo_children() if isinstance(w, ttk.Scrollbar)]
                 self.assertEqual({str(w.cget("orient")) for w in scrollbars}, {"horizontal", "vertical"})
                 self.assertTrue(all(w.winfo_ismapped() for w in scrollbars))
+
+    def test_expanded_log_stays_eight_lines_when_window_shrinks_and_grows(self):
+        for chip, mode in self.CASES:
+            page = self.page(chip, mode)
+            if not page._serial_log_body.winfo_manager():
+                page._serial_log_toggle.invoke()
+            page.clear_serial_log_view()
+            for index in range(12):
+                page.append_serial_log(f"local UI demo line {index + 1}")
+            for width, height in ((1366, 768), (1024, 608), (1366, 768)):
+                with self.subTest(chip=chip, mode=mode, size=(width, height)):
+                    self.root.geometry(f"{width}x{height}+0+0")
+                    self.app._apply_visual_settings()
+                    _flush(self.root, 5)
+                    self.assertEqual((self.root.winfo_width(), self.root.winfo_height()), (width, height))
+                    text = page._serial_log_text
+                    self.assertTrue(page._serial_log_body.winfo_ismapped())
+                    self.assertEqual(int(text.cget("height")), 8)
+                    # Check the allocated height too: grid must not stretch or
+                    # squeeze an eight-line Text to match the viewport.
+                    self.assertEqual(text.winfo_height(), text.winfo_reqheight())
+                    self.assertLess(text.yview()[1] - text.yview()[0], 1)
+                    text.yview_moveto(0)
+                    self.assertEqual(text.index("@0,0"), "1.0")
+                    text.yview_moveto(1)
+                    self.assertGreater(text.yview()[0], 0)
 
     def test_collapse_preserves_header_and_content_and_updates_chevron(self):
         for chip, mode in (("awp1221", "button_mode"), ("awp1018", "awp1018_normal_mode"),

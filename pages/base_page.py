@@ -2631,15 +2631,13 @@ class BasePage(ttk.Frame):
         self,
         parent: tk.Misc,
         *,
-        height: int = 7,
         width: int | None = None,
         subscribe: bool = True,
-        collapsed: bool = False,
+        collapsed: bool = True,
         toggle_command: Callable[[], None] | None = None,
     ) -> ttk.Frame:
         frame = ttk.Frame(parent, style="Module.TFrame", padding=10)
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(1, weight=1)
 
         # Keep the title/help/toggle together at their natural width. Only the
         # spacer shrinks; generic module headings deliberately wrap elsewhere.
@@ -2667,20 +2665,21 @@ class BasePage(ttk.Frame):
         self.bind_text(export_btn, "export_serial_log")
 
         body = ttk.Frame(frame, style="Panel.TFrame")
-        body.grid(row=1, column=0, sticky="nsew")
+        body.grid(row=1, column=0, sticky="ew")
         body.columnconfigure(0, weight=1)
-        body.rowconfigure(0, weight=1)
+        # Keep eight lines at every viewport size. The enclosing page scrolls
+        # to accommodate this natural height instead of resizing the log.
         text_width = 8 if width is None else width
         text = tk.Text(
             body,
-            height=height,
+            height=8,
             width=text_width,
             wrap="none",
             relief="flat",
             highlightthickness=1,
             font=("Consolas", int(getattr(self.winfo_toplevel(), "_piezo_mono_font_size", 9))),
         )
-        text.grid(row=0, column=0, sticky="nsew")
+        text.grid(row=0, column=0, sticky="ew")
         xscroll = ttk.Scrollbar(body, orient="horizontal", command=text.xview)
         xscroll.grid(row=1, column=0, sticky="ew")
         yscroll = ttk.Scrollbar(body, orient="vertical", command=text.yview)

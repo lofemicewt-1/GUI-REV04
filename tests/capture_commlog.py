@@ -12,7 +12,7 @@ from tests.validate_responsive_layout import _flush, mocked_application
 
 def main() -> None:
     root_path = Path(__file__).resolve().parents[1]
-    output = Path("/workspace/review")
+    output = root_path / ".tmp" / "commlog-captures"
     output.mkdir(parents=True, exist_ok=True)
     os.environ["APPDATA"] = str(root_path / ".tmp" / "capture-commlog-appdata")
     with mocked_application() as app:
@@ -32,7 +32,7 @@ def main() -> None:
                 page._serial_log_toggle.invoke()
             # Presentation data goes directly to the Text view, never transport/history.
             page.clear_serial_log_view()
-            for index in range(4):
+            for index in range(12):
                 page.append_serial_log(
                     f"[12:34:{index:02d}.123] LOCAL DEMO {chip.upper()} | "
                     + " ".join(f"{value:02X}" for value in range(64))
@@ -50,6 +50,13 @@ def main() -> None:
                 page._serial_log_text.xview_moveto(0)
                 _flush(root, 6)
                 assert (root.winfo_width(), root.winfo_height()) == (width, height)
+                text = page._serial_log_text
+                assert page._serial_log_body.winfo_ismapped()
+                assert str(page._serial_log_toggle.cget("text")) == "▾"
+                assert int(text.cget("height")) == 8
+                assert text.winfo_height() == text.winfo_reqheight()
+                assert int(text.index("end-1c").split(".")[0]) > 8
+                assert text.yview()[1] - text.yview()[0] < 1
                 frame = page._serial_log_frame
                 assert frame.winfo_rooty() >= area.canvas.winfo_rooty()
                 assert frame.winfo_rooty() + frame.winfo_height() <= area.canvas.winfo_rooty() + area.canvas.winfo_height()
@@ -58,7 +65,8 @@ def main() -> None:
                 x, y = root.winfo_rootx(), root.winfo_rooty()
                 ImageGrab.grab(bbox=(x, y, x + width, y + height)).save(filename)
                 print(json.dumps({"path": str(filename), "title": page._serial_log_title.cget("text"),
-                                  "wrap": page._serial_log_text.cget("wrap")}))
+                                  "wrap": text.cget("wrap"), "height": text.cget("height"),
+                                  "expanded": True}))
 
 
 if __name__ == "__main__":

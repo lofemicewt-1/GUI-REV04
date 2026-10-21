@@ -225,7 +225,7 @@ class AWP1922Page(BasePage):
         stop_btn.grid(row=0, column=1, sticky="ew", padx=(6, 0))
         self._buttons["stop_play"] = stop_btn
 
-        log_frame = self.make_serial_log(right, height=12, subscribe=True)
+        log_frame = self.make_serial_log(right, subscribe=True)
         log_frame.grid(row=0, column=0, sticky="nsew")
 
         self.amp_var.trace_add("write", lambda *_: self._on_amp_changed())

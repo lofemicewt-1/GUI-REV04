@@ -1967,7 +1967,7 @@ class AWP1018NormalModePage(BasePage):
         self._attach_gpio_controls(controls_panel, 2)
         row += 1
 
-        log_frame = self.make_serial_log(body, height=7, subscribe=True)
+        log_frame = self.make_serial_log(body, subscribe=True)
         log_frame.grid(row=row, column=0, sticky="ew", pady=(0, 8))
         self._register_module_spacing_widget(log_frame, before=True, after=False)
         yield
@@ -7222,7 +7222,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         register_panel.columnconfigure(0, weight=1)
         self._build_full_function_tools(register_panel)
 
-        log_frame = self.make_serial_log(right, height=14, width=42, subscribe=True)
+        log_frame = self.make_serial_log(right, width=42, subscribe=True)
         log_frame.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
         self._register_module_spacing_widget(log_frame, before=True, after=False)
         yield

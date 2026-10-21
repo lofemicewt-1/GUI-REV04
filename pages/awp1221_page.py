@@ -1342,7 +1342,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         yield
         yield from self._build_waveform_selector_steps(rom_tab)
 
-        log_frame = self.make_serial_log(right, height=7, subscribe=True)
+        log_frame = self.make_serial_log(right, subscribe=True)
         log_frame.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
         self._register_module_spacing_widget(log_frame, before=True, after=False)
 
@@ -1497,7 +1497,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         yield from self._build_control_buttons_steps(switches, row=0)
 
         details = self.make_serial_log(
-            body, height=3, subscribe=True, collapsed=True,
+            body, subscribe=True, collapsed=True,
             toggle_command=self._toggle_communication_log,
         )
         yield

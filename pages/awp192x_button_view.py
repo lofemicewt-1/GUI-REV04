@@ -745,7 +745,7 @@ class ButtonModeView:
         close.grid(row=2, column=0, columnspan=2, sticky="ew", padx=3, pady=3)
         self.bind_text(close, "awp192x_close_all")
         details = self.make_serial_log(
-            body, height=4, subscribe=True, collapsed=True,
+            body, subscribe=True, collapsed=True,
             toggle_command=self._toggle_button_log,
         )
         details.grid(row=3, column=0, sticky="ew", pady=(10,0))

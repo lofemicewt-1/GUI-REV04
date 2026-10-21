@@ -5315,7 +5315,7 @@ class FullModePage(ButtonModePage):
         yield
         right_row = self._add_full_memory_controls(right_controls, right_row)
 
-        log_frame = self.make_serial_log(right, height=18, subscribe=True)
+        log_frame = self.make_serial_log(right, subscribe=True)
         log_frame.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
         self._register_module_spacing_widget(log_frame, before=True, after=False)
 
@@ -6915,7 +6915,7 @@ class PumpModePage(BasePage):
         row += 1
         yield
 
-        log_frame = self.make_serial_log(panel, height=10, subscribe=True)
+        log_frame = self.make_serial_log(panel, subscribe=True)
         log_frame.grid(row=row, column=0, columnspan=2, sticky="nsew", pady=(16, 0))
         self._register_module_spacing_widget(log_frame, before=True, after=False)
         panel.rowconfigure(row, weight=1)

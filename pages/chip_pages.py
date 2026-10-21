@@ -1414,7 +1414,7 @@ class AWP1744AWP1766PumpModePage(BasePage):
             pady=8,
         )
 
-        log_frame = self.make_serial_log(panel, height=12, subscribe=True)
+        log_frame = self.make_serial_log(panel, subscribe=True)
         log_frame.grid(row=6, column=0, columnspan=5, sticky="nsew", pady=(18, 0))
         self._register_module_spacing_widget(log_frame, before=True, after=False)
 
