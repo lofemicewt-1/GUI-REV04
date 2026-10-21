@@ -141,10 +141,10 @@ class StepProgressTests(unittest.TestCase):
         self.flush()
         self.bar.collapse()
         self.flush()
-        self.assertEqual(self.bar.badge.cget("text"), "1/3")
+        self.assertEqual(self.bar.canvas.itemcget(self.bar.badge_text_item, "text"), "1/3")
         self.bar.expand()
         self.flush()
-        self.assertTrue(self.bar._cells_frame.winfo_ismapped())
+        self.assertIn("waveform", self.bar._hit_rects)
 
     def test_newer_operation_overtakes_old_and_idle_is_cancellation(self) -> None:
         old = self.bar.begin("waveform")
@@ -251,7 +251,7 @@ class StepProgressTests(unittest.TestCase):
         self.root.update()
         group = self.trapezoid.floating_group
         canvas = self.area.canvas
-        self.assertIs(group.master, canvas)
+        self.assertIs(group.master, self.area)
         self.assertEqual(group.winfo_manager(), "place")
         first = (group.winfo_rootx(), group.winfo_rooty())
         self.area.canvas.yview_scroll(10, "units")
@@ -270,20 +270,22 @@ class StepProgressTests(unittest.TestCase):
         self.assertLessEqual(bottom, view_bottom)
         self.assertLess(
             bottom,
-            self.bar._cells["waveform"].winfo_rooty(),
+            self.bar.canvas.winfo_rooty(),
             "the expanded panel must open above the progress cells",
         )
 
     def test_slim_strip_single_line_with_color_chip(self) -> None:
         self.root.update()
-        cell = self.bar._cells["waveform"]
-        self.assertNotIn("\n", str(cell.cget("text")))
+        self.assertEqual(self.bar.canvas.itemcget("strip", "fill"), "#202B3C")
+        self.assertNotIn("\n", self.bar._display_titles["waveform"])
         self.assertIn(" · ", self.bar._titles["waveform"])
-        self.assertEqual(int(cell.cget("pady")), 0)
-        line = int(self.root.tk.call("font", "metrics", cell.cget("font"), "-linespace"))
-        self.assertLessEqual(self.bar.winfo_height(), line + 8, "step strip must stay one slim line")
-        chip = self.bar._chips["waveform"]
-        self.assertEqual(str(chip.cget("bg")).lower(), "#6b7280")
+        self.assertEqual(self.bar.canvas.winfo_height(), 20)  # 18 + two shadow pixels
+        self.assertEqual(self.bar._font.cget("size"), -12)
+        node = self.bar._items["waveform"]["node"]
+        self.assertEqual(self.bar.canvas.itemcget(node, "outline").lower(), "#6b7280")
+        self.assertGreaterEqual(self.area.bottom_inset, 42)
+        self.assertGreaterEqual(self.bar.canvas.winfo_rooty(),
+                                self.area.canvas.winfo_rooty() + self.area.canvas.winfo_height())
         self.assertLessEqual(self.trapezoid.button.winfo_height(), 22)
         info = self.trapezoid.floating_group.place_info()
         self.assertEqual(int(info.get("y", 0)), -4)
@@ -304,10 +306,87 @@ class StepProgressTests(unittest.TestCase):
     def test_narrow_cells_elide_instead_of_wrapping(self) -> None:
         self.root.update()
         self.bar._titles["waveform"] = "2 · " + "很长的步骤标题" * 6
-        self.bar.apply_cell_width(60)
-        text = str(self.bar._cells["waveform"].cget("text"))
+        self.bar.apply_width(260)
+        text = self.bar._display_titles["waveform"]
         self.assertTrue(text.endswith("…"))
         self.assertNotIn("\n", text)
+
+    def test_short_titles_survive_budget_and_navigation_does_not_resize(self) -> None:
+        self.bar._titles = {"waveform": "1 · " + "Long waveform title " * 8,
+                            "adc": "2 · ADC", "detection": "3 · EN"}
+        self.bar.apply_width(320)
+        self.assertEqual(self.bar._display_titles["adc"], "2 · ADC")
+        self.assertEqual(self.bar._display_titles["detection"], "3 · EN")
+        self.assertTrue(self.bar._display_titles["waveform"].endswith("…"))
+        rectangles = dict(self.bar._hit_rects)
+        width = self.bar.preferred_width()
+        self.bar.scroll_to_step("adc")
+        self.assertEqual(self.bar._hit_rects, rectangles)
+        self.assertEqual(self.bar.preferred_width(), width)
+
+    def test_state_updates_reuse_canvas_items_and_draw_geometry_symbols(self) -> None:
+        self.flush()
+        items = self.bar.canvas.find_all()
+        width = self.bar.canvas.winfo_width()
+        token = self.bar.begin("waveform")
+        self.bar.mark("waveform", "done", token)
+        self.flush()
+        node = self.bar._items["waveform"]
+        self.assertEqual(self.bar.canvas.find_all(), items)
+        self.assertEqual(self.bar.canvas.winfo_width(), width)
+        self.assertEqual(self.bar.canvas.itemcget(node["node"], "fill"), "#2563EB")
+        self.assertEqual(self.bar.canvas.type(node["check"]), "line")
+        self.assertEqual(self.bar.canvas.itemcget(node["check"], "state"), "normal")
+        token = self.bar.begin("waveform")
+        self.bar.mark("waveform", "error", token)
+        self.flush()
+        self.assertEqual(self.bar.canvas.itemcget(node["check"], "state"), "hidden")
+        self.assertEqual(self.bar.canvas.itemcget(node["bang"], "state"), "normal")
+        self.assertEqual(self.bar.canvas.type(node["bang"]), "line")
+
+    def test_keyboard_navigation_and_collapse_are_independent_of_state(self) -> None:
+        self.bar.canvas.focus_force()
+        self.flush()
+        self.bar.canvas.event_generate("<Right>")
+        self.bar.canvas.event_generate("<Return>")
+        self.flush()
+        self.assertEqual(self.bar.active_step_key, "adc")
+        self.assertTrue(all(data["state"] == "idle" for data in self.bar.snapshot().values()))
+        self.bar.canvas.event_generate("<End>")
+        self.bar.canvas.event_generate("<space>")
+        self.flush()
+        self.assertTrue(self.bar._collapsed)
+        self.bar.canvas.event_generate("<Return>")
+        self.flush()
+        self.assertFalse(self.bar._collapsed)
+        self.assertGreaterEqual(self.trapezoid.button.winfo_width(), 100)
+
+    def test_fixed_band_clears_content_at_every_scroll_position(self) -> None:
+        for row in range(30):
+            ttk.Label(self.area.content, text=f"content {row}").grid(row=row, column=0, pady=10)
+        self.flush()
+        group = self.trapezoid.floating_group
+        position = (group.winfo_rootx(), group.winfo_rooty())
+        for fraction in (0.0, 0.5, 1.0):
+            self.area.canvas.yview_moveto(fraction)
+            self.flush()
+            viewport_bottom = self.area.canvas.winfo_rooty() + self.area.canvas.winfo_height()
+            self.assertLessEqual(viewport_bottom, group.winfo_rooty())
+            self.assertEqual((group.winfo_rootx(), group.winfo_rooty()), position)
+
+    def test_scale_tiers_keep_pixel_fonts_and_bottom_pill(self) -> None:
+        for scale, strip_height, button_height in ((1.0, 18, 16), (1.1, 20, 18), (1.25, 22, 20)):
+            with self.subTest(scale=scale):
+                self.context.state.ui_scale = scale
+                self.bar.refresh_theme()
+                self.trapezoid.refresh_layout()
+                self.flush()
+                self.assertEqual(self.bar._font.cget("size"), -round(12*scale))
+                self.assertEqual(self.bar.canvas.winfo_height(), strip_height + round(2*scale))
+                self.assertEqual(self.trapezoid.button.winfo_height(), button_height)
+                self.assertGreaterEqual(self.area.bottom_inset, round(42*scale))
+                self.assertGreaterEqual(self.trapezoid.button.winfo_rooty(),
+                                        self.bar.canvas.winfo_rooty() + self.bar.canvas.winfo_height())
 
     def test_cell_navigation_scrolls_owning_canvas_without_changing_horizontal_view(self) -> None:
         page = BasePage(self.root, self.context)
@@ -342,13 +421,21 @@ class StepProgressTests(unittest.TestCase):
         self.root.update()
         self.assertGreater(area.canvas.yview()[0], 0.0)
         self.assertEqual(area.canvas.xview(), before_x)
-        # Chip clicks must jump the same way as the text button.
+        # Node, title, and padding clicks all invoke the same step.
         area.canvas.yview_moveto(0.0)
         self.root.update()
         self.assertEqual(area.canvas.yview()[0], 0.0)
-        bar._chips["target"].event_generate("<Button-1>")
-        self.root.update()
-        self.assertGreater(area.canvas.yview()[0], 0.0)
+        x1, y1, x2, y2 = bar._hit_rects["target"]
+        for x in (x1 + 1, x1 + 9, x2 - 6):
+            area.canvas.yview_moveto(0.0)
+            self.root.update()
+            bar.canvas.event_generate("<ButtonPress-1>", x=int(x), y=int((y1+y2)/2))
+            bar.canvas.event_generate("<ButtonRelease-1>", x=int(x), y=int((y1+y2)/2))
+            self.root.update()
+            self.assertGreater(area.canvas.yview()[0], 0.0)
+            self.assertEqual(area.canvas.xview(), before_x)
+            self.assertEqual(bar.snapshot()["target"]["state"], "idle")
+            self.assertEqual(bar.active_step_key, "target")
         page.destroy()
 
     def test_trapezoid_only_host_has_no_automatic_progress_bar(self) -> None:

@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from types import MappingProxyType
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Callable, Hashable, Literal, Mapping, Sequence, Any
 
@@ -78,21 +79,32 @@ def _slim_px(value: float, scale: float) -> int:
     return max(1, int(round(value * scale)))
 
 
-def _step_font_size(widget: Any) -> int:
-    try:
-        body = int(getattr(widget.winfo_toplevel(), "_piezo_body_font_size", 9))
-    except (tk.TclError, TypeError, ValueError):
-        body = 9
-    return max(7, body - 1)
+def _step_font(widget: Any, *, bold: bool = False) -> tkfont.Font:
+    families = tkfont.families(widget)
+    family = ("Microsoft YaHei UI" if "Microsoft YaHei UI" in families else
+              tkfont.nametofont("TkDefaultFont", root=widget).actual("family"))
+    return tkfont.Font(root=widget, family=family, size=-round(12 * _ui_scale(widget)),
+                       weight="bold" if bold else "normal")
 
 
-TRAPEZOID_BASE_HEIGHT = 18
+def _rounded(canvas: tk.Canvas, box: tuple[float, float, float, float], radius: float, **kw: Any) -> int:
+    """One rounded Canvas item, so stable layouts can update it in place."""
+    x1, y1, x2, y2 = box
+    r = min(radius, (x2 - x1) / 2, (y2 - y1) / 2)
+    return canvas.create_polygon(
+        x1+r, y1, x1+r, y1, x2-r, y1, x2-r, y1, x2, y1, x2, y1+r,
+        x2, y1+r, x2, y2-r, x2, y2-r, x2, y2, x2-r, y2, x2-r, y2,
+        x1+r, y2, x1+r, y2, x1, y2, x1, y2-r, x1, y2-r,
+        x1, y1+r, x1, y1+r, x1, y1, smooth=True, splinesteps=24, **kw,
+    )
+
+
+TRAPEZOID_BASE_HEIGHT = 16
 # Compact strip: hug step text, never stretch edge-to-edge.
 STRIP_MAX_WIDTH = 760
 STRIP_MAX_FRACTION = 0.55
 ADV_BUTTON_MAX_WIDTH = 220
-ADV_BUTTON_PAD = 28
-STEP_CHIP_SIZE = (4, 10)
+ADV_BUTTON_PAD = 30
 
 
 class Trapezoid:
@@ -127,10 +139,15 @@ class Trapezoid:
         self._owning_area = self._nearest_scroll_area(canvas)
         self._old_scroll_extra: int | None = None
         self._reserved_clearance: int | None = None
+        self._old_bottom_inset = getattr(self._owning_area, "bottom_inset", 0)
+        self._hover = False
+        self._pressed = False
+        self._button_font = _step_font(host)
+        self._button_label_font = _step_font(host)
 
         self.floating_group.columnconfigure(0, weight=1)
         self.floating_group.rowconfigure(0, weight=1)
-        self.progress_slot = ttk.Frame(floating_group, style="Panel.TFrame")
+        self.progress_slot = ttk.Frame(floating_group, style="App.TFrame")
         self.progress_slot.grid(row=0, column=0, sticky="ew")
         self.progress_slot.columnconfigure(0, weight=1)
 
@@ -145,12 +162,15 @@ class Trapezoid:
         )
         self.button.grid(row=1, column=0, sticky="n", pady=(0, 0))
         self.button.bind("<Configure>", self._draw_button, add="+")
-        self.button.bind("<Button-1>", self._toggle_from_event, add="+")
+        self.button.bind("<ButtonPress-1>", self._press_button, add="+")
+        self.button.bind("<ButtonRelease-1>", self._release_button, add="+")
         self.button.bind("<Return>", self._toggle_from_event, add="+")
         self.button.bind("<space>", self._toggle_from_event, add="+")
         self.button.bind("<FocusIn>", lambda _event: self._draw_button(), add="+")
         self.button.bind("<FocusOut>", lambda _event: self._draw_button(), add="+")
         self._tooltip = SimpleTooltip(self.button, self._accessibility_text)
+        self.button.bind("<Enter>", lambda _e: self._button_hover(True), add="+")
+        self.button.bind("<Leave>", lambda _e: self._button_hover(False), add="+")
 
         # Controls are constructed once, even while collapsed.  The inner
         # frame is a canvas window so unusually tall advanced panels remain
@@ -214,23 +234,55 @@ class Trapezoid:
             colors = getattr(self.host, "colors", {})
             self.button.configure(bg=colors.get("bg", "#F7F8FA"))
             self.button.delete("all")
-            inset = min(10, max(3, width // 16))
-            fill = colors.get("panel", "#FFFFFF")
-            outline = colors.get("border", "#AAB2BF")
+            fill, outline, text = "#F1F5F9", "#CBD5E1", "#475569"
+            if self.expanded:
+                fill, outline, text = "#DBEAFE", "#93B4F5", "#1D4ED8"
+            if self._hover:
+                fill = "#E2E8F0"
+            if self._pressed:
+                fill = "#CBD5E1"
             if self.button.focus_get() is self.button:
-                outline = colors.get("accent", "#2563EB")
-            self.button.create_polygon(
-                inset, 1, width - inset, 1, width - 1, height - 1, 1, height - 1,
-                fill=fill, outline=outline, width=1,
-            )
-            self.button.create_text(
-                width // 2, height // 2,
-                text=self.host.tr("chip_tools_label"),
-                fill=colors.get("text", "#111827"),
-                font=("TkDefaultFont", _step_font_size(self.host)),
-            )
+                outline = "#93C5FD"
+            _rounded(self.button, (0.5, 0.5, width - 0.5, height - 0.5), height / 2,
+                     fill=fill, outline=outline, width=1)
+            label = self.host.tr("chip_tools_label")
+            scale = _ui_scale(self.host)
+            icon_space = _slim_px(12, scale)
+            # Keep the full translated label even when the width cap applies.
+            size = round(12 * scale)
+            self._button_label_font.configure(size=-size)
+            room = max(1, width - _slim_px(ADV_BUTTON_PAD, scale))
+            while size > 1 and self._button_label_font.measure(label) > room:
+                size -= 1
+                self._button_label_font.configure(size=-size)
+            label_width = self._button_label_font.measure(label)
+            x = (width - label_width - icon_space) / 2
+            self.button.create_text(x, height / 2, anchor="w", text=label,
+                                    fill=text, font=self._button_label_font, tags="label")
+            cx, cy = x + label_width + _slim_px(8, scale), height / 2
+            dy = (-1 if self.expanded else 1) * 1.5 * scale
+            self.button.create_line(cx-3*scale, cy-dy, cx, cy+dy, cx+3*scale, cy-dy,
+                                    fill=text, width=1)
         except tk.TclError:
             pass
+
+    def _button_hover(self, value: bool) -> None:
+        self._hover = value
+        if not value:
+            self._pressed = False
+        self._draw_button()
+
+    def _press_button(self, _event: tk.Event) -> None:
+        self._pressed = True
+        self.button.focus_set()
+        self._draw_button()
+
+    def _release_button(self, event: tk.Event) -> None:
+        pressed = self._pressed
+        self._pressed = False
+        if pressed and 0 <= event.x < self.button.winfo_width() and 0 <= event.y < self.button.winfo_height():
+            self._toggle_from_event()
+        self._draw_button()
 
     def _toggle_from_event(self, _event: tk.Event | None = None) -> str:
         self.set_expanded(not self.expanded)
@@ -272,7 +324,10 @@ class Trapezoid:
             measured = max(int(self.floating_group.winfo_reqheight()), int(self.floating_group.winfo_height()))
         except tk.TclError:
             measured = 1
-        clearance = max(28, measured + int(extra_height) + 16)
+        scale = _ui_scale(self.host)
+        band = max(_slim_px(42, scale), measured + _slim_px(4, scale))
+        area.set_bottom_inset(max(self._old_bottom_inset, band))
+        clearance = max(_slim_px(42, scale), measured + int(extra_height) + 16)
         self._reserved_clearance = max(self._old_scroll_extra, clearance)
         area.scroll_region_extra = self._reserved_clearance
         area._queue_scroll_layout()
@@ -317,65 +372,47 @@ class Trapezoid:
         try:
             width = max(1, int(self.canvas.winfo_width()))
             height = max(1, int(self.canvas.winfo_height()))
-            # Placed as a canvas child, this group is pinned to the viewport;
-            # it is outside the scrolling content window.
+            # Pinned in the owning area's bottom band, outside its viewport.
             natural_width = max(1, int(self.floating_group.winfo_reqwidth()))
             group_height = max(1, int(self.floating_group.winfo_reqheight()))
             panel_width_request = max(1, int(self.panel.winfo_reqwidth()))
             panel_height_request = max(1, int(self.panel.winfo_reqheight()))
             state = getattr(getattr(self.host, "ctx", None), "state", None)
-            content_hint = 0
-            for bar in getattr(self.host, "_step_progress_bars", ()):
-                content_hint = max(content_hint, bar.preferred_width())
+            bars = [bar for bar in getattr(self.host, "_step_progress_bars", ())
+                    if bar is getattr(getattr(self.host, "_active_step_page", None), "step_progress", None)]
+            content_hint = max((bar.preferred_width() for bar in bars), default=0)
             signature = (
                 width, height, natural_width, group_height, content_hint,
                 panel_width_request, panel_height_request, bool(self.expanded),
                 float(getattr(state, "ui_scale", 1.0) or 1.0),
+                self.host.tr("chip_tools_label"), tuple(id(bar) for bar in bars),
             )
             if signature == self._last_layout_signature:
                 return
             self._last_layout_signature = signature
             scale = float(getattr(state, "ui_scale", 1.0) or 1.0)
-            content_width = max(natural_width, content_hint)
-            # Hug content, but never exceed a compact fraction of the viewport.
-            viewport_cap = max(200, int(round(width * STRIP_MAX_FRACTION)))
-            absolute_cap = _slim_px(STRIP_MAX_WIDTH, scale)
-            group_width = min(content_width, viewport_cap, absolute_cap, max(1, width - 16))
-            group_width = max(group_width, 160)
-            self.floating_group.place(
-                relx=0.5,
-                rely=1.0,
-                anchor="s",
-                y=-4,
-                width=group_width,
-            )
-            # Advanced control matches the strip (or its label), not the full canvas.
-            label = self.host.tr("chip_tools_label")
-            try:
-                import tkinter.font as tkfont
-                label_w = int(tkfont.Font(font=("TkDefaultFont", _step_font_size(self.host))).measure(label))
-            except tk.TclError:
-                label_w = 140
-            adv_cap = _slim_px(ADV_BUTTON_MAX_WIDTH, scale)
-            # Prefer the label width; never stretch to the full strip/canvas.
-            adv_width = min(adv_cap, max(100, label_w + ADV_BUTTON_PAD), group_width)
-            self.button.configure(
-                width=adv_width,
-                height=_slim_px(TRAPEZOID_BASE_HEIGHT, scale),
-            )
-            for bar in getattr(self.host, "_step_progress_bars", ()):
-                cell_width = max(48, (group_width - 56) // max(1, len(bar.steps)))
-                bar.apply_cell_width(cell_width)
-            if self._reserved_clearance is not None and self._owning_area is not None:
-                if max(28, group_height + 16) > int(self._reserved_clearance):
-                    self._reserve_scroll_clearance()
+            self._button_font.configure(size=-round(12 * scale))
+            label_w = self._button_font.measure(self.host.tr("chip_tools_label"))
+            adv_need = min(_slim_px(ADV_BUTTON_MAX_WIDTH, scale), label_w + _slim_px(ADV_BUTTON_PAD, scale))
+            cap = max(1, min(round(width * STRIP_MAX_FRACTION),
+                             _slim_px(STRIP_MAX_WIDTH, scale), width - _slim_px(16, scale)))
+            group_width = min(max(content_hint, adv_need), cap)
+            self.floating_group.place(relx=0.5, rely=1.0, anchor="s", y=-4, width=group_width)
+            self.button.configure(width=min(adv_need, group_width),
+                                  height=_slim_px(TRAPEZOID_BASE_HEIGHT, scale))
+            # The strip Canvas already includes its two shadow pixels.
+            gap = _slim_px(4, scale) - _slim_px(2, scale) if bars else 0
+            self.button.grid_configure(pady=(gap, 0))
+            for bar in bars:
+                bar.apply_width(group_width)
+            self._reserve_scroll_clearance()
             if self.expanded:
                 panel_width = min(max(280, int(self.panel.winfo_reqwidth()) + 20), max(240, width - 24))
                 max_panel_height = max(80, height - group_height - 24)
                 panel_height = min(max_panel_height, max(100, int(self.panel.winfo_reqheight()) + 18))
                 # The panel opens from the top edge of the combined floating
                 # chrome, so it stays above the progress cells while leaving
-                # the trapezoid attached below it.
+                # the advanced pill attached below it.
                 panel_y = -6
                 self._panel_outer.place(
                     in_=self.floating_group,
@@ -410,9 +447,11 @@ class Trapezoid:
 
     def refresh_language(self) -> None:
         self._draw_button()
+        self._last_layout_signature = None
         self._queue_layout()
 
     def refresh_theme(self) -> None:
+        self._button_font.configure(size=-round(12 * _ui_scale(self.host)))
         self._draw_button()
         self._last_layout_signature = None
         self._queue_layout()
@@ -435,6 +474,8 @@ class Trapezoid:
             if self._reserved_clearance is None or int(area.scroll_region_extra) == self._reserved_clearance:
                 area.scroll_region_extra = self._old_scroll_extra
                 area._queue_scroll_layout()
+        if area is not None:
+            area.set_bottom_inset(self._old_bottom_inset)
         if self._viewport_bind_id is not None:
             try:
                 self.canvas.unbind("<Configure>", self._viewport_bind_id)
@@ -472,7 +513,7 @@ class StepProgressBar(ttk.Frame):
     ) -> None:
         from pages.base_page import SimpleTooltip
 
-        super().__init__(parent, style="Panel.TFrame", padding=(4, 1))
+        super().__init__(parent, style="App.TFrame")
         self.page = page
         self.host = host
         self.context = context
@@ -496,73 +537,30 @@ class StepProgressBar(ttk.Frame):
         self._status_unsubscribe = None
         self._collapsed = False
         self._metadata = self._module_targets(page)
-        self._cells: dict[str, tk.Button] = {}
-        self._chips: dict[str, tk.Frame] = {}
         self._titles: dict[str, str] = {}
-        self._cell_width: int | None = None
-        self._tooltips: dict[str, Any] = {}
-
-        self.columnconfigure(0, weight=1)
-        self._cells_frame = ttk.Frame(self, style="Panel.TFrame")
-        self._cells_frame.grid(row=0, column=0, sticky="ew")
-        self._cells_frame.columnconfigure(0, weight=1)
-        for index, step in enumerate(self.steps):
-            self._cells_frame.columnconfigure(index, weight=1, uniform=f"stepcells_{id(self)}")
-            scale = _ui_scale(page)
-            cell = tk.Frame(self._cells_frame, borderwidth=0, highlightthickness=0)
-            cell.grid(row=0, column=index, sticky="ew", padx=1)
-            cell.columnconfigure(1, weight=1)
-            chip = tk.Frame(
-                cell,
-                width=_slim_px(STEP_CHIP_SIZE[0], scale),
-                height=_slim_px(STEP_CHIP_SIZE[1], scale),
-                borderwidth=0,
-                highlightthickness=0,
-            )
-            chip.grid(row=0, column=0, sticky="w", padx=(2, 0))
-            chip.configure(cursor="hand2")
-            button = tk.Button(
-                cell,
-                text="",
-                command=lambda key=step.key: self.scroll_to_step(key),
-                takefocus=True,
-                relief="flat",
-                borderwidth=0,
-                highlightthickness=0,
-                padx=4,
-                pady=0,
-                width=1,
-                anchor="w",
-                justify="left",
-                font=("TkDefaultFont", _step_font_size(page)),
-                cursor="hand2",
-            )
-            button.grid(row=0, column=1, sticky="ew")
-            # Chip and cell chrome must jump the same way as the text button.
-            cell.bind("<Button-1>", lambda _e, key=step.key: self.scroll_to_step(key), add="+")
-            chip.bind("<Button-1>", lambda _e, key=step.key: self.scroll_to_step(key), add="+")
-            self._chips[step.key] = chip
-            self._cells[step.key] = button
-            tip = lambda key=step.key: self.tooltip_text(key)
-            self._tooltips[step.key] = SimpleTooltip(button, tip)
-            SimpleTooltip(chip, tip)
-            SimpleTooltip(cell, tip)
-
-        right = ttk.Frame(self, style="Panel.TFrame")
-        right.grid(row=0, column=1, sticky="e", padx=(4, 0))
-        small = ("TkDefaultFont", _step_font_size(page))
-        self.badge = tk.Button(
-            right, text="", takefocus=True, command=self.expand, font=small,
-            relief="groove", borderwidth=1, highlightthickness=0, padx=4, pady=0,
-        )
-        self.badge.grid(row=0, column=0, sticky="e")
-        self.collapse_button = tk.Button(
-            right, text="⌄", width=2, takefocus=True, command=self.collapse, font=small,
-            relief="flat", borderwidth=0, highlightthickness=0, padx=0, pady=0,
-        )
-        self.collapse_button.grid(row=0, column=1, sticky="e", padx=(2, 0))
-        SimpleTooltip(self.badge, lambda: self.page.tr("step_expand" if self._collapsed else "step_count", **self._count_args()))
-        SimpleTooltip(self.collapse_button, lambda: self.page.tr("step_collapse"))
+        self._display_titles: dict[str, str] = {}
+        self._hit_rects: dict[str, tuple[float, float, float, float]] = {}
+        self._items: dict[str, dict[str, int]] = {}
+        self._strip_width: int | None = None
+        self._drawing_signature: tuple[Any, ...] | None = None
+        self._hover_key: str | None = None
+        self._pressed_key: str | None = None
+        self._focus_key = self.steps[0].key
+        self.active_step_key: str | None = None  # Most recently navigated step.
+        self._font = _step_font(page)
+        self._bold_font = _step_font(page, bold=True)
+        self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0,
+                                takefocus=True, cursor="hand2")
+        self.canvas.grid(row=0, column=0)
+        self._tooltip = SimpleTooltip(self.canvas, self._hit_tooltip)
+        self.canvas.bind("<Motion>", self._motion, add="+")
+        self.canvas.bind("<Leave>", self._leave, add="+")
+        self.canvas.bind("<ButtonPress-1>", self._press, add="+")
+        self.canvas.bind("<ButtonRelease-1>", self._release, add="+")
+        self.canvas.bind("<FocusIn>", self._focus, add="+")
+        self.canvas.bind("<FocusOut>", self._blur, add="+")
+        for sequence in ("<Left>", "<Right>", "<Home>", "<End>", "<Return>", "<space>"):
+            self.canvas.bind(sequence, self._key, add="+")
         self._render()
         bus = getattr(getattr(page, "ctx", None), "status_bus", None)
         if bus is not None:
@@ -877,112 +875,238 @@ class StepProgressBar(ttk.Frame):
 
     def _render(self) -> None:
         try:
-            count_args = self._count_args()
-            self._metadata = self._module_targets(self.page)
-            for key, data in self._data.items():
-                button = self._cells[key]
-                metadata = self._metadata.get(data.spec.ordinal, {})
-                title_key = metadata.get("title_key")
-                title = self.page.tr(title_key) if title_key else key
-                colors = getattr(self.page, "colors", None) or getattr(self.host, "colors", {}) or {}
-                panel = colors.get("panel", "#FFFFFF")
-                text_color = colors.get("text", "#111827")
-                self._titles[key] = f"{data.spec.ordinal} · {title}"
-                button.configure(
-                    text=self._titles[key],
-                    bg=panel,
-                    fg=_STATE_COLORS[data.state] if data.state in {"running", "error"} else text_color,
-                    activebackground=panel,
-                    activeforeground=text_color,
-                    disabledforeground=text_color,
-                )
-                try:
-                    button.master.configure(bg=panel)
-                except tk.TclError:
-                    pass
-                self._chips[key].configure(bg=_STATE_COLORS[data.state])
-            if self._cell_width is not None:
-                self.apply_cell_width(self._cell_width)
-            colors = getattr(self.page, "colors", None) or getattr(self.host, "colors", {}) or {}
-            for widget in (self.badge, self.collapse_button):
-                widget.configure(
-                    bg=colors.get("panel", "#FFFFFF"), fg=colors.get("text", "#111827"),
-                    activebackground=colors.get("panel", "#FFFFFF"),
-                    activeforeground=colors.get("text", "#111827"),
-                )
-            count_text = self.page.tr("step_count", **count_args)
-            self.badge.configure(text=count_text if self._collapsed else count_text)
-            self.collapse_button.configure(text="⌄")
-            if self._collapsed:
-                self._cells_frame.grid_remove()
-                self.badge.configure(text=count_text, command=self.expand)
-                self.collapse_button.grid_remove()
-            else:
-                self._cells_frame.grid()
-                self.badge.configure(text=count_text, command=self.expand)
-                self.collapse_button.grid()
-            self.host.trapezoid._reserve_scroll_clearance()
-            self.host.trapezoid._on_viewport_configure()
-            self.host.trapezoid._queue_layout()
-        except (tk.TclError, AttributeError):
-            pass
+            if not self.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        self._metadata = self._module_targets(self.page)
+        for key, data in self._data.items():
+            title_key = self._metadata.get(data.spec.ordinal, {}).get("title_key")
+            title = self.page.tr(title_key) if title_key else key
+            self._titles[key] = f"{data.spec.ordinal} · {title}"
+        self._draw_strip()
+        self.host.trapezoid._reserve_scroll_clearance()
+        self.host.trapezoid._on_viewport_configure()
+        self.host.trapezoid._queue_layout()
+
+    def _measure(self, text: str) -> int:
+        return max(self._font.measure(text), self._bold_font.measure(text))
+
+    def _geometry(self) -> tuple[int, int, int, int, int, int]:
+        scale = _ui_scale(self.page)
+        px = lambda value: _slim_px(value, scale)
+        return (px(7), 2*px(4) + px(10) + px(4), 2*px(3) + px(6), px(28), px(6), px(14))
 
     def preferred_width(self) -> int:
-        """Natural width that fits every full step title on one line."""
-        try:
-            import tkinter.font as tkfont
+        pad, cell_fixed, connector, badge, gap, collapse = self._geometry()
+        if self._collapsed:
+            return 2 * pad + badge
+        return (2 * pad + sum(cell_fixed + self._measure(self._titles.get(step.key, step.key))
+                              for step in self.steps)
+                + (len(self.steps) - 1) * connector + gap + badge + collapse)
 
-            font = tkfont.Font(font=next(iter(self._cells.values())).cget("font"))
-            scale = _ui_scale(self.page)
-            chip = _slim_px(STEP_CHIP_SIZE[0], scale) + 6
-            # Columns are uniform, so size every cell for the longest title.
-            widest = max(
-                font.measure(self._titles.get(key) or str(self._cells[key].cget("text")))
-                for key in self._cells
-            )
-            total = 6 + len(self._cells) * (chip + widest + 24)
-            badge = max(32, font.measure(str(self.badge.cget("text") or "0/0")) + 12)
-            return total + badge + 20
-        except (tk.TclError, StopIteration, TypeError, ValueError):
-            return 280
+    def apply_width(self, width: int) -> None:
+        """Fit cells to content, shortening the longest titles first."""
+        self._strip_width = max(1, int(width))
+        self._draw_strip()
 
-    def apply_cell_width(self, cell_width: int) -> None:
-        """Keep every step on one line; elide titles that do not fit."""
-        self._cell_width = int(cell_width)
-        try:
-            spec = str(next(iter(self._cells.values())).cget("font"))
-            room = max(16, int(cell_width) - 16)
-            cache = getattr(self, "_elide_cache", None)
-            if cache is None:
-                cache = self._elide_cache = {}
-            for key, button in self._cells.items():
-                full = self._titles.get(key) or str(button.cget("text"))
-                cache_key = (full, room, spec)
-                text = cache.get(cache_key)
-                if text is None:
-                    text = self._elide(full, room, spec)
-                    if len(cache) > 256:
-                        cache.clear()
-                    cache[cache_key] = text
-                if str(button.cget("text")) != text:
-                    button.configure(text=text)
-        except (tk.TclError, StopIteration):
-            pass
-
-    def _elide(self, full: str, room: int, spec: str) -> str:
-        import tkinter.font as tkfont
-
-        font = tkfont.Font(root=self, font=spec)
-        if font.measure(full) <= room:
+    def _elide(self, full: str, room: int) -> str:
+        if self._measure(full) <= room:
             return full
-        lo, hi = 1, len(full)
+        if self._measure("…") > room:
+            return ""
+        lo, hi = 0, len(full)
         while lo < hi:
             mid = (lo + hi + 1) // 2
-            if font.measure(full[:mid] + "…") <= room:
+            if self._measure(full[:mid] + "…") <= room:
                 lo = mid
             else:
                 hi = mid - 1
         return full[:lo] + "…"
+
+    def _draw_strip(self) -> None:
+        scale = _ui_scale(self.page)
+        px = lambda value: _slim_px(value, scale)
+        # Design height 18×scale; grow only when glyphs would clip.
+        line = max(self._font.metrics("linespace"), self._bold_font.metrics("linespace"))
+        designed = px(18)
+        height = designed if line <= designed else line + px(4)
+        width = self._strip_width or self.preferred_width()
+        colors = getattr(self.page, "colors", {}) or {}
+        background = colors.get("bg", "#FFFFFF")
+        dark = getattr(getattr(self.page.ctx, "state", None), "theme", "light") == "dark"
+        signature = (width, height, scale, self._collapsed, tuple(self._titles.items()),
+                     str(self._font.actual()), background, dark)
+        if signature == self._drawing_signature:
+            self._paint()
+            return
+        self._drawing_signature = signature
+        c = self.canvas
+        c.configure(width=width, height=height + px(2), bg=background)
+        c.delete("all")
+        self._items.clear()
+        self._hit_rects.clear()
+        self._display_titles.clear()
+        for offset, color in ((px(2), "#172033" if dark else "#EEF1F5"),
+                              (px(1), "#1B2535" if dark else "#DCE2EA"), (0, "#202B3C")):
+            _rounded(c, (0.5, 0.5 + offset, width - 0.5, height - 0.5 + offset), height / 2,
+                     fill=color, outline="#3A4658" if offset == 0 else color, width=1,
+                     tags="strip" if offset == 0 else "shadow")
+        pad, cell_fixed, connector, badge, gap, collapse = self._geometry()
+        x, cy = ((width - badge) / 2 if self._collapsed else pad), height / 2
+        if not self._collapsed:
+            measured = [self._measure(self._titles[step.key]) for step in self.steps]
+            room = max(0, width - 2*pad - cell_fixed*len(self.steps)
+                       - connector*(len(self.steps)-1) - gap - badge - collapse)
+            lo, hi = 0, max(measured)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if sum(min(value, mid) for value in measured) <= room:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            for index, step in enumerate(self.steps):
+                key = step.key
+                text_room = min(measured[index], lo)
+                text = self._elide(self._titles[key], text_room)
+                self._display_titles[key] = text
+                cell_width = cell_fixed + text_room
+                box = (x, 1, x + cell_width, height - 1)
+                self._hit_rects[key] = box
+                items = self._items[key] = {}
+                items["background"] = _rounded(c, box, (height-2)/2, fill="#202B3C", outline="")
+                nx, r = x + px(4) + px(5), px(10)/2
+                node = (nx-r, cy-r, nx+r, cy+r)
+                items["node"] = c.create_oval(*node, width=1)
+                items["inner"] = c.create_oval(nx-r+2, cy-r+2, nx+r-2, cy+r-2, width=1)
+                items["dot"] = c.create_oval(nx-px(1), cy-px(1), nx+px(1), cy+px(1), outline="")
+                items["check"] = c.create_line(nx-r*.55, cy, nx-r*.1, cy+r*.45,
+                                                nx+r*.6, cy-r*.5, fill="white", width=px(1))
+                items["bang"] = c.create_line(nx, cy-r*.55, nx, cy+r*.05, fill="white", width=px(1))
+                items["bang_dot"] = c.create_oval(nx-.6, cy+r*.4-.6, nx+.6, cy+r*.4+.6,
+                                                    fill="white", outline="")
+                items["text"] = c.create_text(x + px(4) + px(10) + px(4), cy, anchor="w", text=text,
+                                               fill="#F1F5F9", font=self._font)
+                x += cell_width
+                if index < len(self.steps)-1:
+                    items["connector"] = c.create_line(x+px(3), cy, x+px(3)+px(6), cy, width=1)
+                    x += connector
+            x += gap
+        self._badge_box = (x, (height-px(14))/2, x+badge, (height+px(14))/2)
+        self._badge_item = _rounded(c, self._badge_box, px(7), fill="#354258", outline="")
+        self.badge_text_item = c.create_text(x+badge/2, cy, fill="#E2E8F0", font=self._font)
+        self._hit_rects["__badge"] = self._badge_box
+        if not self._collapsed:
+            x += badge
+            self._hit_rects["__collapse"] = (x, 1, x+collapse, height-1)
+            self._collapse_outline = _rounded(c, self._hit_rects["__collapse"], px(7),
+                                               fill="#202B3C", outline="")
+            c.create_line(x+collapse/2-px(3), cy-px(1), x+collapse/2, cy+px(2),
+                          x+collapse/2+px(3), cy-px(1), fill="#CBD5E1", width=1)
+        if self._focus_key not in self._hit_rects:
+            self._focus_key = next(iter(self._hit_rects))
+        if self._hover_key not in self._hit_rects:
+            self._hover_key = None
+        self._paint()
+
+    def _paint(self) -> None:
+        c = self.canvas
+        focused = c.focus_get() is c
+        for key, items in self._items.items():
+            state = self._data[key].state
+            active = key == self.active_step_key
+            fill = "#354258" if active or key == self._hover_key else "#202B3C"
+            if key == self._pressed_key:
+                fill = "#46556B"
+            outline = "#93C5FD" if focused and key == self._focus_key else "#94A3B8" if active else ""
+            c.itemconfigure(items["background"], fill=fill, outline=outline)
+            c.itemconfigure(items["text"], font=self._bold_font if active or state == "running" else self._font)
+            c.itemconfigure(items["node"], fill=_STATE_COLORS[state] if state in {"done", "error"} else fill,
+                            outline=_STATE_COLORS[state])
+            c.itemconfigure(items["inner"], outline="#CBD5E1" if state == "idle" else "#D99A00",
+                            state="normal" if state in {"idle", "running"} else "hidden")
+            c.itemconfigure(items["dot"], fill="#D99A00", state="normal" if state == "running" else "hidden")
+            for name, visible in (("check", state == "done"), ("bang", state == "error"),
+                                  ("bang_dot", state == "error")):
+                c.itemconfigure(items[name], state="normal" if visible else "hidden")
+            if "connector" in items:
+                c.itemconfigure(items["connector"], fill="#93B4F5" if state == "done" else "#526075")
+        c.itemconfigure(self.badge_text_item, text=self.page.tr("step_count", **self._count_args()))
+        c.itemconfigure(self._badge_item, outline="#93C5FD" if focused and self._focus_key == "__badge" else "")
+        if not self._collapsed:
+            c.itemconfigure(self._collapse_outline,
+                            outline="#93C5FD" if focused and self._focus_key == "__collapse" else "",
+                            fill="#46556B" if self._pressed_key == "__collapse" else "#354258" if self._hover_key == "__collapse" else "#202B3C")
+
+    def _hit(self, x: float, y: float) -> str | None:
+        return next((key for key, (x1, y1, x2, y2) in self._hit_rects.items()
+                     if x1 <= x <= x2 and y1 <= y <= y2), None)
+
+    def _hit_tooltip(self) -> str:
+        key = self._hover_key or (self._focus_key if self.canvas.focus_get() is self.canvas else None)
+        if key in self._data:
+            return self._titles[key] + "\n\n" + self.tooltip_text(key)
+        if key == "__collapse":
+            return self.page.tr("step_collapse")
+        return self.page.tr("step_expand") if key == "__badge" else ""
+
+    def _motion(self, event: tk.Event) -> None:
+        key = self._hit(event.x, event.y)
+        if key != self._hover_key:
+            self._hover_key = key
+            self._tooltip._show(event)
+            self._paint()
+
+    def _leave(self, _event: tk.Event) -> None:
+        self._hover_key = None
+        self._pressed_key = None
+        self._paint()
+
+    def _press(self, event: tk.Event) -> None:
+        self._pressed_key = self._hit(event.x, event.y)
+        if self._pressed_key is not None:
+            self._focus_key = self._pressed_key
+        self.canvas.focus_set()
+        self._tooltip._hide()
+        self._paint()
+
+    def _release(self, event: tk.Event) -> None:
+        key = self._hit(event.x, event.y)
+        pressed, self._pressed_key = self._pressed_key, None
+        if key is not None and key == pressed:
+            self._invoke(key)
+        self._paint()
+
+    def _invoke(self, key: str) -> None:
+        if key == "__badge":
+            self.expand()
+        elif key == "__collapse":
+            self.collapse()
+        else:
+            self.scroll_to_step(key)
+
+    def _focus(self, event: tk.Event) -> None:
+        if self._focus_key not in self._hit_rects:
+            self._focus_key = next(iter(self._hit_rects))
+        self._paint()
+        self._tooltip._show(event)
+
+    def _blur(self, _event: tk.Event) -> None:
+        self._tooltip._hide()
+        self._paint()
+
+    def _key(self, event: tk.Event) -> str:
+        keys = list(self._hit_rects)
+        index = keys.index(self._focus_key) if self._focus_key in keys else 0
+        if event.keysym in {"Return", "space"}:
+            self._invoke(keys[index])
+        else:
+            index = (0 if event.keysym == "Home" else len(keys)-1 if event.keysym == "End"
+                     else (index + (1 if event.keysym == "Right" else -1)) % len(keys))
+            self._focus_key = keys[index]
+            self._tooltip._show(event)
+        self._paint()
+        return "break"
 
     def collapse(self) -> None:
         self._collapsed = True
@@ -993,6 +1117,8 @@ class StepProgressBar(ttk.Frame):
         self._render()
 
     def scroll_to_step(self, step_key: str) -> None:
+        self.active_step_key = step_key
+        self._paint()
         self._metadata = self._module_targets(self.page)
         metadata = self._metadata.get(self._data[step_key].spec.ordinal)
         target = metadata.get("target") if metadata else None
@@ -1027,17 +1153,10 @@ class StepProgressBar(ttk.Frame):
         self._render()
 
     def refresh_theme(self) -> None:
-        try:
-            size = _step_font_size(self.page)
-            scale = _ui_scale(self.page)
-            for key, button in self._cells.items():
-                button.configure(font=("TkDefaultFont", size))
-                self._chips[key].configure(
-                    width=_slim_px(STEP_CHIP_SIZE[0], scale),
-                    height=_slim_px(STEP_CHIP_SIZE[1], scale),
-                )
-        except tk.TclError:
-            pass
+        size = -round(12 * _ui_scale(self.page))
+        self._font.configure(size=size)
+        self._bold_font.configure(size=size)
+        self._drawing_signature = None
         self._render()
 
     def _on_destroy(self, event: tk.Event) -> None:

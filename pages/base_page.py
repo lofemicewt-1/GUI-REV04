@@ -544,6 +544,7 @@ class VerticalScrollArea(ttk.Frame):
         self.clamp_width = bool(clamp_width)
         self.reserve_vertical_gutter = bool(reserve_vertical_gutter)
         self.scroll_region_extra = max(0, int(scroll_region_extra))
+        self.bottom_inset = 0
         self._scrollbar_visible = False
         self._horizontal_scrollbar_visible = False
         self._layout_job: str | None = None
@@ -583,6 +584,14 @@ class VerticalScrollArea(ttk.Frame):
         self.canvas.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
         self.canvas.bind_all("<Shift-MouseWheel>", self._on_shift_mousewheel, add="+")
         self.refresh_theme()
+
+    def set_bottom_inset(self, pixels: int) -> None:
+        """Reserve a fixed band below the viewport and its scrollbars."""
+        pixels = max(0, int(pixels))
+        if pixels != self.bottom_inset:
+            self.bottom_inset = pixels
+            self.rowconfigure(2, minsize=pixels)
+            self._queue_scroll_layout()
 
     def _pointer_widget(self, event: tk.Event) -> tk.Misc:
         try:
@@ -1948,7 +1957,9 @@ class BasePage(ttk.Frame):
         from pages.step_progress import Trapezoid
 
         viewport = self._progress_viewport_canvas()
-        floating = ttk.Frame(viewport, style="Panel.TFrame", padding=(8, 0, 8, 0))
+        area = Trapezoid._nearest_scroll_area(viewport)
+        # The chrome sits in the reserved band, outside the scrolling viewport.
+        floating = ttk.Frame(area if area is not None else viewport, style="App.TFrame")
         floating.columnconfigure(0, weight=1)
         self._floating_group = floating
         self.trapezoid = Trapezoid(
@@ -1984,7 +1995,7 @@ class BasePage(ttk.Frame):
         from pages.step_progress import StepProgressBar
 
         bar = StepProgressBar(self, host, host.trapezoid.progress_slot, steps, context)
-        bar.grid(row=0, column=0, sticky="ew")
+        bar.grid(row=0, column=0, sticky="n")
         bar.grid_remove()
         self.step_progress = bar
         host._step_progress_bars.append(bar)

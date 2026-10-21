@@ -105,7 +105,8 @@ class Awp1018StepProgressTests(unittest.TestCase):
             "channels", "waveform", "adc", "detection",
         ])
         self.assertIsNotNone(host.trapezoid)
-        self.assertIs(host._floating_group.master, host.mode_scroll.canvas)
+        self.assertIs(host._floating_group.master, host.mode_scroll)
+        self.assertGreaterEqual(host.mode_scroll.bottom_inset, 42)
 
         host.show_mode("full_mode", update_chip=False)
         full = host.mode_pages["full_mode"]
