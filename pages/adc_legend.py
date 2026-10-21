@@ -8,7 +8,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 try:
     from PIL import Image, ImageDraw, ImageTk
-except ImportError:  # The native Canvas renderer remains usable without Pillow.
+except (ImportError, OSError):  # Canvas remains usable if Pillow DLLs cannot load.
     Image = ImageDraw = ImageTk = None
 
 
@@ -662,32 +662,46 @@ class AdcLegend(ttk.Frame):
         return points
 
     def _render_connectors(self, width, height, connectors) -> None:
+        global ImageTk
         if Image is None or ImageDraw is None or ImageTk is None:
             self._connector_photo = None
             self._connector_cache = None
             return
-        scale = self._ui_font()[1] / 10
-        key = (int(width), int(height), scale, repr(connectors), tuple(sorted(self.colors.items())))
-        if self._connector_cache != key:
-            ss = 3
-            raster = Image.new("RGBA", (int(width)*ss, int(height)*ss))
-            draw = ImageDraw.Draw(raster)
-            for points, color in connectors:
-                scaled = [(x*ss, y*ss) for x, y in points]
-                draw.line(scaled, fill=color, width=2*ss, joint="curve")
-                x, y = points[-1]
-                px, py = points[-2]
-                angle = math.atan2(y-py, x-px)
-                length, half = 9, 4
-                bx, by = x-length*math.cos(angle), y-length*math.sin(angle)
-                draw.polygon([(x*ss, y*ss), ((bx-half*math.sin(angle))*ss, (by+half*math.cos(angle))*ss),
-                              ((bx+half*math.sin(angle))*ss, (by-half*math.cos(angle))*ss)], fill=color)
-            raster = raster.resize((int(width), int(height)), getattr(Image, "Resampling", Image).LANCZOS)
-            self._connector_photo = ImageTk.PhotoImage(raster, master=self.canvas)
-            self._connector_cache = key
-        self.canvas.itemconfigure("transition", state="hidden")
-        item = self.canvas.create_image(0, 0, anchor="nw", image=self._connector_photo, tags=("connector_image",))
-        self.canvas.tag_lower(item)
+        try:
+            scale = self._ui_font()[1] / 10
+            key = (int(width), int(height), scale, repr(connectors), tuple(sorted(self.colors.items())))
+            if self._connector_cache != key:
+                ss = 3
+                raster = Image.new("RGBA", (int(width)*ss, int(height)*ss))
+                draw = ImageDraw.Draw(raster)
+                for points, color in connectors:
+                    scaled = [(x*ss, y*ss) for x, y in points]
+                    draw.line(scaled, fill=color, width=2*ss, joint="curve")
+                    x, y = points[-1]
+                    px, py = points[-2]
+                    angle = math.atan2(y-py, x-px)
+                    length, half = 9, 4
+                    bx, by = x-length*math.cos(angle), y-length*math.sin(angle)
+                    draw.polygon([(x*ss, y*ss), ((bx-half*math.sin(angle))*ss, (by+half*math.cos(angle))*ss),
+                                  ((bx+half*math.sin(angle))*ss, (by-half*math.cos(angle))*ss)], fill=color)
+                raster = raster.resize((int(width), int(height)), getattr(Image, "Resampling", Image).LANCZOS)
+                self._connector_photo = ImageTk.PhotoImage(raster, master=self.canvas)
+                self._connector_cache = key
+            item = self.canvas.create_image(0, 0, anchor="nw", image=self._connector_photo, tags=("connector_image",))
+            self.canvas.tag_lower(item)
+            self.canvas.itemconfigure("transition", state="hidden")
+        except (ImportError, OSError, tk.TclError):
+            # ImageTk loads _imagingtk lazily; Windows App Control may block
+            # that DLL. Disable raster connectors process-wide to avoid an
+            # exception storm in subsequent after() callbacks and legends.
+            ImageTk = None
+            self._connector_photo = None
+            self._connector_cache = None
+            try:
+                self.canvas.delete("connector_image")
+                self.canvas.itemconfigure("transition", state="normal")
+            except tk.TclError:
+                pass  # The canvas may already have been destroyed.
 
     def _wait_text(self, stage: Mapping[str, Any]) -> str:
         condition = stage["condition"]

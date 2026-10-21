@@ -27,6 +27,37 @@ class Value:
         self.value = value
 
 
+class ConnectorFallbackTests(unittest.TestCase):
+    def test_raster_failures_disable_pillow_for_all_legends(self):
+        for operation in ("new", "Draw", "resize", "PhotoImage", "create_image"):
+            for error in (ImportError, OSError, tk.TclError):
+                with self.subTest(operation=operation, error=error):
+                    image, draw, image_tk = Mock(), Mock(), Mock()
+                    canvas = Mock()
+                    operations = {
+                        "new": image.new,
+                        "Draw": draw.Draw,
+                        "resize": image.new.return_value.resize,
+                        "PhotoImage": image_tk.PhotoImage,
+                        "create_image": canvas.create_image,
+                    }
+                    failing = operations[operation]
+                    failing.side_effect = error("blocked raster backend")
+                    with patch.multiple(legend_module, Image=image, ImageDraw=draw, ImageTk=image_tk):
+                        legends = [SimpleNamespace(
+                            canvas=canvas, colors={}, _ui_font=lambda: ("Arial", 10),
+                            _connector_cache=None, _connector_photo=None,
+                        ) for _ in range(2)]
+                        for legend in legends:
+                            for width in (100, 120):
+                                AdcLegend._render_connectors(legend, width, 100, [([(0, 0), (1, 1)], "red")])
+                                self.assertIsNone(legend._connector_photo)
+                                self.assertIsNone(legend._connector_cache)
+                        self.assertIsNone(legend_module.ImageTk)
+                        failing.assert_called_once()
+                        canvas.itemconfigure.assert_called_once_with("transition", state="normal")
+
+
 class AdcLegendRenderingTests(unittest.TestCase):
     def make_root(self):
         try:
@@ -125,6 +156,31 @@ class AdcLegendRenderingTests(unittest.TestCase):
             legend._render_diagram()
             self.assertEqual(len(legend.canvas.find_withtag("connector_image")), 1)
             self.assertIsNotNone(legend._connector_photo)
+
+    def test_blocked_imagetk_refresh_keeps_canvas_connectors_visible(self):
+        root = self.make_root()
+        backend = Mock()
+        backend.PhotoImage.side_effect = ImportError("App Control blocked _imagingtk")
+        with patch.object(legend_module, "ImageTk", backend), patch.object(root, "report_callback_exception") as errors:
+            if legend_module.Image is None or legend_module.ImageDraw is None:
+                self.skipTest("Pillow unavailable")
+            legend = AdcLegend(root, self.translate, get_colors("light"))
+            legend.pack(fill="x")
+            for threshold in (1, 2, 3):
+                legend.set_rules([
+                    dict(id="Stage0", condition="press", threshold=threshold, target="Stage1"),
+                    dict(id="Stage1", condition="release", threshold=0, target="Stage0"),
+                ], {})
+                root.update()
+                lines = legend.canvas.find_withtag("transition")
+                self.assertEqual(len(lines), 2)
+                self.assertFalse(legend.canvas.find_withtag("connector_image"))
+                for item in lines:
+                    self.assertNotEqual(legend.canvas.itemcget(item, "state"), "hidden")
+                    self.assertEqual(legend.canvas.itemcget(item, "smooth"), "true")
+            backend.PhotoImage.assert_called_once()
+            errors.assert_not_called()
+            self.assertIsNone(legend_module.ImageTk)
 
     def test_measured_rule_columns_fit_at_requested_window_widths(self):
         from config.languages import t
