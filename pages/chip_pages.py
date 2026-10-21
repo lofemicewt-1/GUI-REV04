@@ -268,6 +268,8 @@ class AWP1921AWP1923Page(BasePage):
 
     def _fit_footer_height(self):
         self._footer_fit_job = None
+        if self._fit_full_mode_footer():
+            return
         try:
             if self.winfo_height() > 1:
                 desired = min(self._footer.winfo_reqheight() + 16, max(48, int(self.winfo_height() * .2)))
@@ -978,6 +980,7 @@ class AWP1921AWP1923Page(BasePage):
             # every mode, including transitions where no bar is active.
             self._reset_step_progress()
         self.current_mode = mode
+        self.select_full_mode_layout(mode)
         self._sync_mode_button_styles()
         for page in dict.values(self.mode_pages):
             page.grid_remove()

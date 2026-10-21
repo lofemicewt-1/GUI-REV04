@@ -55,7 +55,7 @@ class Awp1221StepProgressTests(unittest.TestCase):
             self.progress.mark(key, "done", token)
         _flush(self.root, 4)
 
-    def test_mounts_button_progress_and_keeps_trapezoid_for_full(self) -> None:
+    def test_mounts_button_progress_and_restores_inline_footer_for_full(self) -> None:
         self.assertEqual(
             [(step.key, step.ordinal) for step in self.progress.steps],
             [("en", 1), ("waveform", 2), ("adc", 3), ("detection", 4)],
@@ -76,10 +76,14 @@ class Awp1221StepProgressTests(unittest.TestCase):
         self.assertIsNone(full.step_progress)
         self.assertIs(self.host.trapezoid, trapezoid)
         self.assertIsNone(self.host._active_step_page)
+        self.assertTrue(self.host._full_mode_footer.active)
+        self.assertFalse(trapezoid.floating_group.winfo_manager())
+        self.assertEqual(self.host.mode_scroll.bottom_inset, trapezoid._old_bottom_inset)
 
         self.host.show_mode("button_mode")
         _flush(self.root, 5)
         self.assertIs(self.host._active_step_page, self.page)
+        self.assertFalse(self.host._full_mode_footer.active)
 
     def test_high_ack_is_blue_before_adc_ldo_failure_and_bad_ack_is_red(self) -> None:
         self.host.en_enabled_var.set(True)

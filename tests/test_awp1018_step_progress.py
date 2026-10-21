@@ -98,7 +98,7 @@ class Awp1018StepProgressTests(unittest.TestCase):
                     break
         pump(app.root, 0.06)
 
-    def test_normal_diff_steps_and_full_trapezoid_only(self):
+    def test_normal_diff_steps_and_full_inline_footer(self):
         app, host = self.open_host()
         normal = host.mode_pages["awp1018_normal_mode"]
         self.assertEqual([step.key for step in normal.step_progress.steps], [
@@ -114,6 +114,10 @@ class Awp1018StepProgressTests(unittest.TestCase):
         self.assertIsNone(full.step_progress)
         self.assertIsNone(host._active_step_page)
         self.assertEqual(len(host._step_progress_bars), 1)
+        pump(app.root, 0.08)
+        self.assertTrue(host._full_mode_footer.active)
+        self.assertFalse(host._floating_group.winfo_manager())
+        self.assertEqual(host.mode_scroll.bottom_inset, host.trapezoid._old_bottom_inset)
 
         host.show_mode("awp1018_diff_mode", update_chip=False)
         diff = host.mode_pages["awp1018_diff_mode"]
@@ -121,6 +125,7 @@ class Awp1018StepProgressTests(unittest.TestCase):
             "channels", "waveform", "adc", "detection",
         ])
         self.assertIs(host._active_step_page, diff)
+        self.assertFalse(host._full_mode_footer.active)
 
     def test_channel_receipts_and_failures_follow_mask_and_mapping_writes(self):
         app, host = self.open_host()

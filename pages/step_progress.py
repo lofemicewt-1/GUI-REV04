@@ -323,6 +323,11 @@ class Trapezoid:
             return
         if self._old_scroll_extra is None:
             self._old_scroll_extra = int(area.scroll_region_extra)
+        if getattr(self.host, "current_mode", None) == "full_mode":
+            area.set_bottom_inset(self._old_bottom_inset)
+            area.scroll_region_extra = self._old_scroll_extra
+            area._queue_scroll_layout()
+            return
         try:
             measured = max(int(self.floating_group.winfo_reqheight()), int(self.floating_group.winfo_height()))
         except tk.TclError:
@@ -372,6 +377,10 @@ class Trapezoid:
 
     def _layout(self) -> None:
         self._layout_job = None
+        if getattr(self.host, "current_mode", None) == "full_mode":
+            self.floating_group.place_forget()
+            self._reserve_scroll_clearance()
+            return
         try:
             width = max(1, int(self.canvas.winfo_width()))
             height = max(1, int(self.canvas.winfo_height()))

@@ -539,14 +539,19 @@ class Awp192xChromeTkTests(unittest.TestCase):
             pass
         self.page = None
 
-    def test_full_mode_uses_shared_trapezoid_for_detail_editor_without_progress(self):
+    def test_full_mode_uses_inline_detail_editor_without_progress(self):
         self.assertIs(self.page.reg_panel, self.page.trapezoid.registers)
         self.assertIs(self.page._detail_host.master, self.page.trapezoid.panel)
         self.assertTrue(self.page.identity_bar.grid_info())
+        button_detail_host = self.page._detail_host
 
         self.page.show_mode("full_mode")
         full = self.page.mode_pages["full_mode"]
         self.assertIsNone(full.step_progress)
+        self.assertIsNot(self.page.reg_panel, self.page.trapezoid.registers)
+        self.assertIs(self.page._detail_host.master, self.page._footer_panel)
+        self.assertTrue(self.page.addr_label.cget("text"))
+        self.assertTrue(self.page.rr_btn.cget("text"))
         self.page.detail_mode_var.set(True)
         self.page._on_detail_mode_changed()
         self.assertTrue(self.page.detail_mode_active())
@@ -554,6 +559,9 @@ class Awp192xChromeTkTests(unittest.TestCase):
         self.assertEqual(str(self.page.write_value_entry.cget("textvariable")), str(self.page.write_value_var))
         self.page.write_value_var.set("0x1234")
         self.assertEqual(self.serial.calls, [])
+        self.page.show_mode("button_mode")
+        self.assertIs(self.page.reg_panel, self.page.trapezoid.registers)
+        self.assertIs(self.page._detail_host, button_detail_host)
 
     def test_button_full_button_mode_transition_clears_completed_proofs(self):
         # Offline harness has no port_session, so mark() cannot land a blue

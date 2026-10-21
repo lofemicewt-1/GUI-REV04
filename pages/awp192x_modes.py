@@ -5001,18 +5001,12 @@ class FullModePage(ButtonModePage):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-        header = ttk.Frame(self, style="App.TFrame")
-        header.grid(row=0, column=0, sticky="ew")
-        header.columnconfigure(0, weight=1)
-        title_header = self.make_title(header, "full_mode", show_logo=False)
-        title_header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
-        self.preset_toolbar = self._create_preset_toolbar(header)
-        self.preset_toolbar.mount_header()
+        header = self.make_title(self, "full_mode", show_logo=False)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
 
         body = ttk.Frame(self, style="App.TFrame")
         yield
         body.grid(row=1, column=0, sticky="nsew")
-        self._full_mode_body = body
         body.columnconfigure(0, weight=3, uniform="full_mode_cols")
         body.columnconfigure(1, weight=4, uniform="full_mode_cols")
         body.columnconfigure(2, weight=3, uniform="full_mode_cols")
@@ -5074,9 +5068,6 @@ class FullModePage(ButtonModePage):
 
         right = ttk.Frame(body, style="Panel.TFrame", padding=14)
         right.grid(row=0, column=2, sticky="nsew")
-        self._full_mode_panels = (left_panel, middle, right)
-        self._full_mode_layout_signature = None
-        body.bind("<Configure>", self._queue_full_mode_reflow, add="+")
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=3)
         right.rowconfigure(1, weight=2)
@@ -5190,7 +5181,6 @@ class FullModePage(ButtonModePage):
 
         adc_btn_frame = ttk.Frame(left, style="Panel.TFrame")
         adc_btn_frame.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(10, 0))
-        self._register_module_spacing_widget(adc_btn_frame, before=True, after=False)
         for index in range(3):
             adc_btn_frame.columnconfigure(index, weight=1)
 
@@ -5212,7 +5202,6 @@ class FullModePage(ButtonModePage):
 
         adc_aux_frame = ttk.Frame(left, style="Panel.TFrame")
         adc_aux_frame.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(8, 0))
-        self._register_module_spacing_widget(adc_aux_frame, before=True, after=False)
         adc_aux_frame.columnconfigure(0, weight=1)
         adc_aux_frame.columnconfigure(1, weight=1)
 
@@ -5280,7 +5269,6 @@ class FullModePage(ButtonModePage):
         play_frame = ttk.Frame(middle, style="Panel.TFrame")
         yield
         play_frame.grid(row=row, column=0, columnspan=6, sticky="ew", pady=(8, 0))
-        self._register_module_spacing_widget(play_frame, before=True, after=False)
         play_frame.columnconfigure(0, weight=1)
         play_frame.columnconfigure(1, weight=1)
 
@@ -5315,9 +5303,8 @@ class FullModePage(ButtonModePage):
         yield
         right_row = self._add_full_memory_controls(right_controls, right_row)
 
-        log_frame = self.make_serial_log(right, subscribe=True)
+        log_frame = self.make_serial_log(right, height=18, subscribe=True)
         log_frame.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
-        self._register_module_spacing_widget(log_frame, before=True, after=False)
 
         self.duration_var.trace_add("write", lambda *_: self._update_period_hint())
         self.max_voltage_var.trace_add("write", lambda *_: self._on_voltage_changed())
@@ -5894,58 +5881,7 @@ class FullModePage(ButtonModePage):
             label.configure(text=self.tr(key))
         attach_glossary_tooltips(self, self.tr, self._tooltips)
 
-    def _queue_full_mode_reflow(self, _event: tk.Event | None = None) -> None:
-        if getattr(self, "_full_mode_layout_job", None) is not None:
-            return
-        try:
-            self._full_mode_layout_job = self.after_idle(self._reflow_full_mode_columns)
-        except tk.TclError:
-            self._full_mode_layout_job = None
 
-    def _reflow_full_mode_columns(self) -> None:
-        self._full_mode_layout_job = None
-        body = getattr(self, "_full_mode_body", None)
-        panels = getattr(self, "_full_mode_panels", ())
-        if body is None or len(panels) != 3:
-            return
-        try:
-            width = int(body.winfo_width())
-            if width <= 1:
-                return
-            side_by_side = width >= 1160
-            if side_by_side == self._full_mode_layout_signature:
-                return
-            self._full_mode_layout_signature = side_by_side
-            if side_by_side:
-                for column, weight in enumerate((3, 4, 3)):
-                    body.columnconfigure(column, weight=weight, uniform="full_mode_cols")
-                    panels[column].grid_configure(
-                        row=0,
-                        column=column,
-                        columnspan=1,
-                        sticky="nsew",
-                        padx=(0, 12) if column < 2 else 0,
-                        pady=0,
-                    )
-                for row in (1, 2):
-                    body.rowconfigure(row, weight=0)
-                body.rowconfigure(0, weight=1)
-            else:
-                body.columnconfigure(0, weight=1, uniform="")
-                body.columnconfigure(1, weight=0, uniform="")
-                body.columnconfigure(2, weight=0, uniform="")
-                for row, panel in enumerate(panels):
-                    body.rowconfigure(row, weight=1)
-                    panel.grid_configure(
-                        row=row,
-                        column=0,
-                        columnspan=3,
-                        sticky="nsew",
-                        padx=0,
-                        pady=(0, 12) if row < 2 else 0,
-                    )
-        except tk.TclError:
-            return
 
     def _style_only_action(self) -> None:
         pass

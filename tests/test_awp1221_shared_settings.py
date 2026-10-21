@@ -165,16 +165,14 @@ class Awp1221SharedSettingsUiTests(unittest.TestCase):
         self.full = self.host.mode_pages["full_mode"]
         self.button = self.host.mode_pages["button_mode"]
 
-    def test_full_mode_toolbar_actions_are_enabled(self) -> None:
-        toolbar = self.full.preset_toolbar
-        self.assertIsNotNone(toolbar)
-        self.assertEqual(len(toolbar.buttons), 9)
-        for action, button in toolbar.buttons.items():
-            if action == "apply_slot" and button.winfo_manager() == "":
-                continue  # merged into read_and_apply (round-2 decision 7)
-            with self.subTest(action=action):
-                self.assertNotEqual(str(button.cget("state")), "disabled")
-        self.assertNotIn("awp1221_preset_1_reserved", self.full._buttons)
+    def test_full_mode_keeps_baseline_reserved_preset_buttons(self) -> None:
+        self.assertIsNone(self.full.preset_toolbar)
+        for key in ("awp1221_preset_1_reserved", "awp1221_preset_2_reserved",
+                    "awp1221_preset_3_reserved", "awp1221_import_reserved",
+                    "awp1221_export_reserved"):
+            with self.subTest(key=key):
+                self.assertEqual(str(self.full._buttons[key].cget("state")), "disabled")
+        self.assertIsNotNone(self.button.preset_toolbar)
 
     def test_button_mode_merges_slot_load_and_apply_controls(self) -> None:
         toolbar = self.button.preset_toolbar

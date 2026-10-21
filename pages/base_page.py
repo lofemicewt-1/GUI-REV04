@@ -1574,6 +1574,31 @@ class BasePage(ttk.Frame):
         except Exception:
             pass
 
+    def make_full_mode_label(
+        self, parent: tk.Misc, key: str, *, step: int | None = None,
+        style: str = "SectionTitle.TLabel",
+    ) -> ttk.Label:
+        """Baseline plain heading, retaining the requested Full Mode step text."""
+        label = ttk.Label(parent, style=style)
+        binding = {"label": label, "title_key": key, "step": step, "step_total": 4, "role": None}
+        self._module_title_bindings.append(binding)
+        self._refresh_module_title(binding)
+        return label
+
+    def select_full_mode_layout(self, mode: str) -> None:
+        from pages.full_mode_layout import FullModeFooter
+
+        layout = getattr(self, "_full_mode_footer", None)
+        if layout is None:
+            if mode != "full_mode":
+                return
+            layout = self._full_mode_footer = FullModeFooter(self)
+        layout.select(mode == "full_mode")
+
+    def _fit_full_mode_footer(self) -> bool:
+        layout = getattr(self, "_full_mode_footer", None)
+        return layout.fit() if layout is not None else False
+
     def make_module_title_row(
         self,
         parent: tk.Misc,
@@ -1591,6 +1616,16 @@ class BasePage(ttk.Frame):
         pady: Any = 0,
     ) -> tuple[ttk.Frame, ttk.Label]:
         """Create a translated module heading, optional step marker and help."""
+        from pages.full_mode_layout import is_full_mode
+
+        if is_full_mode(self):
+            title_row = ttk.Frame(parent, style="Panel.TFrame")
+            title_row.grid(row=row, column=column, columnspan=columnspan, sticky=sticky, padx=padx, pady=pady)
+            title_row.columnconfigure(0, weight=1)
+            title = self.make_full_mode_label(title_row, title_key, step=step)
+            title.grid(row=0, column=0, sticky="w")
+            return title_row, title
+
         title_row = ttk.Frame(parent, style="ModuleTitleRow.TFrame")
         title_row.grid(
             row=row,
@@ -1661,7 +1696,9 @@ class BasePage(ttk.Frame):
         title = self.tr(binding["title_key"])
         step = binding["step"]
         role = binding["role"]
-        if step is not None and getattr(self, "step_progress", None) is not None:
+        from pages.full_mode_layout import is_full_mode
+
+        if step is not None and getattr(self, "step_progress", None) is not None and not is_full_mode(self):
             # The floating step bar already shows "N · title"; drop the
             # redundant "Step N" prefix on pages that own a step bar.
             if role:
@@ -2092,6 +2129,16 @@ class BasePage(ttk.Frame):
         *,
         show_logo: bool = True,
     ) -> ttk.Frame:
+        from pages.full_mode_layout import is_full_mode
+
+        if is_full_mode(self) and title_key == "full_mode":
+            header = ttk.Frame(parent, style="App.TFrame")
+            header.columnconfigure(0, weight=1)
+            title = ttk.Label(header, style="Prominent.TLabel")
+            title.grid(row=0, column=0, sticky="w")
+            self.bind_text(title, title_key)
+            return header
+
         _warm_title_fonts(self)
         header = ttk.Frame(parent, style="App.TFrame")
         self._title_spacing_widgets.append(header)
@@ -2339,6 +2386,10 @@ class BasePage(ttk.Frame):
         before: bool = False,
         after: bool = True,
     ) -> None:
+        from pages.full_mode_layout import is_full_mode
+
+        if is_full_mode(self):
+            return
         self._module_spacing_widgets.append((widget, bool(before), bool(after)))
         self._queue_header_layout()
 
@@ -2631,11 +2682,17 @@ class BasePage(ttk.Frame):
         self,
         parent: tk.Misc,
         *,
+        height: int | None = None,
         width: int | None = None,
         subscribe: bool = True,
         collapsed: bool = True,
         toggle_command: Callable[[], None] | None = None,
     ) -> ttk.Frame:
+        from pages.full_mode_layout import build_full_mode_log, is_full_mode
+
+        if is_full_mode(self):
+            return build_full_mode_log(self, parent, height=height or 7, width=width, subscribe=subscribe)
+
         frame = ttk.Frame(parent, style="Module.TFrame", padding=10)
         frame.columnconfigure(0, weight=1)
 

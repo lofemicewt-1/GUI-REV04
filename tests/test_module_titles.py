@@ -115,6 +115,23 @@ class ModuleTitleTests(unittest.TestCase):
         self.page.refresh_language()
         self.assertEqual(title.cget("text"), "第3步验证 · ADC 图例")
 
+    def test_full_mode_keeps_plain_step_heading_after_language_refresh(self) -> None:
+        colors = apply_theme(self.root, "light", 10, 1.0)
+        context = SimpleNamespace(colors=colors, state=SimpleNamespace(language="zh", theme="light"))
+        self.page = BasePage(self.root, context)
+        self.page.page_name = "full_mode"
+        self.page.step_progress = SimpleNamespace(refresh_language=lambda: None, destroy=lambda: None,
+                                                  refresh_theme=lambda: None)
+        _row, title = self.page.make_module_title_row(
+            self.page, "awp1221_adc_settings", step=3, help_key="awp1221_help_adc_params",
+        )
+        self.assertTrue(title.cget("text").startswith("第3步 · "))
+        self.assertEqual(title.cget("style"), "SectionTitle.TLabel")
+        self.assertEqual(self.page._module_help_controls, [])
+        context.state.language = "en"
+        self.page.refresh_language()
+        self.assertTrue(title.cget("text").startswith("Step 3 · "))
+
     def test_step_prefix_hidden_on_pages_with_step_bar(self) -> None:
         colors = apply_theme(self.root, "light", 10, 1.0)
         context = SimpleNamespace(

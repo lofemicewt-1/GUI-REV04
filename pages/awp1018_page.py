@@ -925,7 +925,6 @@ class AWP1018Page(BasePage):
     def show_mode(self, mode: str, *, update_chip: bool = True) -> None:
         if mode not in self.mode_pages:
             return
-        self.mode_scroll.clamp_width = mode != "full_mode"
         previous_mode = self.current_mode
         previous_page = self.mode_pages.get(previous_mode)
         if previous_mode != mode and previous_page is not None:
@@ -937,6 +936,7 @@ class AWP1018Page(BasePage):
             if callable(save_draft):
                 save_draft()
         self.current_mode = mode
+        self.select_full_mode_layout(mode)
         if update_chip and mode == "awp1018_diff_mode":
             self._set_diff_mode_registers(True)
         elif update_chip and mode == "awp1018_normal_mode":
@@ -3345,27 +3345,32 @@ class AWP1018NormalModePage(BasePage):
             pass
 
     def _build_rom_selector_steps(self, parent: tk.Misc) -> Iterator[None]:
-        selector_body = ttk.Frame(parent, style="Panel.TFrame")
-        selector_body.grid(row=1, column=0, columnspan=2, sticky="nsew")
-        parent.rowconfigure(1, weight=1)
-        title_row, _title = self.make_module_title_row(
-            parent,
-            "awp1018_waveform_selector",
-            step=2,
-            step_total=4,
-            help_key="awp1018_help_button_waveform",
-            row=0,
-            columnspan=2,
-            pady=(0, 8),
-        )
-        title_row.grid_configure(sticky="ew")
-        parent = selector_body
-        self._rom_selector_body = selector_body
-        parent.columnconfigure(0, weight=0, minsize=280 if self.diff_mode else 340)
-        parent.columnconfigure(1, weight=0)
-        parent.columnconfigure(2, weight=1)
-        parent.rowconfigure(0, weight=1)
-        ttk.Frame(parent, style="Panel.TFrame").grid(row=0, column=2, sticky="nsew")
+        if self.page_name == "full_mode":
+            parent.columnconfigure(0, weight=0, minsize=340)
+            parent.columnconfigure(1, weight=1)
+            parent.rowconfigure(0, weight=1)
+        else:
+            selector_body = ttk.Frame(parent, style="Panel.TFrame")
+            selector_body.grid(row=1, column=0, columnspan=2, sticky="nsew")
+            parent.rowconfigure(1, weight=1)
+            title_row, _title = self.make_module_title_row(
+                parent,
+                "awp1018_waveform_selector",
+                step=2,
+                step_total=4,
+                help_key="awp1018_help_button_waveform",
+                row=0,
+                columnspan=2,
+                pady=(0, 8),
+            )
+            title_row.grid_configure(sticky="ew")
+            parent = selector_body
+            self._rom_selector_body = selector_body
+            parent.columnconfigure(0, weight=0, minsize=280 if self.diff_mode else 340)
+            parent.columnconfigure(1, weight=0)
+            parent.columnconfigure(2, weight=1)
+            parent.rowconfigure(0, weight=1)
+            ttk.Frame(parent, style="Panel.TFrame").grid(row=0, column=2, sticky="nsew")
 
         controls = ttk.Frame(parent, style="Panel.TFrame")
         controls.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
@@ -3637,15 +3642,16 @@ class AWP1018NormalModePage(BasePage):
         self.rom_hint_label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 0))
 
         yield from self._build_rom_preview_steps(parent)
-        self._rom_selector_width_clamp = WaveformWidthClamp(
-            self,
-            parent,
-            self._rom_selector_preview,
-            reserved_width=lambda: max(
-                280 if self.diff_mode else 340,
-                int(controls.winfo_reqwidth()),
-            ) + 12,
-        )
+        if self.page_name != "full_mode":
+            self._rom_selector_width_clamp = WaveformWidthClamp(
+                self,
+                parent,
+                self._rom_selector_preview,
+                reserved_width=lambda: max(
+                    280 if self.diff_mode else 340,
+                    int(controls.winfo_reqwidth()),
+                ) + 12,
+            )
         self._refresh_rom_depth_options()
 
     def _build_rom_preview(self, parent: tk.Misc) -> None:
@@ -7184,7 +7190,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         yield
 
         header = self.make_title(self, "full_mode", show_logo=False)
-        header.grid(row=0, column=0, sticky="ew", pady=self._title_grid_padding())
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
 
         body = ttk.Frame(self, style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
@@ -7192,10 +7198,10 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         # other Full Mode columns.  A fixed zero-weight column leaves its
         # inner scroll area 10 px narrower than the ADC form at ordinary
         # desktop widths, even though the outer page has spare space.
-        body.columnconfigure(0, weight=2, minsize=0)
-        body.columnconfigure(1, weight=4, minsize=0)
+        body.columnconfigure(0, weight=2, minsize=760)
+        body.columnconfigure(1, weight=4, minsize=360)
         yield
-        body.columnconfigure(2, weight=3, minsize=0)
+        body.columnconfigure(2, weight=3, minsize=360)
         body.rowconfigure(0, weight=1)
 
         left = self._make_full_scroll_column(body, 0, padx=(0, 12), propagate_width=True)
@@ -7203,10 +7209,6 @@ class AWP1018FullModePage(AWP1018NormalModePage):
 
         right = ttk.Frame(body, style="Panel.TFrame", padding=0)
         right.grid(row=0, column=2, sticky="nsew")
-        self._full_layout_body = body
-        self._full_layout_panels = (left._piezo_full_column_panel, middle._piezo_full_column_panel, right)
-        self._full_layout_signature = None
-        body.bind("<Configure>", self._queue_full_columns_reflow, add="+")
         yield
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=3)
@@ -7222,9 +7224,8 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         register_panel.columnconfigure(0, weight=1)
         self._build_full_function_tools(register_panel)
 
-        log_frame = self.make_serial_log(right, width=42, subscribe=True)
+        log_frame = self.make_serial_log(right, height=14, width=42, subscribe=True)
         log_frame.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
-        self._register_module_spacing_widget(log_frame, before=True, after=False)
         yield
 
         self._bind_full_mode_traces()
@@ -7252,68 +7253,27 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         content._piezo_full_column_panel = panel
         return content
 
-    def _queue_full_columns_reflow(self, _event: tk.Event | None = None) -> None:
-        if getattr(self, "_full_layout_job", None) is not None:
-            return
-        try:
-            self._full_layout_job = self.after_idle(self._reflow_full_columns)
-        except tk.TclError:
-            self._full_layout_job = None
 
-    def _reflow_full_columns(self) -> None:
-        self._full_layout_job = None
-        body = getattr(self, "_full_layout_body", None)
-        panels = getattr(self, "_full_layout_panels", ())
-        if body is None or len(panels) != 3:
-            return
-        try:
-            width = int(body.winfo_width())
-            if width <= 1:
-                return
-            side_by_side = width >= 1200
-            if side_by_side == self._full_layout_signature:
-                return
-            self._full_layout_signature = side_by_side
-            if side_by_side:
-                for column, weight in enumerate((2, 4, 3)):
-                    body.columnconfigure(column, weight=weight, minsize=0, uniform="full_mode_cols")
-                for column, panel in enumerate(panels):
-                    panel.grid_configure(row=0, column=column, columnspan=1, sticky="nsew", padx=(0, 12) if column < 2 else 0, pady=0)
-                body.rowconfigure(0, weight=1)
-                body.rowconfigure(1, weight=0)
-                body.rowconfigure(2, weight=0)
-            else:
-                body.columnconfigure(0, weight=1, minsize=0, uniform="")
-                body.columnconfigure(1, weight=0, minsize=0, uniform="")
-                body.columnconfigure(2, weight=0, minsize=0, uniform="")
-                body.rowconfigure(0, weight=0)
-                body.rowconfigure(1, weight=0)
-                body.rowconfigure(2, weight=1)
-                for row, panel in enumerate(panels):
-                    panel.grid_configure(row=row, column=0, columnspan=3, sticky="nsew", padx=0, pady=(0, 12) if row < 2 else 0)
-        except tk.TclError:
-            return
 
     def _build_full_left_column(self, left: tk.Misc) -> None:
         left.columnconfigure(1, weight=2, minsize=145)
         left.columnconfigure(3, weight=2, minsize=145)
 
         row = 0
-        self._build_adc_channel_selector(left, row)
-        row += 1
         row = self._add_section_title(left, row, "awp1018_adc_threshold_detection")
         self._build_stage_selector(left, row)
         row += 1
 
         self.stage_container = ttk.Frame(left, style="Panel.TFrame")
         self.stage_container.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(4, 8))
-        self._register_module_spacing_widget(self.stage_container, before=True, after=True)
         self.stage_container.columnconfigure(0, weight=1)
         for stage in ("Stage0", "Stage1", "Stage2", "Stage3"):
             self._build_stage_frame(stage)
         row += 1
 
         row = self._add_section_title(left, row, "full_mode_adc")
+        self._build_adc_channel_selector(left, row)
+        row += 1
         self._build_adc_timing_row(left, row)
         row += 1
         self._build_zero_return_bit_row(left, row)

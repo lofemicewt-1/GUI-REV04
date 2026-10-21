@@ -21,10 +21,10 @@ class CommunicationLogTranslationTests(unittest.TestCase):
 
 class CommunicationLogSectionTests(unittest.TestCase):
     CASES = (
-        ("awp1221", "button_mode"), ("awp1221", "full_mode"),
+        ("awp1221", "button_mode"),
         ("awp1018", "awp1018_normal_mode"), ("awp1018", "awp1018_diff_mode"),
-        ("awp1018", "full_mode"), ("awp1921_1923", "button_mode"),
-        ("awp1921_1923", "pump_mode"), ("awp1921_1923", "full_mode"),
+        ("awp1921_1923", "button_mode"),
+        ("awp1921_1923", "pump_mode"),
         ("awp1922", None),
     )
 
@@ -111,6 +111,22 @@ class CommunicationLogSectionTests(unittest.TestCase):
                     self.assertEqual(text.index("@0,0"), "1.0")
                     text.yview_moveto(1)
                     self.assertGreater(text.yview()[0], 0)
+
+    def test_full_mode_keeps_expanded_baseline_log(self):
+        for chip, height in (("awp1221", 7), ("awp1018", 14), ("awp1921_1923", 18)):
+            with self.subTest(chip=chip):
+                page = self.page(chip, "full_mode")
+                text = page._serial_log_text
+                self.assertTrue(text.winfo_ismapped())
+                self.assertEqual(int(text.cget("height")), height)
+                self.assertEqual(page._serial_log_frame.cget("style"), "Panel.TFrame")
+                self.assertIsNone(page._serial_log_toggle)
+                self.assertEqual(page._serial_log_title.cget("style"), "SectionTitle.TLabel")
+                scrollbars = [w for w in text.master.winfo_children() if isinstance(w, ttk.Scrollbar)]
+                self.assertEqual([str(w.cget("orient")) for w in scrollbars], ["horizontal"])
+                page.clear_serial_log_view()
+                page.append_serial_log("full mode local log")
+                self.assertIn("full mode local log", text.get("1.0", "end"))
 
     def test_collapse_preserves_header_and_content_and_updates_chevron(self):
         for chip, mode in (("awp1221", "button_mode"), ("awp1018", "awp1018_normal_mode"),
