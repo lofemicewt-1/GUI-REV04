@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 
 from core.awp1221_sram import SramWaveform
 from pages.awp1221_realtime_sram import AWP1221SramEditor
@@ -87,10 +88,10 @@ class Awp1221SramEditorImportTests(unittest.TestCase):
 
 class Awp1221SramEditorWidgetTests(unittest.TestCase):
     def setUp(self) -> None:
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.withdraw()
-        self.addCleanup(self.root.destroy)
-
     def test_editor_constructs_and_enables_write_for_default_shape(self) -> None:
         owner = _Owner()
         editor = AWP1221SramEditor(self.root, _ctx(), owner)
@@ -116,10 +117,10 @@ def _mode_page(root: tk.Misc, mode_key: str) -> AWP1221ModePage:
 
 class Awp1221FullModeSramTabTests(unittest.TestCase):
     def setUp(self) -> None:
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.withdraw()
-        self.addCleanup(self.root.destroy)
-
     def test_full_mode_grids_sram_editor_in_waveform_tab(self) -> None:
         page = _mode_page(self.root, "full_mode")
         self.addCleanup(page.destroy)
@@ -131,11 +132,11 @@ class Awp1221FullModeSramTabTests(unittest.TestCase):
 
 class Awp1221ButtonModeSramSwapTests(unittest.TestCase):
     def setUp(self) -> None:
+        prepare_tk_test(self)
         self.root = tk.Tk()
         self.root.withdraw()
-        self.addCleanup(self.root.destroy)
         self.page = _mode_page(self.root, "button_mode")
-        self.addCleanup(self.page.destroy)
+        attach_tk_cleanup(self, self.root, self.page)
         self.page.update_idletasks()
 
     def test_en_module_is_above_waveform_module(self) -> None:
@@ -253,10 +254,10 @@ class _ConnectedOwner(_Owner):
 
 class Awp1221SegmentRatioUiTests(unittest.TestCase):
     def setUp(self) -> None:
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.geometry("980x720+30+30")
-        self.addCleanup(self.root.destroy)
-
     def test_default_four_points_show_three_equal_segments(self) -> None:
         editor = _editor(self.root)
         self.addCleanup(editor.destroy)
@@ -627,7 +628,10 @@ class Awp1221SegmentRatioLayoutTests(unittest.TestCase):
             ("zoom", "980x720+40+40", 1.75),
         )
         for name, geometry, scaling in cases:
+            prepare_tk_test(self)
             root = tk.Tk()
+            release = attach_tk_cleanup(self, root)
+            editor = None
             try:
                 if scaling is not None:
                     root.tk.call("tk", "scaling", scaling)
@@ -678,7 +682,17 @@ class Awp1221SegmentRatioLayoutTests(unittest.TestCase):
                     "row_screenshot": str(item_shot),
                 })
             finally:
-                root.destroy()
+                if editor is not None:
+                    try:
+                        editor.destroy()
+                    except tk.TclError:
+                        pass
+                editor = None
+                scroll = None
+                widgets = []
+                last = None
+                root = None
+                release()
         (evidence / "geometry.json").write_text(json.dumps(records, indent=2), encoding="utf-8")
 
     def test_button_and_full_pages_scroll_each_ratio_row_into_view(self) -> None:
@@ -692,7 +706,11 @@ class Awp1221SegmentRatioLayoutTests(unittest.TestCase):
             ("full_min", "full_mode", "760x520+20+20"),
         )
         for name, mode, geometry in cases:
+            prepare_tk_test(self)
             root = tk.Tk()
+            release = attach_tk_cleanup(self, root)
+            page = None
+            editor = None
             try:
                 root.geometry(geometry)
                 root.deiconify()
@@ -729,5 +747,15 @@ class Awp1221SegmentRatioLayoutTests(unittest.TestCase):
                 self.assertIsNone(_capture_bmp(root, evidence / f"page_{name}_write.bmp"))
                 records.append({"name": name, "mode": mode, "segments": 7, "mapped": True})
             finally:
-                root.destroy()
+                if page is not None:
+                    try:
+                        page.destroy()
+                    except tk.TclError:
+                        pass
+                page = None
+                editor = None
+                scroll = None
+                row = None
+                root = None
+                release()
         (evidence / "pages.json").write_text(json.dumps(records, indent=2), encoding="utf-8")

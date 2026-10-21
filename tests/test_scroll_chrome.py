@@ -1,16 +1,23 @@
 import tkinter as tk
 from tkinter import ttk
 import unittest
-import gc
 import weakref
 from unittest.mock import patch
+from tests.tk_cleanup import (
+    attach_tk_cleanup,
+    cancel_after_jobs,
+    collect_tk_garbage,
+    prepare_tk_test,
+)
 
 from pages.base_page import SimpleTooltip, hide_scroll_chrome, relay_vertical_scroll
 
 
 class ScrollChromeTests(unittest.TestCase):
     def setUp(self):
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.geometry('400x240+20+20')
         self.errors = []
         self.root.report_callback_exception = lambda kind, value, tb: self.errors.append(value)
@@ -23,7 +30,8 @@ class ScrollChromeTests(unittest.TestCase):
 
     def tearDown(self):
         self.tooltip._hide()
-        self.root.destroy()
+        cancel_after_jobs(self.root)
+        self.tooltip = self.label = self.scrollbar = None
         self.assertEqual(self.errors, [])
 
     def test_scroll_during_creation_cancels_pending_tooltip(self):
@@ -67,12 +75,16 @@ class ScrollChromeTests(unittest.TestCase):
 class TitleFontLifetimeTests(unittest.TestCase):
     def test_root_destroy_releases_cached_title_font(self):
         from pages.base_page import _title_font
+        prepare_tk_test(self)
         root = tk.Tk()
+        attach_tk_cleanup(self, root)
         font = _title_font(root, ('Microsoft YaHei UI', 23, 'bold'))
         reference = weakref.ref(font)
         del font
+        cancel_after_jobs(root)
         root.destroy()
-        gc.collect()
+        root = None
+        collect_tk_garbage()
         self.assertIsNone(reference(), 'title cache retained a destroyed interpreter')
 
 

@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, cancel_after_jobs, prepare_tk_test
 
 from pages.chip_pages import AWP1921AWP1923Page
 from styles.theme import scale_photoimage
@@ -66,12 +67,21 @@ def _ctx(serial: _Serial) -> SimpleNamespace:
 
 class DetailModeGateTests(unittest.TestCase):
     def setUp(self) -> None:
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.withdraw()
         self.serial = _Serial()
         self.page = AWP1921AWP1923Page(self.root, _ctx(self.serial))
-        self.addCleanup(self.root.destroy)
+        self.addCleanup(self._destroy_page)
 
+    def _destroy_page(self) -> None:
+        cancel_after_jobs(self.root)
+        try:
+            self.page.destroy()
+        except tk.TclError:
+            pass
+        self.page = None
     def test_detail_stays_inactive_outside_full_mode(self) -> None:
         self.page.detail_mode_var.set(True)
         self.page.reg_addr_var.set("0x11")
@@ -113,10 +123,10 @@ class DetailModeGateTests(unittest.TestCase):
 
 class LogoScaleTests(unittest.TestCase):
     def setUp(self) -> None:
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.withdraw()
-        self.addCleanup(self.root.destroy)
-
     def test_fractional_scale_beats_integer_subsample_jump(self) -> None:
         image = tk.PhotoImage(master=self.root, width=100, height=40)
         factor = max(1, (100 + 30 - 1) // 30)

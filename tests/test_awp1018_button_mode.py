@@ -2,21 +2,31 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 import unittest
 
 from pages.button_mode_chrome import responsive_column_count
 from tests.validate_responsive_layout import mocked_application
+from tests.tk_cleanup import cancel_after_jobs, collect_tk_garbage
 
 
 class AWP1018ButtonModeTests(unittest.TestCase):
     def _build_button_pages(self):
         try:
+            prepare_tk_test(self)
             probe = tk.Tk()
-            probe.destroy()
         except tk.TclError as exc:
             self.skipTest(f"Tk display is unavailable: {exc}")
+        try:
+            cancel_after_jobs(probe)
+            probe.destroy()
+        finally:
+            probe = None
+            collect_tk_garbage()
+        prepare_tk_test(self)
         app_context = mocked_application()
         app = app_context.__enter__()
+        attach_tk_cleanup(self, app.root, app)
         self.addCleanup(app_context.__exit__, None, None, None)
         app.set_animations(False)
         app.navigation.show("awp1018")

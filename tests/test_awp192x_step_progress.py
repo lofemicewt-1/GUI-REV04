@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import MethodType, SimpleNamespace
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, cancel_after_jobs, prepare_tk_test
 import unittest
 from unittest.mock import patch
 
@@ -509,7 +510,9 @@ class Awp192xChromeTkTests(unittest.TestCase):
             return []
 
     def setUp(self):
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.withdraw()
         colors = apply_theme(self.root, "light", 10, 1.0)
         self.serial = self._OfflineSerial()
@@ -526,16 +529,15 @@ class Awp192xChromeTkTests(unittest.TestCase):
             ),
         )
         self.page = AWP1921AWP1923Page(self.root, ctx)
+        self.addCleanup(self._destroy_page)
 
-    def tearDown(self):
+    def _destroy_page(self):
+        cancel_after_jobs(self.root)
         try:
             self.page.destroy()
         except (tk.TclError, AttributeError):
             pass
-        try:
-            self.root.destroy()
-        except tk.TclError:
-            pass
+        self.page = None
 
     def test_full_mode_uses_shared_trapezoid_for_detail_editor_without_progress(self):
         self.assertIs(self.page.reg_panel, self.page.trapezoid.registers)

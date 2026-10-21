@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import gc
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, cancel_after_jobs, prepare_tk_test
 from tkinter import ttk
 import threading
 import unittest
@@ -14,7 +14,9 @@ from styles.theme import apply_theme
 
 class StepProgressTests(unittest.TestCase):
     def setUp(self) -> None:
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.geometry("900x680+10+10")
         self.root.update_idletasks()
         self.root.deiconify()
@@ -100,16 +102,13 @@ class StepProgressTests(unittest.TestCase):
         ttk.Label(panel, text="Detailed register controls").grid(row=2, column=0, sticky="w")
 
     def tearDown(self) -> None:
+        cancel_after_jobs(self.root)
         for widget in (self.page, self.host):
             try:
                 widget.destroy()
             except tk.TclError:
                 pass
-        try:
-            self.root.destroy()
-        except tk.TclError:
-            pass
-        gc.collect()
+        self.page = self.host = self.area = self.trapezoid = self.bar = None
 
     def flush(self) -> None:
         self.root.update()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 from tkinter import ttk
 import unittest
 
@@ -13,10 +14,10 @@ from pages.preset_toolbar import PRESET_ACTIONS, PresetToolbar
 class PresetToolbarTests(unittest.TestCase):
     def setUp(self) -> None:
         install()
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.withdraw()
-        self.addCleanup(self.root.destroy)
-
     def _make_toolbar(self, **kwargs) -> PresetToolbar:
         host = ttk.Frame(self.root)
         host.grid(row=0, column=0, sticky="nsew")

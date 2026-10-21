@@ -34,8 +34,14 @@ class StartupRegressionTests(unittest.TestCase):
         # It models an unrelated hung desktop app, without touching user apps.
         helper = subprocess.Popen(
             [sys.executable, "-u", "-c",
-             "import tkinter as tk; r=tk.Tk(); r.withdraw(); r.update(); "
-             "print('READY', flush=True); input(); r.destroy()"],
+             "import tkinter as tk, unittest\n"
+             "from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test\n"
+             "case=unittest.TestCase()\n"
+             "prepare_tk_test(case)\n"
+             "r=tk.Tk()\n"
+             "attach_tk_cleanup(case, r)\n"
+             "r.withdraw(); r.update()\n"
+             "print('READY', flush=True); input(); r=None; case.doCleanups()"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, cwd=ROOT,
         )

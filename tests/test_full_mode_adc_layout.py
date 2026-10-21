@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 from tkinter import ttk
 
 from app.application import PiezoApplication
@@ -22,9 +23,10 @@ def _overflow(stage: tk.Misc, canvas: tk.Canvas) -> int:
 
 class VerticalScrollAreaWidthTests(unittest.TestCase):
     def setUp(self) -> None:
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.withdraw()
-        self.addCleanup(self.root.destroy)
         self.ctx = SimpleNamespace(colors={"bg": "#ffffff"})
 
     def test_propagate_width_keeps_wide_form_visible(self) -> None:
@@ -84,8 +86,10 @@ class VerticalScrollAreaWidthTests(unittest.TestCase):
 
 class FullModeAdcLayoutTests(unittest.TestCase):
     def setUp(self) -> None:
+        prepare_tk_test(self)
         self.app = PiezoApplication()
-        self.addCleanup(self.app.root.destroy)
+        attach_tk_cleanup(self, self.app.root, self.app)
+        self.addCleanup(self.app.close)
         self.app.root.update_idletasks()
         self.app.root.update()
 

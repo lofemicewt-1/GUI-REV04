@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import gc
-
 from types import SimpleNamespace
 import tkinter as tk
 from tkinter import font as tkfont
@@ -10,6 +8,7 @@ import unittest
 
 from pages.base_page import BasePage
 from styles.theme import apply_theme
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 
 
 def _context(language: str = "en", theme: str = "light") -> SimpleNamespace:
@@ -21,6 +20,7 @@ def _context(language: str = "en", theme: str = "light") -> SimpleNamespace:
 
 class PageTitleLayoutTests(unittest.TestCase):
     def setUp(self) -> None:
+        prepare_tk_test(self)
         self.root = tk.Tk()
         self.root.withdraw()
         self.ctx = _context()
@@ -29,20 +29,7 @@ class PageTitleLayoutTests(unittest.TestCase):
         self.page.grid(row=0, column=0, sticky="nsew")
         self.root.rowconfigure(0, weight=1)
         self.root.columnconfigure(0, weight=1)
-        self.addCleanup(self._cleanup_tk)
-
-    def _cleanup_tk(self) -> None:
-        self._cancel_after_jobs()
-        self.root.destroy()
-        self.page = self.root = None
-        gc.collect()
-
-    def _cancel_after_jobs(self) -> None:
-        for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
-            try:
-                self.root.after_cancel(job)
-            except tk.TclError:
-                pass
+        attach_tk_cleanup(self, self.root, self.page)
 
     def _settle(self) -> None:
         self.root.update_idletasks()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -27,10 +28,11 @@ class Value:
 class AdcLegendRenderingTests(unittest.TestCase):
     def make_root(self):
         try:
+            prepare_tk_test(self)
             root = tk.Tk()
+            attach_tk_cleanup(self, root)
         except tk.TclError as exc:
             self.skipTest(f"Tk display unavailable: {exc}")
-        self.addCleanup(root.destroy)
         root.geometry("1100x720")
         return root
 

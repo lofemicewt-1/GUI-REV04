@@ -1,6 +1,7 @@
 from collections import deque
 from types import SimpleNamespace
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 import unittest
 from unittest.mock import patch
 
@@ -12,14 +13,15 @@ from tests import test_awp192x_button_view as button_view_tests
 
 class RealtimeWindowTests(unittest.TestCase):
     def setUp(self):
+        prepare_tk_test(self)
         self.root=tk.Tk()
-        self.addCleanup(self.root.destroy)
         self.root._code_to_voltage=ButtonModePage._code_to_voltage.__get__(self.root,ButtonModePage)
         # The conversion method uses the AWP192x constants on its owner.
         for key in ("ADC_POS_ZERO","ADC_NEG_ZERO","ADC_MAX_CODE"):
             setattr(self.root,key,getattr(ButtonModePage,key))
         self.window=AWP192xADCVoltageWindow(self.root,lambda:None)
         self.window.update()
+        attach_tk_cleanup(self, self.root, self.window)
 
     def test_voltage_and_readback_keep_each_samples_own_flags(self):
         self.window.add_sample(0x2FFF)

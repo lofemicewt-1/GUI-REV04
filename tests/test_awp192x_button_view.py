@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 from types import SimpleNamespace
 from contextlib import nullcontext
 from unittest.mock import patch
@@ -135,8 +136,9 @@ class TimingCanvasTests(unittest.TestCase):
         from pages.adc_legend import AdcLegend
         from config.languages import t
         from styles.theme import get_colors
+        prepare_tk_test(self)
         root=tk.Tk()
-        self.addCleanup(root.destroy)
+        attach_tk_cleanup(self, root)
         root.geometry("820x520")
         legend=AdcLegend(root,lambda key,**kw:t("zh",key,**kw),get_colors("light"),stage_count=2)
         legend.pack(fill="x",expand=True)
@@ -164,8 +166,9 @@ class TimingCanvasTests(unittest.TestCase):
         from config.languages import t
         from styles.theme import get_colors
         from pages.awp192x_button_view import draw_timed_waveform
+        prepare_tk_test(self)
         root=tk.Tk()
-        self.addCleanup(root.destroy)
+        attach_tk_cleanup(self, root)
         scale=float(root.tk.call("tk", "scaling"))
         self.addCleanup(lambda: root.tk.call("tk", "scaling", scale))
         canvas=tk.Canvas(root,highlightthickness=0)
@@ -191,8 +194,9 @@ class TimingCanvasTests(unittest.TestCase):
         from config.languages import t
         from styles.theme import get_colors
         from pages.awp192x_button_view import draw_timed_waveform
+        prepare_tk_test(self)
         root=tk.Tk()
-        self.addCleanup(root.destroy)
+        attach_tk_cleanup(self, root)
         canvas=tk.Canvas(root,highlightthickness=0)
         canvas.pack(fill="both",expand=True)
         for width in (360,820):

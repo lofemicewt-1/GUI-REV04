@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-import gc
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
@@ -10,30 +9,27 @@ import unittest
 from app.application import PiezoApplication
 from pages.base_page import BasePage, hide_scroll_chrome
 from styles.theme import apply_theme
+from tests.tk_cleanup import attach_tk_cleanup, cancel_after_jobs, prepare_tk_test
 
 
 class ModuleTitleTests(unittest.TestCase):
     def setUp(self) -> None:
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.withdraw()
         self.page = None
+        self.addCleanup(self._destroy_page)
 
-        def _cleanup() -> None:
-            page = getattr(self, "page", None)
-            if page is not None:
-                try:
-                    page.destroy()
-                except tk.TclError:
-                    pass
+    def _destroy_page(self) -> None:
+        cancel_after_jobs(self.root)
+        page = self.page
+        if page is not None:
             try:
-                self.root.destroy()
+                page.destroy()
             except tk.TclError:
                 pass
-            self.page = None
-            self.root = None
-            gc.collect()
-
-        self.addCleanup(_cleanup)
+        self.page = None
 
     def test_theme_exposes_bold_module_and_section_titles(self) -> None:
         style = ttk.Style(self.root)

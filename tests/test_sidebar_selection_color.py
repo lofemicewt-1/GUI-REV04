@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 from tkinter import ttk
 
 from styles.theme import apply_theme, get_colors
@@ -42,10 +43,10 @@ def _pixels(image: tk.PhotoImage) -> list[tuple[int, int, int]]:
 
 class SidebarSelectionColorTests(unittest.TestCase):
     def setUp(self) -> None:
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.withdraw()
-        self.addCleanup(self.root.destroy)
-
     def test_mode_selected_image_matches_chip_selected_for_light_and_dark(self) -> None:
         for theme in ("light", "dark"):
             apply_theme(self.root, theme)

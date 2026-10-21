@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, cancel_after_jobs, prepare_tk_test
 from tkinter import ttk
 import unittest
 from styles.theme import apply_theme, _button_image_layout
@@ -12,7 +13,9 @@ from tests.validate_responsive_layout import _capture_window_bmp
 @unittest.skipUnless(sys.platform == "win32", "Windows native rendering comparison")
 class ButtonRenderTests(unittest.TestCase):
     def test_optimized_buttons_preserve_native_pixels_geometry_and_states(self):
+        prepare_tk_test(self)
         root = tk.Tk()
+        attach_tk_cleanup(self, root)
         try:
             root.geometry("900x180+20+20")
             folder = Path(__file__).resolve().parents[1]/"outputs"/"button_render_tiles"
@@ -55,7 +58,9 @@ class ButtonRenderTests(unittest.TestCase):
                             self.assertEqual(pixels[0], pixels[1], (theme, target_style, width, state))
                     button.destroy()
         finally:
+            cancel_after_jobs(root)
             root.destroy()
+            root = None
 
 
 if __name__ == "__main__":

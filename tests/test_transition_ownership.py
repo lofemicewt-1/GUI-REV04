@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 import unittest
 from unittest.mock import patch
 
@@ -13,7 +14,9 @@ from tests.test_motion import pump
 @unittest.skipUnless(sys.platform == "win32", "Windows native ownership")
 class TransitionOwnershipTests(unittest.TestCase):
     def setUp(self):
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.geometry("480x320+20+20")
         self.root.update()
         self.animator = Animator(self.root)
@@ -24,8 +27,8 @@ class TransitionOwnershipTests(unittest.TestCase):
     def tearDown(self):
         self.transition.close()
         self.animator.stop()
-        self.root.destroy()
         self.assertFalse(self.errors, self.errors)
+        self.transition = self.animator = None
 
     def test_background_owner_never_creates_or_shows_cover(self):
         with patch.object(self.transition, "_owner_is_foreground", return_value=False):

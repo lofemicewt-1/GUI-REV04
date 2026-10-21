@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 import unittest
 from collections import deque
 from types import SimpleNamespace
@@ -86,20 +87,15 @@ class Awp1221RealtimeHelperTests(unittest.TestCase):
 
 class Awp1221RealtimeWindowTests(unittest.TestCase):
     def setUp(self) -> None:
+        prepare_tk_test(self)
         self.root = tk.Tk()
         self.root.withdraw()
         self.window = ADCVoltageWindow(self.root, lambda: None)
+        attach_tk_cleanup(self, self.root, self.window)
         self.window.sample_time.set("4 us")
         self.window.load.set("40 uA")
         self.window.capacitance.set("2")
         self.window.time_scale.set("10")
-
-    def tearDown(self) -> None:
-        try:
-            self.window.destroy()
-        except tk.TclError:
-            pass
-        self.root.destroy()
 
     def test_set_threshold_counts_stores_values(self) -> None:
         self.window.set_threshold_counts(6400, 1600)

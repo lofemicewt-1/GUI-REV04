@@ -1,4 +1,5 @@
 import unittest
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 from unittest.mock import patch
 from types import SimpleNamespace
 from pages.waveform_generator import WaveformGeneratorPage
@@ -71,10 +72,11 @@ class CompactCanvasTests(unittest.TestCase):
   import tkinter as tk
   from styles.theme import get_colors
   from config.languages import t
+  prepare_tk_test(self)
   self.root=tk.Tk();self.root.geometry('820x520')
   self.canvas=tk.Canvas(self.root,highlightthickness=0)
   self.canvas.pack(fill='both',expand=True);self.root.update()
-  self.addCleanup(self.root.destroy)
+  attach_tk_cleanup(self, self.root, self.canvas)
   self.colors=get_colors('light');self.tr=lambda key,**kwargs:t('en',key,**kwargs)
 
  def test_timed_serial_64_cycles_draws_two_cycles_and_retains_total_time(self):

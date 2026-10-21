@@ -4,6 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 from unittest import mock
 import unittest
 
@@ -44,7 +45,9 @@ class UiStateStoreTests(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), original)
 
     def test_temporary_small_viewport_collapse_does_not_change_preference(self) -> None:
+        prepare_tk_test(self)
         root = tk.Tk()
+        attach_tk_cleanup(self, root)
         root.geometry("1280x720+0+0")
         root.deiconify()
         colors = apply_theme(root, "light", 10, 1.0)
@@ -76,6 +79,7 @@ class UiStateStoreTests(unittest.TestCase):
                 self.assertTrue(trapezoid.expanded)
                 self.assertTrue(store.get_trapezoid_expanded("chip"))
             finally:
+                cancel_after_jobs(root)
                 page.destroy()
                 root.destroy()
 

@@ -2,6 +2,7 @@
 from itertools import accumulate
 from types import SimpleNamespace
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 import unittest
 
 from config.languages import t
@@ -24,11 +25,11 @@ class SincTimingTests(unittest.TestCase):
                                  and first[1] < second[3] and first[3] > second[1])
 
     def setUp(self):
+        prepare_tk_test(self)
         self.root = tk.Tk()
         self.canvas = tk.Canvas(self.root, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
-        self.addCleanup(self.root.destroy)
-
+        attach_tk_cleanup(self, self.root, self.canvas)
     def draw(self, serial, times, depth, repeat, width, language, theme):
         self.root.geometry(f"{width}x520")
         self.root.update()

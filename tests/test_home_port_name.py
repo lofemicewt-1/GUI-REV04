@@ -11,6 +11,7 @@ from app.application import ApplicationContext, HomePage
 from app.state import AppState
 from core.serial_manager import SerialPortInfo
 from styles.theme import get_colors
+from tests.tk_cleanup import attach_tk_cleanup, cancel_after_jobs, prepare_tk_test
 
 
 class FakeSerial:
@@ -34,9 +35,10 @@ class FakeSerial:
 
 class HomePortNameTests(unittest.TestCase):
     def setUp(self) -> None:
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.withdraw()
-        self.addCleanup(self.root.destroy)
         self.serial = FakeSerial(
             [
                 SerialPortInfo(device="COM3", name="Arduino Uno"),
@@ -50,8 +52,16 @@ class HomePortNameTests(unittest.TestCase):
             app=SimpleNamespace(),
         )
         self.page = HomePage(self.root, ctx)
-        self.addCleanup(self.page.destroy)
+        self.addCleanup(self._destroy_page)
         self._wait_for_scan()
+
+    def _destroy_page(self) -> None:
+        cancel_after_jobs(self.root)
+        try:
+            self.page.destroy()
+        except tk.TclError:
+            pass
+        self.page = None
 
     def _wait_for_scan(self) -> None:
         deadline = time.monotonic() + 2

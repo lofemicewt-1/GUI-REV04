@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 import unittest
 from tkinter import ttk
 
@@ -43,8 +44,9 @@ class GlossaryLanguageTests(unittest.TestCase):
                     self.assertTrue(LANGUAGES[language][key], key)
 
     def test_matching_labels_receive_live_multiterm_tooltips(self) -> None:
+        prepare_tk_test(self)
         root = tk.Tk()
-        self.addCleanup(root.destroy)
+        attach_tk_cleanup(self, root)
         label = ttk.Label(root, text="ADC OVV Time")
         label.pack()
         tips = []

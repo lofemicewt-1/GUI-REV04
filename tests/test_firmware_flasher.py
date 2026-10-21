@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -468,13 +469,14 @@ class DialogFlowTests(Base):
     def setUp(self) -> None:
         super().setUp()
         try:
+            prepare_tk_test(self)
             self.tk_root = tk.Tk()
+            attach_tk_cleanup(self, self.tk_root)
         except tk.TclError as exc:
             self.skipTest(f"Tk unavailable: {exc}")
         self.tk_root.withdraw()
 
     def tearDown(self) -> None:
-        self.tk_root.destroy()
         super().tearDown()
 
     def make_dialog(self, connected=True, driver=None, answer=True, popen_script=None):

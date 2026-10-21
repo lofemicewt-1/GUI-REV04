@@ -3,6 +3,12 @@ from __future__ import annotations
 import threading
 import time
 import tkinter as tk
+from tests.tk_cleanup import (
+    attach_tk_cleanup,
+    cancel_after_jobs,
+    collect_tk_garbage,
+    prepare_tk_test,
+)
 import unittest
 
 from core import ui_dispatch
@@ -12,8 +18,7 @@ from core.ui_dispatch import UiDispatcher, post_to_ui
 def _collect_tk_garbage() -> None:
     # Worker threads must not be the ones to finalize Tk objects left by an
     # earlier test (PhotoImage/__del__ calls Tcl and can abort the process).
-    import gc
-    gc.collect()
+    collect_tk_garbage()
 
 
 def _pump(root: tk.Misc, until, timeout: float = 3.0) -> bool:
@@ -29,13 +34,15 @@ def _pump(root: tk.Misc, until, timeout: float = 3.0) -> bool:
 class UiDispatcherTests(unittest.TestCase):
     def setUp(self) -> None:
         _collect_tk_garbage()
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.withdraw()
         self.d = UiDispatcher(self.root).start()
 
     def tearDown(self) -> None:
         self.d.close()
-        self.root.destroy()
+        self.d = None
         _collect_tk_garbage()
 
     def test_fifo_across_threads_and_main_thread_execution(self) -> None:
@@ -106,7 +113,9 @@ class UiDispatcherTests(unittest.TestCase):
 
 class FallbackTests(unittest.TestCase):
     def test_without_dispatcher_falls_back_to_after(self) -> None:
+        prepare_tk_test(self)
         root = tk.Tk()
+        attach_tk_cleanup(self, root)
         root.withdraw()
         try:
             self.assertIsNone(ui_dispatch.active_dispatcher())
@@ -114,7 +123,10 @@ class FallbackTests(unittest.TestCase):
             post_to_ui(root, seen.append, 7)
             self.assertTrue(_pump(root, lambda: seen == [7]))
         finally:
+            cancel_after_jobs(root)
             root.destroy()
+            root = None
+            collect_tk_garbage()
 
 
 class SerialLogBatchingTests(unittest.TestCase):

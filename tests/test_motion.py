@@ -4,6 +4,7 @@ import math
 import sys
 import time
 import tkinter as tk
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 from types import SimpleNamespace
 from tkinter import ttk
 import unittest
@@ -157,7 +158,9 @@ class TkMotionTests(unittest.TestCase):
         foreground.start()
         self.addCleanup(foreground.stop)
         from styles.theme import get_colors
+        prepare_tk_test(self)
         self.root = tk.Tk()
+        attach_tk_cleanup(self, self.root)
         self.root.geometry("480x320+20+20")
         self.errors = []
         self.root.report_callback_exception = lambda k, v, tb: self.errors.append(str(v))
@@ -170,8 +173,8 @@ class TkMotionTests(unittest.TestCase):
         self.animator.stop()
         self.dispatcher.close()
         self.root.update_idletasks()
-        self.root.destroy()
         self.assertEqual(self.errors, [])
+        self.micro = self.animator = self.dispatcher = None
 
     def test_popdown_opens_at_full_height_without_grow(self):
         combo = ttk.Combobox(self.root, values=[f"v{i}" for i in range(20)], state="readonly", height=5)
@@ -416,7 +419,9 @@ class TkMotionTests(unittest.TestCase):
 
     def test_direct_root_destroy_cancels_worker_and_animation_timers(self):
         from app.transitions import SnapshotTransition
+        prepare_tk_test(self)
         root = tk.Tk()
+        attach_tk_cleanup(self, root)
         a = anim.Animator(root)
         d = UiDispatcher(root).start()
         transition = SnapshotTransition(root, a)
