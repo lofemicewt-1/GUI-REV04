@@ -47,6 +47,7 @@ from core.base_tool import (
     GPIO_MODE_DETECT,
     GPIO_MODE_HIGH,
     GPIO_MODE_LOW,
+    clip_voltage,
     execute_register_script_operations,
     format_register_script,
     parse_register_script,
@@ -791,13 +792,16 @@ def awp1221_waveform_preview_value(
         start_angle, span = awp1221_sine_preview_path(half_cycle_code, phase_code)
         return math.sin(math.radians(start_angle + position * span))
     if waveform_key in {"gauss", "gaussian"}:
+        # Half cycles are slices of the full envelope, with the same width.
         if half_cycle_code == 0b01:
-            center = 1.0
+            position /= 2
         elif half_cycle_code == 0b10:
-            center = 0.0
-        else:
-            center = 0.5
-        return polarity * math.exp(-((position - center) ** 2) / (2 * 0.16 * 0.16))
+            position = (1 + position) / 2
+        # A finite preview must return exactly to 0 V at its full-cycle tails.
+        # Normalize the truncated Gaussian without introducing a DC bias.
+        tail = math.exp(-(0.5 ** 2) / (2 * 0.16 * 0.16))
+        raw = math.exp(-((position - 0.5) ** 2) / (2 * 0.16 * 0.16))
+        return polarity * (raw - tail) / (1 - tail)
     if waveform_key in {"fixed-slope ramp", "slope"}:
         ramp = position if half_cycle_code != 0b10 else 1.0 - position
         return polarity * ramp
@@ -819,7 +823,10 @@ def awp1221_waveform_preview_voltage(
         waveform, position, half_cycle_code, phase_code
     )
     amplitude = awp1221_waveform_peak_to_peak_voltage(coarse_code, fine_code) / 2
-    return awp1221_waveform_offset_voltage(offset_code) + amplitude * shape
+    voltage = awp1221_waveform_offset_voltage(offset_code) + amplitude * shape
+    if str(waveform).strip().lower() in {"gauss", "gaussian"}:
+        return clip_voltage(voltage, 100.0)
+    return voltage
 
 
 def merge_awp1221_waveform_word3(
@@ -5403,6 +5410,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         muted = colors.get("muted", "#64748B")
         canvas.create_rectangle(left, top, left + plot_width, top + plot_height, outline=border)
         canvas.create_line(left, middle, left + plot_width, middle, fill=border)
+        canvas.create_text(left - 6, middle, anchor="e", fill=muted, text="0 V")
 
         positions = [index / 160 for index in range(161)]
         values = [

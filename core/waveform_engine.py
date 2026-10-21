@@ -101,9 +101,12 @@ class WaveformEngine:
         elif waveform_type == "gauss":
             voltages = self._generate_gauss(
                 points=points,
-                peak=gauss_peak if gauss_peak is not None else self.voltage_range,
+                peak=gauss_peak if gauss_peak is not None else amp,
                 start_positive_zero=gauss_start_positive_zero,
             )
+            # Bias is applied in volts before the same signed DAC mapping used
+            # by sine: zero tails encode as POS_ZERO, never DAC_MIN.
+            voltages = [voltage + offset for voltage in voltages]
         else:
             raise ValueError(f"Unsupported waveform type: {waveform_type}")
 
