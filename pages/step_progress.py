@@ -103,6 +103,7 @@ TRAPEZOID_BASE_HEIGHT = 24
 # Compact strip: hug step text, never stretch edge-to-edge.
 STRIP_MAX_WIDTH = 1100
 STRIP_MAX_FRACTION = 0.7
+STRIP_NARROW_FRACTION = 0.92
 ADV_BUTTON_MAX_WIDTH = 330
 ADV_BUTTON_PAD = 45
 
@@ -396,7 +397,9 @@ class Trapezoid:
             self._button_font.configure(size=-round(18 * scale))
             label_w = self._button_font.measure(self.host.tr("chip_tools_label"))
             adv_need = min(_slim_px(ADV_BUTTON_MAX_WIDTH, scale), label_w + _slim_px(ADV_BUTTON_PAD, scale))
-            cap = max(1, min(round(width * STRIP_MAX_FRACTION),
+            fraction = (STRIP_NARROW_FRACTION if width < STRIP_MAX_WIDTH * scale
+                        else STRIP_MAX_FRACTION)
+            cap = max(1, min(round(width * fraction),
                              _slim_px(STRIP_MAX_WIDTH, scale), width - _slim_px(24, scale)))
             group_width = min(max(content_hint, adv_need), cap)
             self.floating_group.place(relx=0.5, rely=1.0, anchor="s", y=-_slim_px(6, scale), width=group_width)
@@ -912,7 +915,7 @@ class StepProgressBar(ttk.Frame):
         self._strip_width = max(1, int(width))
         self._draw_strip()
 
-    def _elide(self, full: str, room: int) -> str:
+    def _elide(self, full: str, room: int, *, compact: bool = False) -> str:
         if self._measure(full) <= room:
             return full
         if self._measure("…") > room:
@@ -924,6 +927,16 @@ class StepProgressBar(ttk.Frame):
                 lo = mid
             else:
                 hi = mid - 1
+        if compact:
+            ordinal, separator, title = full.partition(" · ")
+            if title:
+                # Spend the ellipsis pixels on a recognizable title prefix.
+                prefix = (title[:4] if "\u3400" <= title[0] <= "\u9fff"
+                          else title.split()[0][:6])
+                for length in range(len(prefix), min(3, len(prefix)) - 1, -1):
+                    short = ordinal + separator + prefix[:length]
+                    if len(short) > lo and self._measure(short) <= room:
+                        return short
         return full[:lo] + "…"
 
     def _draw_strip(self) -> None:
@@ -935,10 +948,11 @@ class StepProgressBar(ttk.Frame):
         designed = round(1.5 * px(18))
         height = designed if line <= designed else line + px(6)
         width = self._strip_width or self.preferred_width()
+        compact = self.host.trapezoid.canvas.winfo_width() < STRIP_MAX_WIDTH * scale
         colors = getattr(self.page, "colors", {}) or {}
         background = colors.get("bg", "#FFFFFF")
         dark = getattr(getattr(self.page.ctx, "state", None), "theme", "light") == "dark"
-        signature = (width, height, scale, self._collapsed, tuple(self._titles.items()),
+        signature = (width, height, scale, compact, self._collapsed, tuple(self._titles.items()),
                      str(self._font.actual()), background, dark)
         if signature == self._drawing_signature:
             self._paint()
@@ -973,7 +987,7 @@ class StepProgressBar(ttk.Frame):
             for index, step in enumerate(self.steps):
                 key = step.key
                 text_room = min(measured[index], lo)
-                text = self._elide(self._titles[key], text_room)
+                text = self._elide(self._titles[key], text_room, compact=compact)
                 self._display_titles[key] = text
                 cell_width = cell_fixed + text_room
                 box = (x, stroke, x + cell_width, height - stroke)

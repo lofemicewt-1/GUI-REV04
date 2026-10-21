@@ -4,12 +4,49 @@ import tkinter as tk
 from tests.tk_cleanup import attach_tk_cleanup, cancel_after_jobs, prepare_tk_test
 from tkinter import ttk
 import threading
+from types import SimpleNamespace
 import unittest
+from unittest.mock import MagicMock
 
 from core.ui_dispatch import UiDispatcher
 from pages.base_page import BasePage
-from pages.step_progress import ProgressContext, StepSpec
+from pages.step_progress import ProgressContext, StepProgressBar, StepSpec, Trapezoid
 from styles.theme import apply_theme
+
+
+class StepProgressSizingTests(unittest.TestCase):
+    def test_strip_width_fraction_changes_at_scaled_viewport_breakpoint(self) -> None:
+        for viewport, scale, fraction in ((1024, 1.0, 0.92), (1099, 1.0, 0.92),
+                                          (1100, 1.0, 0.7), (1200, 1.0, 0.7),
+                                          (1374, 1.25, 0.92), (1375, 1.25, 0.7),
+                                          (2000, 1.0, 0.7)):
+            with self.subTest(viewport=viewport, scale=scale):
+                trap = MagicMock(expanded=False, _last_layout_signature=None)
+                trap.canvas.winfo_width.return_value = viewport
+                trap.host.ctx.state.ui_scale = scale
+                trap._button_font.measure.return_value = 100
+                bar = MagicMock()
+                bar.preferred_width.return_value = 10000
+                trap.host._step_progress_bars = [bar]
+                trap.host._active_step_page.step_progress = bar
+                Trapezoid._layout(trap)
+                bar.apply_width.assert_called_once_with(
+                    min(round(viewport * fraction), round(1100 * scale)))
+
+    def test_compact_shortening_preserves_cjk_and_latin_prefixes(self) -> None:
+        bar = SimpleNamespace(_measure=lambda text: sum(9 if char.isascii() else 18 for char in text))
+        for full, short in (("1 · 波形设置与输出参数", "1 · 波形设"),
+                            ("1 · 波形设置与输出参数", "1 · 波形设置"),
+                            ("2 · Waveform configuration", "2 · Wave"),
+                            ("3 · ADC configuration", "3 · ADC")):
+            with self.subTest(title=full, short=short):
+                room = bar._measure(short)
+                self.assertEqual(StepProgressBar._elide(bar, full, room, compact=True), short)
+                self.assertTrue(StepProgressBar._elide(bar, full, room).endswith("…"))
+                self.assertEqual(StepProgressBar._elide(bar, full, bar._measure(full), compact=True), full)
+                for tiny_room in (0, 18, 54):
+                    text = StepProgressBar._elide(bar, full, tiny_room, compact=True)
+                    self.assertLessEqual(bar._measure(text), tiny_room)
 
 
 class StepProgressTests(unittest.TestCase):
@@ -295,7 +332,7 @@ class StepProgressTests(unittest.TestCase):
         )
         self.assertLessEqual(
             self.trapezoid.floating_group.winfo_width(),
-            max(300, int(self.area.canvas.winfo_width() * 0.7) + 6),
+            max(300, int(self.area.canvas.winfo_width() * 0.92) + 6),
             "step strip must stay a compact fraction of the viewport",
         )
         self.assertLessEqual(
