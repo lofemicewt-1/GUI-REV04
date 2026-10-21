@@ -133,6 +133,7 @@ class Trapezoid:
         self._layout_job: str | None = None
         self._viewport_bind_id: str | None = None
         self._forced_collapsed = False
+        self._viewport_can_fit = True
         self._responsive_collapsed = False
         self._responsive_override: bool | None = None
         self._last_layout_signature: tuple[Any, ...] | None = None
@@ -176,7 +177,10 @@ class Trapezoid:
         # Controls are constructed once, even while collapsed.  The inner
         # frame is a canvas window so unusually tall advanced panels remain
         # reachable when the viewport constrains their height.
-        self._panel_outer = ttk.Frame(floating_group, style="Panel.TFrame", padding=4)
+        # The popup extends above the strip.  Parenting it to the strip clips
+        # everything outside that strip, even though Tk reports it as mapped.
+        # A sibling can still be placed relative to the strip without clipping.
+        self._panel_outer = ttk.Frame(floating_group.master, style="Panel.TFrame", padding=4)
         self._panel_outer.grid_propagate(False)
         self._panel_outer.columnconfigure(0, weight=1)
         self._panel_outer.rowconfigure(0, weight=1)
@@ -305,15 +309,17 @@ class Trapezoid:
             responsive = is_compact_window(root_width, root_height)
             if responsive != self._responsive_collapsed:
                 self._responsive_collapsed = responsive
-                self._responsive_override = None
                 responsive_changed = True
         group_height = max(1, int(self.floating_group.winfo_reqheight()))
         forced = width < 560 or height < max(300, group_height + 110)
+        # Below this size even the minimum scrollable popup cannot fit.  This
+        # is a hard limit; the larger thresholds above are only auto defaults.
+        can_fit = width >= 264 and height >= group_height + 104
+        fit_changed = can_fit != self._viewport_can_fit
+        self._viewport_can_fit = can_fit
         forced_changed = forced != self._forced_collapsed
-        if forced_changed:
-            self._forced_collapsed = forced
-            self._apply_expanded_state()
-        elif responsive_changed:
+        self._forced_collapsed = forced
+        if forced_changed or responsive_changed or fit_changed:
             self._apply_expanded_state()
         self._queue_layout()
 
@@ -345,17 +351,18 @@ class Trapezoid:
         if persist:
             self._desired_expanded = value
             self.store.set_trapezoid_expanded(self.state_key, value)
-        if self._responsive_collapsed and not self._forced_collapsed:
-            # Small-window auto-collapse is a temporary presentation default.
-            # Explicit user input can still expand it during this compact interval.
-            self._responsive_override = value
+        # Keep explicit input for this session, including across responsive
+        # transitions and temporarily unusable viewport sizes.
+        self._responsive_override = value
         self._apply_expanded_state(requested=value if not persist else None)
 
     def _apply_expanded_state(self, requested: bool | None = None) -> None:
         desired = self._desired_expanded if requested is None else bool(requested)
-        if self._responsive_collapsed:
-            desired = self._responsive_override if self._responsive_override is not None else False
-        actual = desired and not self._forced_collapsed
+        if self._responsive_override is not None:
+            desired = self._responsive_override
+        elif self._responsive_collapsed or self._forced_collapsed:
+            desired = False
+        actual = desired and self._viewport_can_fit
         self._expanded = actual
         self._last_layout_signature = None
         try:
@@ -378,6 +385,7 @@ class Trapezoid:
     def _layout(self) -> None:
         self._layout_job = None
         if getattr(self.host, "current_mode", None) == "full_mode":
+            self._panel_outer.place_forget()
             self.floating_group.place_forget()
             self._reserve_scroll_clearance()
             return
@@ -436,6 +444,7 @@ class Trapezoid:
                     width=panel_width,
                     height=panel_height,
                 )
+                self._panel_outer.lift()
                 if int(self.panel.winfo_reqheight()) + 18 > panel_height:
                     self._panel_scrollbar.grid(row=0, column=1, sticky="ns")
                     content_width = max(1, panel_width - 42)
@@ -497,6 +506,7 @@ class Trapezoid:
                 pass
             self._viewport_bind_id = None
         try:
+            self._panel_outer.destroy()
             self.floating_group.destroy()
         except tk.TclError:
             pass

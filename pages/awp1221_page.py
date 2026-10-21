@@ -1590,7 +1590,15 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._waveform_selector_form.grid_propagate(False)
         self._waveform_selector_shell.columnconfigure(0, weight=0, minsize=680)
         self._waveform_selector_shell.columnconfigure(1, weight=3)
-        self.rom_canvas.configure(height=400)
+        # A tall form must not stretch the curve down past the first viewport.
+        # Put the plot before its captions and keep its requested height.
+        self.rom_canvas.configure(height=280)
+        preview = self._waveform_selector_preview
+        preview.rowconfigure(2, weight=0)
+        self.rom_canvas.grid_configure(row=0)
+        metric, frequency = self._selector_widgets["awp1221_rom_preview_captions"]
+        metric.grid_configure(row=1, pady=(4, 0))
+        frequency.grid_configure(row=2)
         self._tooltips.append(SimpleTooltip(self._selector_widgets["awp1221_rom_offset"][0],
                               lambda: self.tr("awp1221_waveform_word3_pending")))
         self._refresh_waveform_controls()
@@ -4077,7 +4085,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             form.grid(row=1, column=0, columnspan=1, sticky="nsew", padx=(0, 18))
             form.rowconfigure(0, weight=1)
         if preview is not None:
-            preview.grid(row=0, column=1, rowspan=2, sticky="nsew")
+            preview.grid(row=0, column=1, rowspan=2, sticky="nw")
         if scroll is not None:
             scroll.canvas.configure(height=1)
         shell.rowconfigure(1, weight=1)

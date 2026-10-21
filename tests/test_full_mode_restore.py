@@ -1,7 +1,7 @@
 """Mode-switch regressions that do not require a display or transport."""
 from types import SimpleNamespace
 from unittest import TestCase
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from config.languages import t
 from pages.base_page import BasePage
@@ -10,18 +10,24 @@ from pages.step_progress import Trapezoid
 
 
 class FullModeRestoreTests(TestCase):
-    def test_step_labels_survive_a_step_bar_only_in_full_mode(self):
+    def test_full_mode_labels_omit_steps_with_or_without_a_step_bar(self):
         label = Mock()
         page = SimpleNamespace(
             page_name="full_mode", step_progress=object(),
             tr=lambda key, **kw: t("zh", key, **kw),
+            _module_title_bindings=[],
         )
-        binding = dict(label=label, title_key="awp1221_adc", step=3, role=None)
-        BasePage._refresh_module_title(page, binding)
-        self.assertIn("第3步", label.configure.call_args.kwargs["text"])
-        page.page_name = "button_mode"
-        BasePage._refresh_module_title(page, binding)
-        self.assertNotIn("第3步", label.configure.call_args.kwargs["text"])
+        page._refresh_module_title = lambda binding: BasePage._refresh_module_title(page, binding)
+        with patch("pages.base_page.ttk.Label", return_value=label):
+            BasePage.make_full_mode_label(page, Mock(), "awp1221_adc", step=3)
+        binding = page._module_title_bindings[0]
+        for language in ("zh", "en"):
+            page.tr = lambda key, **kw: t(language, key, **kw)
+            for step_bar in (object(), None):
+                with self.subTest(language=language, step_bar=step_bar is not None):
+                    page.step_progress = step_bar
+                    BasePage._refresh_module_title(page, binding)
+                    self.assertEqual(label.configure.call_args.kwargs["text"], t(language, "awp1221_adc"))
         self.assertTrue(is_full_mode(SimpleNamespace(mode_key="full_mode")))
 
     def test_first_full_entry_preserves_original_scroll_reserve(self):

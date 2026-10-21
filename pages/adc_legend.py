@@ -94,6 +94,7 @@ class AdcLegend(ttk.Frame):
 
         self._table = ttk.Frame(self, style="Panel.TFrame")
         self._table.grid(row=4, column=0, sticky="ew", pady=(5, 0))
+        self._table.bind("<Configure>", self._queue_fit_rule_columns, add="+")
         # Parent allocation drives width; avoid inflating ADC split measurements.
         self.columnconfigure(0, weight=1, minsize=0)
         self._fit_job = None
@@ -372,9 +373,14 @@ class AdcLegend(ttk.Frame):
             if changed:
                 for column, width in enumerate(widths):
                     self._table.columnconfigure(column, weight=max(1, width), minsize=24)
+                self._table.update_idletasks()
             for cell in cells:
                 column = int(cell.grid_info()["column"])
-                want = max(1, widths[column] - 16)
+                # Grid distributes space using both requested sizes and weights.
+                # Wrap to the allocated cell, not the ideal column budget.
+                allocated = self._table.grid_bbox(column, int(cell.grid_info()["row"]))[2]
+                padding = 16 if isinstance(cell, tk.Label) else 0
+                want = max(1, allocated - padding)
                 try:
                     if int(cell.cget("wraplength") or 0) != want:
                         cell.configure(wraplength=want)
@@ -502,15 +508,23 @@ class AdcLegend(ttk.Frame):
             slot_width = (width - 2 * margin) / count
             card_width = min(260 if count <= 2 else 230, max(110, slot_width - gap))
             card_top, card_height = 64, 78
-            card_bottom = card_top + card_height
             by_id = {stage["id"]: index for index, stage in enumerate(stages)}
-            lower_edges = [
-                (index, stage, by_id.get(stage["target"]))
-                for index, stage in enumerate(stages)
-                if stage["target"] in by_id
-                and (by_id[stage["target"]] != index + 1)
-                and not (stage["unused"] and stage["target"] == stage["id"])
-            ]
+            # Measure wrapped forward labels before placing the cards. Centered
+            # labels at a fixed y can extend above the canvas with larger fonts.
+            for index, stage in enumerate(stages):
+                if by_id.get(stage["target"]) != index + 1:
+                    continue
+                center = margin + (index + 1) * slot_width
+                item = self.canvas.create_text(
+                    center, 8, anchor="n",
+                    text=self._edge_text(stage, index + 1, back=False),
+                    fill=self._condition_color(stage["condition"]),
+                    font=self._ui_font(1.35, True),
+                    width=max(90, slot_width - card_width - 3 + card_width * 0.65),
+                    tags=("transition_label",),
+                )
+                card_top = max(card_top, self.canvas.bbox(item)[3] + 8)
+            card_bottom = card_top + card_height
             boxes: list[tuple[float, float, float, float]] = []
             content_bottom = card_bottom - 8
             for index, stage in enumerate(stages):
@@ -536,8 +550,8 @@ class AdcLegend(ttk.Frame):
                 )
                 heading = stage["id"]
                 heading_item = self.canvas.create_text(
-                    (x0 + x1) / 2, y0 + 5, anchor="n", text=heading, fill=text,
-                    font=self._ui_font(1.55, True), width=card_width - 12,
+                    (x0 + x1) / 2, y0 + 8, anchor="n", text=heading, fill=text,
+                    font=self._ui_font(1.55, True), width=card_width - 18,
                     tags=("stage_heading", "stage_click", stage["id"]),
                 )
                 text_top = self.canvas.bbox(heading_item)[3] + 2
@@ -545,12 +559,11 @@ class AdcLegend(ttk.Frame):
                 marker_text = " · ".join(
                     ([self._tr("adc_legend_start")] if stage["id"] in self._starts else []) + markers
                 )
-                if preview:
-                    marker_text = " · ".join(filter(None, (marker_text, self._tr("adc_legend_preview"))))
+                # Do not annotate cards with 「示意 Stage」 / illustrative labels.
                 if marker_text:
                     marker_item = self.canvas.create_text(
                         (x0 + x1) / 2, text_top, anchor="n", text=marker_text, fill=border,
-                        font=self._ui_font(1.4, True), width=card_width - 12,
+                        font=self._ui_font(1.4, True), width=card_width - 18,
                         tags=("stage_marker", "stage_click", stage["id"]),
                     )
                     text_top = self.canvas.bbox(marker_item)[3] + 2
@@ -562,7 +575,7 @@ class AdcLegend(ttk.Frame):
                     wave_text = stage["waveform"]
                 body_item = self.canvas.create_text(
                     (x0 + x1) / 2, text_top, anchor="n", text=body_text, fill=text,
-                    font=self._ui_font(1.45), width=card_width - 12,
+                    font=self._ui_font(1.45), width=card_width - 18,
                     tags=("stage_wait", "stage_click", stage["id"]),
                 )
                 content_bottom = max(content_bottom, self.canvas.bbox(body_item)[3])
@@ -570,30 +583,22 @@ class AdcLegend(ttk.Frame):
                     wave_item = self.canvas.create_text(
                         (x0 + x1) / 2, self.canvas.bbox(body_item)[3] + 2, anchor="n",
                         text=f"{self._tr('adc_legend_play_wave')} {wave_text}", fill=self.colors.get("muted", "#6B7280"),
-                        font=self._ui_font(1.4), width=card_width - 12,
+                        font=self._ui_font(1.4), width=card_width - 18,
                         tags=("stage_waveform", "stage_click", stage["id"]),
                     )
                     content_bottom = max(content_bottom, self.canvas.bbox(wave_item)[3])
 
             # Let wrapped labels expand compact cards instead of overlapping.
-            card_bottom = max(card_bottom, content_bottom + 6)
+            card_bottom = max(card_bottom, content_bottom + 8)
             card_height = card_bottom - card_top
             for index, item in enumerate(self.canvas.find_withtag("stage_box")):
                 x0, y0, x1, _ = boxes[index]
                 boxes[index] = (x0, y0, x1, card_bottom)
                 self.canvas.coords(item, x0, y0, x1, card_bottom)
-            needed_height = int(card_bottom + 32 + max(1, len(lower_edges)) * 32)
-            try:
-                current_height = int(self.canvas.cget("height"))
-            except (tk.TclError, TypeError, ValueError):
-                current_height = -1
-            if current_height != needed_height:
-                self.canvas.configure(height=needed_height)
-
             # Immediate forward transitions stay above the row; returns and
             # skips use separate lower lanes so each configured edge remains visible.
             connectors = []
-            lower_lane = 0
+            lane_y = card_bottom + 16
             for index, stage in enumerate(stages):
                 target_index = by_id.get(stage["target"])
                 if target_index is None or (stage["unused"] and stage["target"] == stage["id"]):
@@ -612,16 +617,7 @@ class AdcLegend(ttk.Frame):
                         start_x, arrow_y, end_x, arrow_y, fill=color, width=2,
                         smooth=True, splinesteps=48, arrow=tk.LAST, tags=("transition",),
                     )
-                    self.canvas.create_text(
-                        (start_x + end_x) / 2, 25,
-                        text=self._edge_text(stage, target_index, back=False),
-                        fill=color, font=self._ui_font(1.35, True),
-                        width=max(90, end_x - start_x + card_width * 0.65),
-                        tags=("transition_label",),
-                    )
                 else:
-                    lane_y = card_bottom + 16 + lower_lane * 32
-                    lower_lane += 1
                     if target_index == index:
                         start_x, end_x = source_x + card_width * 0.26, source_x - card_width * 0.26
                     else:
@@ -637,13 +633,19 @@ class AdcLegend(ttk.Frame):
                         arrow=tk.LAST, tags=("transition",),
                     )
                     label_width = max(100, abs(end_x - start_x) - 8)
-                    self.canvas.create_text(
+                    label = self.canvas.create_text(
                         (start_x + end_x) / 2, lane_y + 3,
                         text=self._edge_text(stage, target_index, back=target_index <= index),
                         fill=color, font=self._ui_font(1.35, True),
                         width=min(width - 24, label_width), anchor="n",
                         tags=("transition_label",),
                     )
+                    # A wrapped label owns its full lane, including descent.
+                    lane_y = self.canvas.bbox(label)[3] + 12
+            # Include every text bbox, rather than estimating from lane count.
+            needed_height = math.ceil(self.canvas.bbox("all")[3] + 8)
+            if int(self.canvas.cget("height")) != needed_height:
+                self.canvas.configure(height=needed_height)
             self._render_connectors(width, needed_height, connectors)
             self._render_locked_width = int(width)
             self._queue_fit_rule_columns()
@@ -750,8 +752,7 @@ class AdcLegend(ttk.Frame):
                 if stage_id in self._starts:
                     marks.append(self._tr("adc_legend_start"))
                     marks.extend(self._starts[stage_id])
-                if stage_id == self._preview_stage:
-                    marks.append(self._tr("adc_legend_preview"))
+                # Skip adc_legend_preview (「示意 Stage」) in the rule table.
                 label = stage_id + (f" · {' / '.join(marks)}" if marks else "")
                 if stage["unused"] and stage["target"] == stage_id:
                     wave = self._tr("adc_legend_unused")
@@ -834,7 +835,7 @@ class AdcLegend(ttk.Frame):
                 fg=foreground,
             )
             self._live_detail_label.configure(text=" · ".join(part for part in detail_parts if part), fg=foreground)
-            self._live_tip.configure(text=self._tr("adc_legend_preview_note"))
+            self._live_tip.configure(text=self._tr("adc_legend_live_tip"))  # keep color tip; no 示意 note
         except tk.TclError:
             return
 

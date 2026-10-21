@@ -187,6 +187,83 @@ class AdcLegendClickTests(unittest.TestCase):
         page._activate_button_adc_stage("Stage2")
         self.assertEqual(page._active_adc_stage_id, "Stage1")
 
+    def test_page_legend_text_fits_cards_canvas_and_rule_cells(self):
+        import os
+        from pathlib import Path
+        from tkinter import font as tkfont
+        from pages.base_page import VerticalScrollArea
+        from tests.validate_responsive_layout import _flush
+
+        app = self.make_app()
+        app.apply_settings("zh", "light", app.state.font_size)
+        for route, mode in (
+            ("awp1221", "button_mode"),
+            ("awp1018", "awp1018_normal_mode"),
+            ("awp1921_1923", "button_mode"),
+        ):
+            app.navigation.show(route)
+            host = app.navigation.pages[route]
+            host.show_mode(mode, **({"update_chip": False} if route == "awp1018" else {}))
+            page = host.mode_pages[mode]
+            legend = page.adc_legend
+            for width in (1024, 1366, 1920):
+                with self.subTest(route=route, width=width):
+                    app.root.geometry(f"{width}x768+0+0")
+                    _flush(app.root, 5)
+                    canvas = legend.canvas
+                    for box in canvas.find_withtag("stage_box"):
+                        stage = next(tag for tag in canvas.gettags(box) if tag.startswith("Stage"))
+                        x0, y0, x1, y1 = canvas.coords(box)
+                        for item in canvas.find_withtag(stage):
+                            if canvas.type(item) != "text":
+                                continue
+                            left, top, right, bottom = canvas.bbox(item)
+                            self.assertGreaterEqual(left, x0 + 4)
+                            self.assertGreaterEqual(top, y0 + 4)
+                            self.assertLessEqual(right, x1 - 4)
+                            self.assertLessEqual(bottom, y1 - 4)
+                    for item in canvas.find_all():
+                        if canvas.type(item) == "text":
+                            left, top, right, bottom = canvas.bbox(item)
+                            self.assertGreaterEqual(left, 4)
+                            self.assertGreaterEqual(top, 4)
+                            self.assertLessEqual(right, canvas.winfo_width() - 4)
+                            self.assertLessEqual(bottom, canvas.winfo_height() - 4)
+                    for row in legend._rule_rows.values():
+                        for cell in row:
+                            wrap = int(cell.cget("wraplength"))
+                            font = tkfont.Font(root=app.root, font=cell.cget("font"))
+                            # Tk wraps at words/characters. The configured wrap
+                            # and any individual glyph must fit the actual cell.
+                            self.assertLessEqual(wrap + 16, cell.winfo_width())
+                            self.assertLessEqual(max(map(font.measure, cell.cget("text"))), wrap)
+                            self.assertLessEqual(cell.winfo_x() + cell.winfo_width(), legend._table.winfo_width())
+
+                    directory = os.environ.get("PREVIEW_SCREENSHOT_DIR")
+                    if directory:
+                        from PIL import ImageGrab
+
+                        # Bring the entire legend into view for visual review;
+                        # activation itself must continue to leave scroll alone.
+                        focus = legend
+                        current = focus.master
+                        while current is not None:
+                            if isinstance(current, VerticalScrollArea):
+                                y = current.canvas.canvasy(focus.winfo_rooty() - current.canvas.winfo_rooty())
+                                region = current.canvas.tk.splitlist(current.canvas.cget("scrollregion"))
+                                height = float(region[3]) if len(region) == 4 else 1.0
+                                current.canvas.yview_moveto(max(0, (y - 8) / max(1, height)))
+                                focus = current
+                            current = current.master
+                        _flush(app.root, 5)
+                        root = app.root
+                        path = Path(directory) / f"after_adc_legend_clipfix_{route}_{width}x768.png"
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        ImageGrab.grab(bbox=(root.winfo_rootx(), root.winfo_rooty(),
+                                             root.winfo_rootx() + root.winfo_width(),
+                                             root.winfo_rooty() + root.winfo_height()),
+                                       xdisplay=os.environ.get("DISPLAY")).save(path)
+
     def test_awp1221_page_legend_switches_visible_stage(self):
         app = self.make_app()
         app.navigation.show("awp1221")

@@ -282,8 +282,10 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             side_by_side = available >= max(
                 900,
                 max(550, int(self.controls.winfo_reqwidth()))
-                + max(380, int(self.plot_panel.winfo_reqwidth()))
-                + 20,
+                # The width clamp expands the stacked plot to fill the page.
+                # Using that request here would keep the layout stacked forever.
+                + 380
+                + 10,
             )
             signature = (side_by_side, scaled_waveform_max_width(scale))
             if signature == self._button_layout_signature:
@@ -305,9 +307,11 @@ class ButtonWaveformPage(WaveformGeneratorPage):
                 self.columnconfigure(1, weight=0, minsize=0)
                 self.columnconfigure(2, weight=0, minsize=0)
                 self.rowconfigure(0, weight=0)
-                self.rowconfigure(1, weight=1)
-                self.controls.grid_configure(row=0, column=0, columnspan=3, sticky="ew")
-                self.plot_panel.grid_configure(row=1, column=0, columnspan=1, sticky="nw")
+                self.rowconfigure(1, weight=0)
+                # Keep the preview in the first viewport even when the controls
+                # are too wide to share a row with it.
+                self.controls.grid_configure(row=1, column=0, columnspan=3, sticky="ew")
+                self.plot_panel.grid_configure(row=0, column=0, columnspan=1, sticky="nw")
                 self._waveform_width_spacer.grid_remove()
             self._waveform_width_clamp.refresh()
         except tk.TclError:

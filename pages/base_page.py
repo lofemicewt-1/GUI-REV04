@@ -1578,9 +1578,9 @@ class BasePage(ttk.Frame):
         self, parent: tk.Misc, key: str, *, step: int | None = None,
         style: str = "SectionTitle.TLabel",
     ) -> ttk.Label:
-        """Baseline plain heading, retaining the requested Full Mode step text."""
+        """Plain Full Mode heading; accept step for call-site compatibility."""
         label = ttk.Label(parent, style=style)
-        binding = {"label": label, "title_key": key, "step": step, "step_total": 4, "role": None}
+        binding = {"label": label, "title_key": key, "step": None, "step_total": 4, "role": None}
         self._module_title_bindings.append(binding)
         self._refresh_module_title(binding)
         return label

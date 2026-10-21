@@ -105,7 +105,9 @@ class AdcLegendRenderingTests(unittest.TestCase):
         self.assertIn("ExternalStage", " ".join(
             child.cget("text") for child in legend._table.winfo_children()
         ))
-        self.assertIn("cannot determine", legend._live_tip.cget("text"))
+        self.assertNotIn("示意", legend._live_tip.cget("text"))
+        self.assertNotIn("cannot determine", legend._live_tip.cget("text").lower())
+        self.assertNotIn("illustrat", legend._live_tip.cget("text").lower())
 
         # A forward skip is rendered on a lower route just like a back jump.
         legend.set_rules(
