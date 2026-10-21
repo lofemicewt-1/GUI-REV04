@@ -115,6 +115,28 @@ class ModuleTitleTests(unittest.TestCase):
         self.page.refresh_language()
         self.assertEqual(title.cget("text"), "第3步验证 · ADC 图例")
 
+    def test_step_prefix_hidden_on_pages_with_step_bar(self) -> None:
+        colors = apply_theme(self.root, "light", 10, 1.0)
+        context = SimpleNamespace(
+            colors=colors,
+            state=SimpleNamespace(language="en", theme="light"),
+        )
+        self.page = BasePage(self.root, context)
+        self.page.pack(fill="both", expand=True)
+        _row, plain = self.page.make_module_title_row(self.page, "awp1221_adc_diagram", step=2, step_total=4)
+        _row, verify = self.page.make_module_title_row(
+            self.page, "awp1221_adc_diagram", step=3, step_total=4, role="verify",
+        )
+        self.page.step_progress = SimpleNamespace(refresh_language=lambda: None, destroy=lambda: None, refresh_theme=lambda: None)
+        for binding in self.page._module_title_bindings:
+            self.page._refresh_module_title(binding)
+        self.assertEqual(plain.cget("text"), "ADC Diagram")
+        self.assertEqual(verify.cget("text"), "ADC Diagram · verification")
+        context.state.language = "zh"
+        self.page.refresh_language()
+        self.assertNotIn("第", plain.cget("text"))
+        self.assertNotIn("步", verify.cget("text"))
+
     def test_step_metadata_comes_from_both_title_entry_points_without_duplicates(self) -> None:
         colors = apply_theme(self.root, "light", 10, 1.0)
         context = SimpleNamespace(

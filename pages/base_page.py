@@ -1652,7 +1652,12 @@ class BasePage(ttk.Frame):
         title = self.tr(binding["title_key"])
         step = binding["step"]
         role = binding["role"]
-        if step is not None:
+        if step is not None and getattr(self, "step_progress", None) is not None:
+            # The floating step bar already shows "N · title"; drop the
+            # redundant "Step N" prefix on pages that own a step bar.
+            if role:
+                title = self.tr("module_role_suffix", title=title, role=self.tr(f"module_role_{role}"))
+        elif step is not None:
             if role:
                 prefix = self.tr(
                     "module_step_role_prefix",
@@ -1983,6 +1988,11 @@ class BasePage(ttk.Frame):
         bar.grid_remove()
         self.step_progress = bar
         host._step_progress_bars.append(bar)
+        for binding in list(getattr(self, "_module_title_bindings", ())):
+            try:
+                self._refresh_module_title(binding)
+            except (tk.TclError, KeyError):
+                pass
         host.trapezoid._reserve_scroll_clearance(extra_height=int(bar.winfo_reqheight()))
         return bar
 

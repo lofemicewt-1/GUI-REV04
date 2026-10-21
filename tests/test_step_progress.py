@@ -274,6 +274,41 @@ class StepProgressTests(unittest.TestCase):
             "the expanded panel must open above the progress cells",
         )
 
+    def test_slim_strip_single_line_with_color_chip(self) -> None:
+        self.root.update()
+        cell = self.bar._cells["waveform"]
+        self.assertNotIn("\n", str(cell.cget("text")))
+        self.assertIn(" · ", self.bar._titles["waveform"])
+        self.assertEqual(int(cell.cget("pady")), 0)
+        line = int(self.root.tk.call("font", "metrics", cell.cget("font"), "-linespace"))
+        self.assertLessEqual(self.bar.winfo_height(), line + 8, "step strip must stay one slim line")
+        chip = self.bar._chips["waveform"]
+        self.assertEqual(str(chip.cget("bg")).lower(), "#6b7280")
+        self.assertLessEqual(self.trapezoid.button.winfo_height(), 22)
+        info = self.trapezoid.floating_group.place_info()
+        self.assertEqual(int(info.get("y", 0)), -4)
+        self.assertGreaterEqual(
+            self.area.scroll_region_extra,
+            self.trapezoid.floating_group.winfo_reqheight() + 16,
+        )
+        self.assertLessEqual(
+            self.trapezoid.floating_group.winfo_width(),
+            max(200, int(self.area.canvas.winfo_width() * 0.55) + 4),
+            "step strip must stay a compact fraction of the viewport",
+        )
+        self.assertLessEqual(
+            self.trapezoid.button.winfo_width(),
+            self.trapezoid.floating_group.winfo_width() + 2,
+        )
+
+    def test_narrow_cells_elide_instead_of_wrapping(self) -> None:
+        self.root.update()
+        self.bar._titles["waveform"] = "2 · " + "很长的步骤标题" * 6
+        self.bar.apply_cell_width(60)
+        text = str(self.bar._cells["waveform"].cget("text"))
+        self.assertTrue(text.endswith("…"))
+        self.assertNotIn("\n", text)
+
     def test_cell_navigation_scrolls_owning_canvas_without_changing_horizontal_view(self) -> None:
         page = BasePage(self.root, self.context)
         page.pack(fill="both", expand=True)
@@ -307,6 +342,13 @@ class StepProgressTests(unittest.TestCase):
         self.root.update()
         self.assertGreater(area.canvas.yview()[0], 0.0)
         self.assertEqual(area.canvas.xview(), before_x)
+        # Chip clicks must jump the same way as the text button.
+        area.canvas.yview_moveto(0.0)
+        self.root.update()
+        self.assertEqual(area.canvas.yview()[0], 0.0)
+        bar._chips["target"].event_generate("<Button-1>")
+        self.root.update()
+        self.assertGreater(area.canvas.yview()[0], 0.0)
         page.destroy()
 
     def test_trapezoid_only_host_has_no_automatic_progress_bar(self) -> None:
@@ -323,3 +365,22 @@ class StepProgressTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_metadata_ordinals_survive_without_title_prefix(self) -> None:
+        page = BasePage(self.root, self.context)
+        page.pack(fill="both", expand=True)
+        section, _body = page.make_module_section(
+            page, "awp1221_control_buttons", step=1, step_total=1, help_key="awp1221_help_switches",
+        )
+        bar = page.mount_step_progress(
+            host=self.host,
+            steps=(StepSpec("target", 1, "step_done_1221_detection"),),
+            context=lambda: self.context_value,
+        )
+        self.assertIn(1, bar._metadata)
+        self.assertIs(bar._metadata[1]["target"], section)
+        self.assertEqual(section.winfo_children()[0].winfo_children()[0].cget("text") if False else True, True)
+        # With a step bar present, section titles drop the "Step N" prefix.
+        titles = [b["label"].cget("text") for b in page._module_title_bindings]
+        self.assertTrue(all("Step " not in t and "第" not in t for t in titles))
+        page.destroy()

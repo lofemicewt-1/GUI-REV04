@@ -66,6 +66,35 @@ _STATE_COLORS = {
 }
 
 
+def _ui_scale(widget: Any) -> float:
+    try:
+        state = getattr(getattr(widget, "ctx", None), "state", None)
+        return max(0.5, float(getattr(state, "ui_scale", 1.0) or 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _slim_px(value: float, scale: float) -> int:
+    return max(1, int(round(value * scale)))
+
+
+def _step_font_size(widget: Any) -> int:
+    try:
+        body = int(getattr(widget.winfo_toplevel(), "_piezo_body_font_size", 9))
+    except (tk.TclError, TypeError, ValueError):
+        body = 9
+    return max(7, body - 1)
+
+
+TRAPEZOID_BASE_HEIGHT = 18
+# Compact strip: hug step text, never stretch edge-to-edge.
+STRIP_MAX_WIDTH = 760
+STRIP_MAX_FRACTION = 0.55
+ADV_BUTTON_MAX_WIDTH = 220
+ADV_BUTTON_PAD = 28
+STEP_CHIP_SIZE = (4, 10)
+
+
 class Trapezoid:
     """Floating, persistent advanced-tools panel owned by a chip host."""
 
@@ -108,7 +137,7 @@ class Trapezoid:
         self.button = tk.Canvas(
             floating_group,
             width=300,
-            height=32,
+            height=_slim_px(TRAPEZOID_BASE_HEIGHT, _ui_scale(host)),
             highlightthickness=0,
             borderwidth=0,
             takefocus=True,
@@ -126,7 +155,7 @@ class Trapezoid:
         # Controls are constructed once, even while collapsed.  The inner
         # frame is a canvas window so unusually tall advanced panels remain
         # reachable when the viewport constrains their height.
-        self._panel_outer = ttk.Frame(floating_group, style="Panel.TFrame", padding=6)
+        self._panel_outer = ttk.Frame(floating_group, style="Panel.TFrame", padding=4)
         self._panel_outer.grid_propagate(False)
         self._panel_outer.columnconfigure(0, weight=1)
         self._panel_outer.rowconfigure(0, weight=1)
@@ -136,7 +165,7 @@ class Trapezoid:
             self._panel_outer, orient="vertical", command=self._panel_canvas.yview,
         )
         self._panel_canvas.configure(yscrollcommand=self._panel_scrollbar.set)
-        self.panel = ttk.Frame(self._panel_canvas, style="Panel.TFrame", padding=4)
+        self.panel = ttk.Frame(self._panel_canvas, style="Panel.TFrame", padding=2)
         self.panel.columnconfigure(0, weight=1)
         self._panel_window = self._panel_canvas.create_window(
             (0, 0), window=self.panel, anchor="nw",
@@ -185,20 +214,20 @@ class Trapezoid:
             colors = getattr(self.host, "colors", {})
             self.button.configure(bg=colors.get("bg", "#F7F8FA"))
             self.button.delete("all")
-            inset = min(14, max(4, width // 12))
+            inset = min(10, max(3, width // 16))
             fill = colors.get("panel", "#FFFFFF")
             outline = colors.get("border", "#AAB2BF")
             if self.button.focus_get() is self.button:
                 outline = colors.get("accent", "#2563EB")
             self.button.create_polygon(
                 inset, 1, width - inset, 1, width - 1, height - 1, 1, height - 1,
-                fill=fill, outline=outline, width=2,
+                fill=fill, outline=outline, width=1,
             )
             self.button.create_text(
                 width // 2, height // 2,
                 text=self.host.tr("chip_tools_label"),
                 fill=colors.get("text", "#111827"),
-                font=("TkDefaultFont", int(getattr(self.host.winfo_toplevel(), "_piezo_body_font_size", 9)), "bold"),
+                font=("TkDefaultFont", _step_font_size(self.host)),
             )
         except tk.TclError:
             pass
@@ -239,7 +268,11 @@ class Trapezoid:
             return
         if self._old_scroll_extra is None:
             self._old_scroll_extra = int(area.scroll_region_extra)
-        clearance = max(44, int(self.floating_group.winfo_reqheight()) + int(extra_height) + 12)
+        try:
+            measured = max(int(self.floating_group.winfo_reqheight()), int(self.floating_group.winfo_height()))
+        except tk.TclError:
+            measured = 1
+        clearance = max(28, measured + int(extra_height) + 16)
         self._reserved_clearance = max(self._old_scroll_extra, clearance)
         area.scroll_region_extra = self._reserved_clearance
         area._queue_scroll_layout()
@@ -291,27 +324,51 @@ class Trapezoid:
             panel_width_request = max(1, int(self.panel.winfo_reqwidth()))
             panel_height_request = max(1, int(self.panel.winfo_reqheight()))
             state = getattr(getattr(self.host, "ctx", None), "state", None)
+            content_hint = 0
+            for bar in getattr(self.host, "_step_progress_bars", ()):
+                content_hint = max(content_hint, bar.preferred_width())
             signature = (
-                width, height, natural_width, group_height,
+                width, height, natural_width, group_height, content_hint,
                 panel_width_request, panel_height_request, bool(self.expanded),
                 float(getattr(state, "ui_scale", 1.0) or 1.0),
             )
             if signature == self._last_layout_signature:
                 return
             self._last_layout_signature = signature
-            group_width = min(natural_width, max(1, width - 16))
+            scale = float(getattr(state, "ui_scale", 1.0) or 1.0)
+            content_width = max(natural_width, content_hint)
+            # Hug content, but never exceed a compact fraction of the viewport.
+            viewport_cap = max(200, int(round(width * STRIP_MAX_FRACTION)))
+            absolute_cap = _slim_px(STRIP_MAX_WIDTH, scale)
+            group_width = min(content_width, viewport_cap, absolute_cap, max(1, width - 16))
+            group_width = max(group_width, 160)
             self.floating_group.place(
                 relx=0.5,
                 rely=1.0,
                 anchor="s",
-                y=-10,
+                y=-4,
                 width=group_width,
             )
-            self.button.configure(width=min(300, max(80, width - 20)))
+            # Advanced control matches the strip (or its label), not the full canvas.
+            label = self.host.tr("chip_tools_label")
+            try:
+                import tkinter.font as tkfont
+                label_w = int(tkfont.Font(font=("TkDefaultFont", _step_font_size(self.host))).measure(label))
+            except tk.TclError:
+                label_w = 140
+            adv_cap = _slim_px(ADV_BUTTON_MAX_WIDTH, scale)
+            # Prefer the label width; never stretch to the full strip/canvas.
+            adv_width = min(adv_cap, max(100, label_w + ADV_BUTTON_PAD), group_width)
+            self.button.configure(
+                width=adv_width,
+                height=_slim_px(TRAPEZOID_BASE_HEIGHT, scale),
+            )
             for bar in getattr(self.host, "_step_progress_bars", ()):
-                cell_width = max(72, (group_width - 104) // max(1, len(bar.steps)))
-                for cell in bar._cells.values():
-                    cell.configure(wraplength=cell_width)
+                cell_width = max(48, (group_width - 56) // max(1, len(bar.steps)))
+                bar.apply_cell_width(cell_width)
+            if self._reserved_clearance is not None and self._owning_area is not None:
+                if max(28, group_height + 16) > int(self._reserved_clearance):
+                    self._reserve_scroll_clearance()
             if self.expanded:
                 panel_width = min(max(280, int(self.panel.winfo_reqwidth()) + 20), max(240, width - 24))
                 max_panel_height = max(80, height - group_height - 24)
@@ -415,7 +472,7 @@ class StepProgressBar(ttk.Frame):
     ) -> None:
         from pages.base_page import SimpleTooltip
 
-        super().__init__(parent, style="Panel.TFrame", padding=(6, 4))
+        super().__init__(parent, style="Panel.TFrame", padding=(4, 1))
         self.page = page
         self.host = host
         self.context = context
@@ -440,6 +497,9 @@ class StepProgressBar(ttk.Frame):
         self._collapsed = False
         self._metadata = self._module_targets(page)
         self._cells: dict[str, tk.Button] = {}
+        self._chips: dict[str, tk.Frame] = {}
+        self._titles: dict[str, str] = {}
+        self._cell_width: int | None = None
         self._tooltips: dict[str, Any] = {}
 
         self.columnconfigure(0, weight=1)
@@ -448,30 +508,58 @@ class StepProgressBar(ttk.Frame):
         self._cells_frame.columnconfigure(0, weight=1)
         for index, step in enumerate(self.steps):
             self._cells_frame.columnconfigure(index, weight=1, uniform=f"stepcells_{id(self)}")
+            scale = _ui_scale(page)
+            cell = tk.Frame(self._cells_frame, borderwidth=0, highlightthickness=0)
+            cell.grid(row=0, column=index, sticky="ew", padx=1)
+            cell.columnconfigure(1, weight=1)
+            chip = tk.Frame(
+                cell,
+                width=_slim_px(STEP_CHIP_SIZE[0], scale),
+                height=_slim_px(STEP_CHIP_SIZE[1], scale),
+                borderwidth=0,
+                highlightthickness=0,
+            )
+            chip.grid(row=0, column=0, sticky="w", padx=(2, 0))
+            chip.configure(cursor="hand2")
             button = tk.Button(
-                self._cells_frame,
+                cell,
                 text="",
                 command=lambda key=step.key: self.scroll_to_step(key),
                 takefocus=True,
                 relief="flat",
-                borderwidth=1,
-                padx=8,
-                pady=4,
-                width=15,
-                wraplength=190,
-                justify="center",
-                fg="#FFFFFF",
-                activeforeground="#FFFFFF",
+                borderwidth=0,
+                highlightthickness=0,
+                padx=4,
+                pady=0,
+                width=1,
+                anchor="w",
+                justify="left",
+                font=("TkDefaultFont", _step_font_size(page)),
+                cursor="hand2",
             )
-            button.grid(row=0, column=index, sticky="ew", padx=2)
+            button.grid(row=0, column=1, sticky="ew")
+            # Chip and cell chrome must jump the same way as the text button.
+            cell.bind("<Button-1>", lambda _e, key=step.key: self.scroll_to_step(key), add="+")
+            chip.bind("<Button-1>", lambda _e, key=step.key: self.scroll_to_step(key), add="+")
+            self._chips[step.key] = chip
             self._cells[step.key] = button
-            self._tooltips[step.key] = SimpleTooltip(button, lambda key=step.key: self.tooltip_text(key))
+            tip = lambda key=step.key: self.tooltip_text(key)
+            self._tooltips[step.key] = SimpleTooltip(button, tip)
+            SimpleTooltip(chip, tip)
+            SimpleTooltip(cell, tip)
 
         right = ttk.Frame(self, style="Panel.TFrame")
         right.grid(row=0, column=1, sticky="e", padx=(4, 0))
-        self.badge = ttk.Button(right, text="", takefocus=True, command=self.expand)
+        small = ("TkDefaultFont", _step_font_size(page))
+        self.badge = tk.Button(
+            right, text="", takefocus=True, command=self.expand, font=small,
+            relief="groove", borderwidth=1, highlightthickness=0, padx=4, pady=0,
+        )
         self.badge.grid(row=0, column=0, sticky="e")
-        self.collapse_button = ttk.Button(right, text="⌄", width=2, takefocus=True, command=self.collapse)
+        self.collapse_button = tk.Button(
+            right, text="⌄", width=2, takefocus=True, command=self.collapse, font=small,
+            relief="flat", borderwidth=0, highlightthickness=0, padx=0, pady=0,
+        )
         self.collapse_button.grid(row=0, column=1, sticky="e", padx=(2, 0))
         SimpleTooltip(self.badge, lambda: self.page.tr("step_expand" if self._collapsed else "step_count", **self._count_args()))
         SimpleTooltip(self.collapse_button, lambda: self.page.tr("step_collapse"))
@@ -772,6 +860,7 @@ class StepProgressBar(ttk.Frame):
 
     def tooltip_text(self, step_key: str) -> str:
         data = self._data[step_key]
+        self._metadata = self._module_targets(self.page)
         metadata = self._metadata.get(data.spec.ordinal, {})
         pieces: list[str] = []
         help_key = metadata.get("help_key")
@@ -789,16 +878,37 @@ class StepProgressBar(ttk.Frame):
     def _render(self) -> None:
         try:
             count_args = self._count_args()
+            self._metadata = self._module_targets(self.page)
             for key, data in self._data.items():
                 button = self._cells[key]
                 metadata = self._metadata.get(data.spec.ordinal, {})
                 title_key = metadata.get("title_key")
                 title = self.page.tr(title_key) if title_key else key
+                colors = getattr(self.page, "colors", None) or getattr(self.host, "colors", {}) or {}
+                panel = colors.get("panel", "#FFFFFF")
+                text_color = colors.get("text", "#111827")
+                self._titles[key] = f"{data.spec.ordinal} · {title}"
                 button.configure(
-                    text=f"{data.spec.ordinal}\n{title}",
-                    bg=_STATE_COLORS[data.state],
-                    activebackground=_STATE_COLORS[data.state],
-                    disabledforeground="#FFFFFF",
+                    text=self._titles[key],
+                    bg=panel,
+                    fg=_STATE_COLORS[data.state] if data.state in {"running", "error"} else text_color,
+                    activebackground=panel,
+                    activeforeground=text_color,
+                    disabledforeground=text_color,
+                )
+                try:
+                    button.master.configure(bg=panel)
+                except tk.TclError:
+                    pass
+                self._chips[key].configure(bg=_STATE_COLORS[data.state])
+            if self._cell_width is not None:
+                self.apply_cell_width(self._cell_width)
+            colors = getattr(self.page, "colors", None) or getattr(self.host, "colors", {}) or {}
+            for widget in (self.badge, self.collapse_button):
+                widget.configure(
+                    bg=colors.get("panel", "#FFFFFF"), fg=colors.get("text", "#111827"),
+                    activebackground=colors.get("panel", "#FFFFFF"),
+                    activeforeground=colors.get("text", "#111827"),
                 )
             count_text = self.page.tr("step_count", **count_args)
             self.badge.configure(text=count_text if self._collapsed else count_text)
@@ -817,6 +927,63 @@ class StepProgressBar(ttk.Frame):
         except (tk.TclError, AttributeError):
             pass
 
+    def preferred_width(self) -> int:
+        """Natural width that fits every full step title on one line."""
+        try:
+            import tkinter.font as tkfont
+
+            font = tkfont.Font(font=next(iter(self._cells.values())).cget("font"))
+            scale = _ui_scale(self.page)
+            chip = _slim_px(STEP_CHIP_SIZE[0], scale) + 6
+            # Columns are uniform, so size every cell for the longest title.
+            widest = max(
+                font.measure(self._titles.get(key) or str(self._cells[key].cget("text")))
+                for key in self._cells
+            )
+            total = 6 + len(self._cells) * (chip + widest + 24)
+            badge = max(32, font.measure(str(self.badge.cget("text") or "0/0")) + 12)
+            return total + badge + 20
+        except (tk.TclError, StopIteration, TypeError, ValueError):
+            return 280
+
+    def apply_cell_width(self, cell_width: int) -> None:
+        """Keep every step on one line; elide titles that do not fit."""
+        self._cell_width = int(cell_width)
+        try:
+            spec = str(next(iter(self._cells.values())).cget("font"))
+            room = max(16, int(cell_width) - 16)
+            cache = getattr(self, "_elide_cache", None)
+            if cache is None:
+                cache = self._elide_cache = {}
+            for key, button in self._cells.items():
+                full = self._titles.get(key) or str(button.cget("text"))
+                cache_key = (full, room, spec)
+                text = cache.get(cache_key)
+                if text is None:
+                    text = self._elide(full, room, spec)
+                    if len(cache) > 256:
+                        cache.clear()
+                    cache[cache_key] = text
+                if str(button.cget("text")) != text:
+                    button.configure(text=text)
+        except (tk.TclError, StopIteration):
+            pass
+
+    def _elide(self, full: str, room: int, spec: str) -> str:
+        import tkinter.font as tkfont
+
+        font = tkfont.Font(root=self, font=spec)
+        if font.measure(full) <= room:
+            return full
+        lo, hi = 1, len(full)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if font.measure(full[:mid] + "…") <= room:
+                lo = mid
+            else:
+                hi = mid - 1
+        return full[:lo] + "…"
+
     def collapse(self) -> None:
         self._collapsed = True
         self._render()
@@ -826,6 +993,7 @@ class StepProgressBar(ttk.Frame):
         self._render()
 
     def scroll_to_step(self, step_key: str) -> None:
+        self._metadata = self._module_targets(self.page)
         metadata = self._metadata.get(self._data[step_key].spec.ordinal)
         target = metadata.get("target") if metadata else None
         if target is None:
@@ -860,9 +1028,14 @@ class StepProgressBar(ttk.Frame):
 
     def refresh_theme(self) -> None:
         try:
-            size = int(getattr(self.page.winfo_toplevel(), "_piezo_body_font_size", 9))
-            for button in self._cells.values():
+            size = _step_font_size(self.page)
+            scale = _ui_scale(self.page)
+            for key, button in self._cells.items():
                 button.configure(font=("TkDefaultFont", size))
+                self._chips[key].configure(
+                    width=_slim_px(STEP_CHIP_SIZE[0], scale),
+                    height=_slim_px(STEP_CHIP_SIZE[1], scale),
+                )
         except tk.TclError:
             pass
         self._render()
