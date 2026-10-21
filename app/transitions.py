@@ -485,7 +485,12 @@ class SnapshotTransition:
                 # Mapping, Expose and idle drawing run in the ordinary loop.
                 # A nested update_idletasks() repeatedly redraws the whole
                 # hierarchy and blocks input, especially on cross-chip visits.
-                if not self.root.winfo_viewable() or now-started > wait_budget:
+                # A busy page can delay even the first check past the budget.
+                # Let settled layout accumulate stable frames, but bound churn.
+                elapsed = now-started
+                if (not self.root.winfo_viewable()
+                        or elapsed > wait_budget + 1.0
+                        or (elapsed > wait_budget and not (layout_ready and quiet))):
                     self.finish()
                     return
                 self._job = self.root.after(anim.FRAME_MS, painted)
