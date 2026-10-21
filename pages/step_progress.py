@@ -83,7 +83,7 @@ def _step_font(widget: Any, *, bold: bool = False) -> tkfont.Font:
     families = tkfont.families(widget)
     family = ("Microsoft YaHei UI" if "Microsoft YaHei UI" in families else
               tkfont.nametofont("TkDefaultFont", root=widget).actual("family"))
-    return tkfont.Font(root=widget, family=family, size=-round(12 * _ui_scale(widget)),
+    return tkfont.Font(root=widget, family=family, size=-round(18 * _ui_scale(widget)),
                        weight="bold" if bold else "normal")
 
 
@@ -99,12 +99,12 @@ def _rounded(canvas: tk.Canvas, box: tuple[float, float, float, float], radius: 
     )
 
 
-TRAPEZOID_BASE_HEIGHT = 16
+TRAPEZOID_BASE_HEIGHT = 24
 # Compact strip: hug step text, never stretch edge-to-edge.
-STRIP_MAX_WIDTH = 760
-STRIP_MAX_FRACTION = 0.55
-ADV_BUTTON_MAX_WIDTH = 220
-ADV_BUTTON_PAD = 30
+STRIP_MAX_WIDTH = 1100
+STRIP_MAX_FRACTION = 0.7
+ADV_BUTTON_MAX_WIDTH = 330
+ADV_BUTTON_PAD = 45
 
 
 class Trapezoid:
@@ -153,7 +153,7 @@ class Trapezoid:
 
         self.button = tk.Canvas(
             floating_group,
-            width=300,
+            width=450,
             height=_slim_px(TRAPEZOID_BASE_HEIGHT, _ui_scale(host)),
             highlightthickness=0,
             borderwidth=0,
@@ -243,13 +243,15 @@ class Trapezoid:
                 fill = "#CBD5E1"
             if self.button.focus_get() is self.button:
                 outline = "#93C5FD"
-            _rounded(self.button, (0.5, 0.5, width - 0.5, height - 0.5), height / 2,
-                     fill=fill, outline=outline, width=1)
-            label = self.host.tr("chip_tools_label")
             scale = _ui_scale(self.host)
-            icon_space = _slim_px(12, scale)
+            stroke = 1.5 * scale
+            inset = stroke / 2
+            _rounded(self.button, (inset, inset, width - inset, height - inset), height / 2,
+                     fill=fill, outline=outline, width=stroke)
+            label = self.host.tr("chip_tools_label")
+            icon_space = _slim_px(18, scale)
             # Keep the full translated label even when the width cap applies.
-            size = round(12 * scale)
+            size = round(18 * scale)
             self._button_label_font.configure(size=-size)
             room = max(1, width - _slim_px(ADV_BUTTON_PAD, scale))
             while size > 1 and self._button_label_font.measure(label) > room:
@@ -259,10 +261,10 @@ class Trapezoid:
             x = (width - label_width - icon_space) / 2
             self.button.create_text(x, height / 2, anchor="w", text=label,
                                     fill=text, font=self._button_label_font, tags="label")
-            cx, cy = x + label_width + _slim_px(8, scale), height / 2
-            dy = (-1 if self.expanded else 1) * 1.5 * scale
-            self.button.create_line(cx-3*scale, cy-dy, cx, cy+dy, cx+3*scale, cy-dy,
-                                    fill=text, width=1)
+            cx, cy = x + label_width + _slim_px(12, scale), height / 2
+            dy = (-1 if self.expanded else 1) * 2.25 * scale
+            self.button.create_line(cx-4.5*scale, cy-dy, cx, cy+dy, cx+4.5*scale, cy-dy,
+                                    fill=text, width=stroke)
         except tk.TclError:
             pass
 
@@ -325,9 +327,9 @@ class Trapezoid:
         except tk.TclError:
             measured = 1
         scale = _ui_scale(self.host)
-        band = max(_slim_px(42, scale), measured + _slim_px(4, scale))
+        band = max(_slim_px(63, scale), measured + _slim_px(6, scale))
         area.set_bottom_inset(max(self._old_bottom_inset, band))
-        clearance = max(_slim_px(42, scale), measured + int(extra_height) + 16)
+        clearance = max(_slim_px(63, scale), measured + int(extra_height) + _slim_px(24, scale))
         self._reserved_clearance = max(self._old_scroll_extra, clearance)
         area.scroll_region_extra = self._reserved_clearance
         area._queue_scroll_layout()
@@ -391,17 +393,17 @@ class Trapezoid:
                 return
             self._last_layout_signature = signature
             scale = float(getattr(state, "ui_scale", 1.0) or 1.0)
-            self._button_font.configure(size=-round(12 * scale))
+            self._button_font.configure(size=-round(18 * scale))
             label_w = self._button_font.measure(self.host.tr("chip_tools_label"))
             adv_need = min(_slim_px(ADV_BUTTON_MAX_WIDTH, scale), label_w + _slim_px(ADV_BUTTON_PAD, scale))
             cap = max(1, min(round(width * STRIP_MAX_FRACTION),
-                             _slim_px(STRIP_MAX_WIDTH, scale), width - _slim_px(16, scale)))
+                             _slim_px(STRIP_MAX_WIDTH, scale), width - _slim_px(24, scale)))
             group_width = min(max(content_hint, adv_need), cap)
-            self.floating_group.place(relx=0.5, rely=1.0, anchor="s", y=-4, width=group_width)
+            self.floating_group.place(relx=0.5, rely=1.0, anchor="s", y=-_slim_px(6, scale), width=group_width)
             self.button.configure(width=min(adv_need, group_width),
                                   height=_slim_px(TRAPEZOID_BASE_HEIGHT, scale))
-            # The strip Canvas already includes its two shadow pixels.
-            gap = _slim_px(4, scale) - _slim_px(2, scale) if bars else 0
+            # The strip Canvas already includes its three shadow pixels.
+            gap = _slim_px(6, scale) - _slim_px(3, scale) if bars else 0
             self.button.grid_configure(pady=(gap, 0))
             for bar in bars:
                 bar.apply_width(group_width)
@@ -451,7 +453,7 @@ class Trapezoid:
         self._queue_layout()
 
     def refresh_theme(self) -> None:
-        self._button_font.configure(size=-round(12 * _ui_scale(self.host)))
+        self._button_font.configure(size=-round(18 * _ui_scale(self.host)))
         self._draw_button()
         self._last_layout_signature = None
         self._queue_layout()
@@ -895,7 +897,7 @@ class StepProgressBar(ttk.Frame):
     def _geometry(self) -> tuple[int, int, int, int, int, int]:
         scale = _ui_scale(self.page)
         px = lambda value: _slim_px(value, scale)
-        return (px(7), 2*px(4) + px(10) + px(4), 2*px(3) + px(6), px(28), px(6), px(14))
+        return (px(10.5), 2*px(6) + px(15) + px(6), 2*px(4.5) + px(9), px(42), px(9), px(21))
 
     def preferred_width(self) -> int:
         pad, cell_fixed, connector, badge, gap, collapse = self._geometry()
@@ -927,10 +929,11 @@ class StepProgressBar(ttk.Frame):
     def _draw_strip(self) -> None:
         scale = _ui_scale(self.page)
         px = lambda value: _slim_px(value, scale)
-        # Design height 18×scale; grow only when glyphs would clip.
+        # Enlarge the original rounded 18/20/22 px tiers to 27/30/33 px.
+        # Grow further only when glyphs would clip.
         line = max(self._font.metrics("linespace"), self._bold_font.metrics("linespace"))
-        designed = px(18)
-        height = designed if line <= designed else line + px(4)
+        designed = round(1.5 * px(18))
+        height = designed if line <= designed else line + px(6)
         width = self._strip_width or self.preferred_width()
         colors = getattr(self.page, "colors", {}) or {}
         background = colors.get("bg", "#FFFFFF")
@@ -942,15 +945,17 @@ class StepProgressBar(ttk.Frame):
             return
         self._drawing_signature = signature
         c = self.canvas
-        c.configure(width=width, height=height + px(2), bg=background)
+        c.configure(width=width, height=height + px(3), bg=background)
         c.delete("all")
         self._items.clear()
         self._hit_rects.clear()
         self._display_titles.clear()
-        for offset, color in ((px(2), "#172033" if dark else "#EEF1F5"),
-                              (px(1), "#1B2535" if dark else "#DCE2EA"), (0, "#202B3C")):
-            _rounded(c, (0.5, 0.5 + offset, width - 0.5, height - 0.5 + offset), height / 2,
-                     fill=color, outline="#3A4658" if offset == 0 else color, width=1,
+        stroke = 1.5 * scale
+        inset = stroke / 2
+        for offset, color in ((px(3), "#172033" if dark else "#EEF1F5"),
+                              (px(1.5), "#1B2535" if dark else "#DCE2EA"), (0, "#202B3C")):
+            _rounded(c, (inset, inset + offset, width - inset, height - inset + offset), height / 2,
+                     fill=color, outline="#3A4658" if offset == 0 else color, width=stroke,
                      tags="strip" if offset == 0 else "shadow")
         pad, cell_fixed, connector, badge, gap, collapse = self._geometry()
         x, cy = ((width - badge) / 2 if self._collapsed else pad), height / 2
@@ -971,38 +976,40 @@ class StepProgressBar(ttk.Frame):
                 text = self._elide(self._titles[key], text_room)
                 self._display_titles[key] = text
                 cell_width = cell_fixed + text_room
-                box = (x, 1, x + cell_width, height - 1)
+                box = (x, stroke, x + cell_width, height - stroke)
                 self._hit_rects[key] = box
                 items = self._items[key] = {}
-                items["background"] = _rounded(c, box, (height-2)/2, fill="#202B3C", outline="")
-                nx, r = x + px(4) + px(5), px(10)/2
+                items["background"] = _rounded(c, box, (height-2*stroke)/2,
+                                                fill="#202B3C", outline="", width=stroke)
+                nx, r = x + px(6) + px(7.5), px(15)/2
                 node = (nx-r, cy-r, nx+r, cy+r)
-                items["node"] = c.create_oval(*node, width=1)
-                items["inner"] = c.create_oval(nx-r+2, cy-r+2, nx+r-2, cy+r-2, width=1)
-                items["dot"] = c.create_oval(nx-px(1), cy-px(1), nx+px(1), cy+px(1), outline="")
+                items["node"] = c.create_oval(*node, width=stroke)
+                items["inner"] = c.create_oval(nx-r+px(3), cy-r+px(3), nx+r-px(3), cy+r-px(3), width=stroke)
+                items["dot"] = c.create_oval(nx-stroke, cy-stroke, nx+stroke, cy+stroke, outline="")
                 items["check"] = c.create_line(nx-r*.55, cy, nx-r*.1, cy+r*.45,
-                                                nx+r*.6, cy-r*.5, fill="white", width=px(1))
-                items["bang"] = c.create_line(nx, cy-r*.55, nx, cy+r*.05, fill="white", width=px(1))
-                items["bang_dot"] = c.create_oval(nx-.6, cy+r*.4-.6, nx+.6, cy+r*.4+.6,
+                                                nx+r*.6, cy-r*.5, fill="white", width=stroke)
+                items["bang"] = c.create_line(nx, cy-r*.55, nx, cy+r*.05, fill="white", width=stroke)
+                dot_r = .9 * scale
+                items["bang_dot"] = c.create_oval(nx-dot_r, cy+r*.4-dot_r, nx+dot_r, cy+r*.4+dot_r,
                                                     fill="white", outline="")
-                items["text"] = c.create_text(x + px(4) + px(10) + px(4), cy, anchor="w", text=text,
+                items["text"] = c.create_text(x + px(6) + px(15) + px(6), cy, anchor="w", text=text,
                                                fill="#F1F5F9", font=self._font)
                 x += cell_width
                 if index < len(self.steps)-1:
-                    items["connector"] = c.create_line(x+px(3), cy, x+px(3)+px(6), cy, width=1)
+                    items["connector"] = c.create_line(x+px(4.5), cy, x+px(4.5)+px(9), cy, width=stroke)
                     x += connector
             x += gap
-        self._badge_box = (x, (height-px(14))/2, x+badge, (height+px(14))/2)
-        self._badge_item = _rounded(c, self._badge_box, px(7), fill="#354258", outline="")
+        self._badge_box = (x, (height-px(21))/2, x+badge, (height+px(21))/2)
+        self._badge_item = _rounded(c, self._badge_box, px(10.5), fill="#354258", outline="", width=stroke)
         self.badge_text_item = c.create_text(x+badge/2, cy, fill="#E2E8F0", font=self._font)
         self._hit_rects["__badge"] = self._badge_box
         if not self._collapsed:
             x += badge
-            self._hit_rects["__collapse"] = (x, 1, x+collapse, height-1)
-            self._collapse_outline = _rounded(c, self._hit_rects["__collapse"], px(7),
-                                               fill="#202B3C", outline="")
-            c.create_line(x+collapse/2-px(3), cy-px(1), x+collapse/2, cy+px(2),
-                          x+collapse/2+px(3), cy-px(1), fill="#CBD5E1", width=1)
+            self._hit_rects["__collapse"] = (x, stroke, x+collapse, height-stroke)
+            self._collapse_outline = _rounded(c, self._hit_rects["__collapse"], px(10.5),
+                                               fill="#202B3C", outline="", width=stroke)
+            c.create_line(x+collapse/2-px(4.5), cy-px(1.5), x+collapse/2, cy+px(3),
+                          x+collapse/2+px(4.5), cy-px(1.5), fill="#CBD5E1", width=stroke)
         if self._focus_key not in self._hit_rects:
             self._focus_key = next(iter(self._hit_rects))
         if self._hover_key not in self._hit_rects:
@@ -1153,7 +1160,7 @@ class StepProgressBar(ttk.Frame):
         self._render()
 
     def refresh_theme(self) -> None:
-        size = -round(12 * _ui_scale(self.page))
+        size = -round(18 * _ui_scale(self.page))
         self._font.configure(size=size)
         self._bold_font.configure(size=size)
         self._drawing_signature = None

@@ -1,10 +1,12 @@
 """Capture the real offline chip pages; every transport boundary is mocked.
 
 Run with DISPLAY=:4 python3 -m tests.capture_stepbar_c.
+Override filenames with --prefix or STEPBAR_CAPTURE_PREFIX.
 Artifacts stay inside this worktree by default.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -15,6 +17,10 @@ from tests.validate_responsive_layout import _flush, mocked_application
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prefix", default=os.environ.get("STEPBAR_CAPTURE_PREFIX", "after_stepbar_c150"),
+                        help="filename prefix (default: after_stepbar_c150)")
+    args = parser.parse_args()
     root_path = Path(__file__).resolve().parents[1]
     output = root_path / "review"
     output.mkdir(exist_ok=True)
@@ -29,7 +35,7 @@ def main() -> None:
             app.navigation.show(chip)
             host = app.navigation.pages[chip]
             host.show_mode(mode)
-            for width, height in ((1366, 768), (1920, 1080)):
+            for width, height in ((1024, 608), (1366, 768), (1920, 1080)):
                 root.geometry(f"{width}x{height}+0+0")
                 _flush(root, 5)
                 app._apply_visual_settings()
@@ -44,7 +50,7 @@ def main() -> None:
                 assert (root.winfo_width(), root.winfo_height()) == (width, height)
                 area = host.trapezoid._owning_area
                 assert area.canvas.winfo_rooty() + area.canvas.winfo_height() <= bar.winfo_rooty()
-                filename = output / f"after_stepbar_c_{chip}_{width}x{height}.png"
+                filename = output / f"{args.prefix}_{chip}_{width}x{height}.png"
                 x, y = root.winfo_rootx(), root.winfo_rooty()
                 ImageGrab.grab(bbox=(x, y, x+width, y+height)).save(filename)
                 print(json.dumps({"path": str(filename), "scale": app.state.ui_scale,

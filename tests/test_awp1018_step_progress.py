@@ -106,7 +106,7 @@ class Awp1018StepProgressTests(unittest.TestCase):
         ])
         self.assertIsNotNone(host.trapezoid)
         self.assertIs(host._floating_group.master, host.mode_scroll)
-        self.assertGreaterEqual(host.mode_scroll.bottom_inset, 42)
+        self.assertGreaterEqual(host.mode_scroll.bottom_inset, 63)
 
         host.show_mode("full_mode", update_chip=False)
         full = host.mode_pages["full_mode"]

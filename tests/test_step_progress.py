@@ -257,7 +257,7 @@ class StepProgressTests(unittest.TestCase):
         self.area.canvas.yview_scroll(10, "units")
         self.root.update()
         self.assertEqual((group.winfo_rootx(), group.winfo_rooty()), first)
-        self.assertGreater(self.area.scroll_region_extra, 16)
+        self.assertGreater(self.area.scroll_region_extra, 24)
 
         self.trapezoid.set_expanded(True, persist=False)
         self.root.update()
@@ -279,23 +279,23 @@ class StepProgressTests(unittest.TestCase):
         self.assertEqual(self.bar.canvas.itemcget("strip", "fill"), "#202B3C")
         self.assertNotIn("\n", self.bar._display_titles["waveform"])
         self.assertIn(" · ", self.bar._titles["waveform"])
-        self.assertEqual(self.bar.canvas.winfo_height(), 20)  # 18 + two shadow pixels
-        self.assertEqual(self.bar._font.cget("size"), -12)
+        self.assertEqual(self.bar.canvas.winfo_height(), 30)  # 27 + three shadow pixels
+        self.assertEqual(self.bar._font.cget("size"), -18)
         node = self.bar._items["waveform"]["node"]
         self.assertEqual(self.bar.canvas.itemcget(node, "outline").lower(), "#6b7280")
-        self.assertGreaterEqual(self.area.bottom_inset, 42)
+        self.assertGreaterEqual(self.area.bottom_inset, 63)
         self.assertGreaterEqual(self.bar.canvas.winfo_rooty(),
                                 self.area.canvas.winfo_rooty() + self.area.canvas.winfo_height())
-        self.assertLessEqual(self.trapezoid.button.winfo_height(), 22)
+        self.assertEqual(self.trapezoid.button.winfo_height(), 24)
         info = self.trapezoid.floating_group.place_info()
-        self.assertEqual(int(info.get("y", 0)), -4)
+        self.assertEqual(int(info.get("y", 0)), -6)
         self.assertGreaterEqual(
             self.area.scroll_region_extra,
-            self.trapezoid.floating_group.winfo_reqheight() + 16,
+            self.trapezoid.floating_group.winfo_reqheight() + 24,
         )
         self.assertLessEqual(
             self.trapezoid.floating_group.winfo_width(),
-            max(200, int(self.area.canvas.winfo_width() * 0.55) + 4),
+            max(300, int(self.area.canvas.winfo_width() * 0.7) + 6),
             "step strip must stay a compact fraction of the viewport",
         )
         self.assertLessEqual(
@@ -306,7 +306,7 @@ class StepProgressTests(unittest.TestCase):
     def test_narrow_cells_elide_instead_of_wrapping(self) -> None:
         self.root.update()
         self.bar._titles["waveform"] = "2 · " + "很长的步骤标题" * 6
-        self.bar.apply_width(260)
+        self.bar.apply_width(390)
         text = self.bar._display_titles["waveform"]
         self.assertTrue(text.endswith("…"))
         self.assertNotIn("\n", text)
@@ -314,7 +314,7 @@ class StepProgressTests(unittest.TestCase):
     def test_short_titles_survive_budget_and_navigation_does_not_resize(self) -> None:
         self.bar._titles = {"waveform": "1 · " + "Long waveform title " * 8,
                             "adc": "2 · ADC", "detection": "3 · EN"}
-        self.bar.apply_width(320)
+        self.bar.apply_width(480)
         self.assertEqual(self.bar._display_titles["adc"], "2 · ADC")
         self.assertEqual(self.bar._display_titles["detection"], "3 · EN")
         self.assertTrue(self.bar._display_titles["waveform"].endswith("…"))
@@ -359,7 +359,7 @@ class StepProgressTests(unittest.TestCase):
         self.bar.canvas.event_generate("<Return>")
         self.flush()
         self.assertFalse(self.bar._collapsed)
-        self.assertGreaterEqual(self.trapezoid.button.winfo_width(), 100)
+        self.assertGreaterEqual(self.trapezoid.button.winfo_width(), 150)
 
     def test_fixed_band_clears_content_at_every_scroll_position(self) -> None:
         for row in range(30):
@@ -375,16 +375,17 @@ class StepProgressTests(unittest.TestCase):
             self.assertEqual((group.winfo_rootx(), group.winfo_rooty()), position)
 
     def test_scale_tiers_keep_pixel_fonts_and_bottom_pill(self) -> None:
-        for scale, strip_height, button_height in ((1.0, 18, 16), (1.1, 20, 18), (1.25, 22, 20)):
+        for scale, strip_height, button_height in ((1.0, 27, 24), (1.1, 30, 26), (1.25, 33, 30)):
             with self.subTest(scale=scale):
                 self.context.state.ui_scale = scale
                 self.bar.refresh_theme()
                 self.trapezoid.refresh_layout()
                 self.flush()
-                self.assertEqual(self.bar._font.cget("size"), -round(12*scale))
-                self.assertEqual(self.bar.canvas.winfo_height(), strip_height + round(2*scale))
+                self.assertEqual(self.bar._font.cget("size"), -round(18*scale))
+                self.assertEqual(self.bar._bold_font.cget("size"), -round(18*scale))
+                self.assertEqual(self.bar.canvas.winfo_height(), strip_height + round(3*scale))
                 self.assertEqual(self.trapezoid.button.winfo_height(), button_height)
-                self.assertGreaterEqual(self.area.bottom_inset, round(42*scale))
+                self.assertGreaterEqual(self.area.bottom_inset, round(63*scale))
                 self.assertGreaterEqual(self.trapezoid.button.winfo_rooty(),
                                         self.bar.canvas.winfo_rooty() + self.bar.canvas.winfo_height())
 
