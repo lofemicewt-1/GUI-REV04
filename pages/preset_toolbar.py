@@ -81,6 +81,8 @@ class PresetToolbar(ttk.Frame):
         self.buttons: dict[str, ttk.Button] = {}
         self._tooltips: list[SimpleTooltip] = []
         self._layout_job: str | None = None
+        self._layout_running = False
+        self._layout_pending = False
         self._destroyed = False
         self._language_dirty = True
         self._measurements_dirty = True
@@ -188,6 +190,16 @@ class PresetToolbar(ttk.Frame):
         """Stack groups when needed, wrapping controls within each group."""
         if self._destroyed:
             return self._last_orientation or "stacked"
+        if self._layout_running:
+            self._queue_layout()
+            return self._last_orientation or "stacked"
+        self._layout_running = True
+        try:
+            return self._reflow(available_width)
+        finally:
+            self._finish_layout()
+
+    def _reflow(self, available_width: int) -> str:
         self.update_idletasks()
         self._measure_group_widths()
         width = max(0, int(available_width))
@@ -476,6 +488,11 @@ class PresetToolbar(ttk.Frame):
             return
         if invalidate_measurements:
             self._measurements_dirty = True
+        if self._layout_running:
+            # update_idletasks() drains layout signals too. Do not let a new
+            # idle layout run until the current measurement/reflow has finished.
+            self._layout_pending = True
+            return
         if self._layout_job is not None:
             return
         try:
@@ -487,18 +504,31 @@ class PresetToolbar(ttk.Frame):
         self._layout_job = None
         if self._destroyed:
             return
-        self._layout_run_count += 1
-        if self._language_dirty:
-            self._refresh_texts()
-            self._language_dirty = False
-            self._measurements_dirty = True
+        if self._layout_running:
+            self._layout_pending = True
+            return
+        self._layout_running = True
         try:
-            width = int(self.winfo_width())
-            if width <= 1:
-                width = int(self.master.winfo_width())
-        except tk.TclError:
-            width = 0
-        self.reflow(width)
+            self._layout_run_count += 1
+            if self._language_dirty:
+                self._refresh_texts()
+                self._language_dirty = False
+                self._measurements_dirty = True
+            try:
+                width = int(self.winfo_width())
+                if width <= 1:
+                    width = int(self.master.winfo_width())
+            except tk.TclError:
+                width = 0
+            self._reflow(width)
+        finally:
+            self._finish_layout()
+
+    def _finish_layout(self) -> None:
+        self._layout_running = False
+        if self._layout_pending:
+            self._layout_pending = False
+            self._queue_layout()
 
     def _refresh_texts(self) -> None:
         for action, button in self.buttons.items():

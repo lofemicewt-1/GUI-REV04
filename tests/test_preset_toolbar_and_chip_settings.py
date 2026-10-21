@@ -4,6 +4,7 @@ import tkinter as tk
 from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 from tkinter import ttk
 import unittest
+from unittest.mock import patch
 
 from config.lang_r2_b import install
 from config.languages import t
@@ -240,6 +241,53 @@ class PresetToolbarTests(unittest.TestCase):
         self.assertIsNone(toolbar._layout_job)
         self.root.update_idletasks()
         self.assertEqual(toolbar._layout_run_count, initial_runs)
+
+    def test_nested_idletasks_coalesce_layout_without_reentry(self) -> None:
+        toolbar = self._make_toolbar()
+        self._settle()
+        errors = []
+        self.root.report_callback_exception = lambda *error: errors.append(error)
+
+        for entry in ("queued", "direct"):
+            with self.subTest(entry=entry):
+                initial_runs = toolbar._layout_run_count
+                depth = 0
+                max_depth = 0
+                injected = False
+                update_idletasks = toolbar.update_idletasks
+
+                def nested_idletasks():
+                    nonlocal depth, max_depth, injected
+                    depth += 1
+                    max_depth = max(max_depth, depth)
+                    try:
+                        if not injected:
+                            injected = True
+                            for _ in range(20):
+                                toolbar._queue_layout(invalidate_measurements=True)
+                            # Exercise direct reflow as well as idle callbacks
+                            # drained by the real Tk update_idletasks below.
+                            toolbar.reflow(toolbar.winfo_width())
+                        update_idletasks()
+                    finally:
+                        depth -= 1
+
+                with patch.object(toolbar, "update_idletasks", nested_idletasks):
+                    toolbar._queue_layout(invalidate_measurements=True)
+                    if entry == "direct":
+                        # The already queued layout will be drained by reflow.
+                        toolbar.reflow(toolbar.winfo_width())
+                    self._settle()
+
+                self.assertTrue(injected)
+                self.assertEqual(errors, [], "Tk swallowed a layout callback exception")
+                self.assertEqual(max_depth, 1, "layout re-entered during idle draining")
+                self.assertGreater(toolbar._layout_run_count, initial_runs)
+                self.assertLessEqual(toolbar._layout_run_count - initial_runs, 2)
+                self.assertIsNone(toolbar._layout_job)
+                self.assertFalse(toolbar._layout_running)
+                self.assertFalse(toolbar._layout_pending)
+                self.assertTrue(toolbar._measured_widths)
 
 
 class ChipSettingsModelTests(unittest.TestCase):
