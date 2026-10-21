@@ -251,6 +251,7 @@ class HomePage(BasePage):
 
         self.port_hint_label = ttk.Label(connection_card, style="Muted.TLabel", background=self.ctx.colors["bg"])
         self.port_hint_label.grid(row=2, column=0, sticky="w", pady=(0, 10))
+        self.port_hint_label.grid_remove()
 
         toolbar = ttk.Frame(connection_card, style="App.TFrame")
         toolbar.grid(row=3, column=0, sticky="w")
@@ -299,18 +300,21 @@ class HomePage(BasePage):
         self.i2c_label = ttk.Label(toolbar, style="TLabel")
         self.i2c_label.grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(12, 0))
 
+        i2c_controls = ttk.Frame(toolbar, style="App.TFrame")
+        i2c_controls.grid(row=2, column=1, columnspan=4, sticky="w", pady=(12, 0))
+
         self.i2c_speed_var = tk.StringVar(value="400000")
         self.i2c_speed_combo = ttk.Combobox(
-            toolbar,
+            i2c_controls,
             textvariable=self.i2c_speed_var,
             values=[str(value) for value in self.I2C_SPEEDS],
             state="readonly",
             width=10,
         )
-        self.i2c_speed_combo.grid(row=2, column=1, sticky="w", pady=(12, 0))
+        self.i2c_speed_combo.grid(row=0, column=0, sticky="w")
 
-        self.i2c_btn = ttk.Button(toolbar, style="Secondary.TButton", command=self.apply_i2c_speed)
-        self.i2c_btn.grid(row=2, column=2, columnspan=2, sticky="w", padx=(8, 0), pady=(12, 0))
+        self.i2c_btn = ttk.Button(i2c_controls, style="Secondary.TButton", command=self.apply_i2c_speed)
+        self.i2c_btn.grid(row=0, column=1, sticky="w", padx=(8, 0))
 
         register_card = ttk.Frame(panel, style="App.TFrame", borderwidth=0)
         register_card.grid(row=1, column=0, sticky="nw", pady=(20, 0))
@@ -1792,6 +1796,7 @@ class HomePage(BasePage):
         self._port_scan_results = None
         if port_info is None:
             self.port_hint_label.configure(text=error)
+            self.port_hint_label.grid()
             return
         self._apply_port_info(port_info)
 
@@ -1825,6 +1830,10 @@ class HomePage(BasePage):
             hint = ""
         if self.port_hint_label.cget("text") != hint:
             self.port_hint_label.configure(text=hint)
+        if hint:
+            self.port_hint_label.grid()
+        else:
+            self.port_hint_label.grid_remove()
 
         self._update_current_port_name()
 
