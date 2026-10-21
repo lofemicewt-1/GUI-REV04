@@ -230,33 +230,40 @@ class HomePage(BasePage):
         header.grid(row=0, column=0, sticky="ew")
         self._page_header = header
 
-        panel = ttk.Frame(self, style="Panel.TFrame", padding=18)
-        panel.grid(row=1, column=0, sticky="nsew")
+        # Home uses the available page width; centering a natural-width panel
+        # leaves a large gutter beside the sidebar on wider windows.
+        panel = ttk.Frame(self, style="App.TFrame")
+        panel.grid(row=1, column=0, sticky="new")
         self.main_panel = panel
-        self.register_centered_panel(panel)
         panel.columnconfigure(0, weight=1)
 
-        main_title = ttk.Label(panel, style="SectionTitle.TLabel")
+        connection_card = ttk.Frame(panel, style="Module.TFrame", padding=16)
+        connection_card.grid(row=0, column=0, sticky="ew")
+        connection_card.columnconfigure(0, weight=1)
+        self.connection_card = connection_card
+
+        main_title = ttk.Label(connection_card, style="ModuleTitle.TLabel")
         main_title.grid(row=0, column=0, sticky="w", pady=(0, self._module_spacing()))
         self._register_module_spacing_widget(main_title)
         self.bind_text(main_title, "connect_board_title")
 
-        self.status_label = ttk.Label(panel, style="Panel.TLabel")
+        self.status_label = ttk.Label(connection_card, style="Panel.TLabel")
         self.status_label.grid(row=1, column=0, sticky="w", pady=(0, 12))
 
-        self.port_hint_label = ttk.Label(panel, style="Muted.TLabel")
+        self.port_hint_label = ttk.Label(connection_card, style="Muted.TLabel")
         self.port_hint_label.grid(row=2, column=0, sticky="w", pady=(0, 10))
 
-        toolbar = ttk.Frame(panel, style="Panel.TFrame")
+        toolbar = ttk.Frame(connection_card, style="Panel.TFrame")
         toolbar.grid(row=3, column=0, sticky="ew")
-        toolbar.columnconfigure(7, weight=1)
+        toolbar.columnconfigure(1, weight=1)
+        toolbar.columnconfigure(3, weight=1)
 
         self.port_label = ttk.Label(toolbar, style="Panel.TLabel")
         self.port_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
 
         self.port_var = tk.StringVar()
         self.port_combo = ttk.Combobox(toolbar, textvariable=self.port_var, values=[], width=22)
-        self.port_combo.grid(row=0, column=1, sticky="w")
+        self.port_combo.grid(row=0, column=1, sticky="ew")
         self.port_combo.bind("<<ComboboxSelected>>", self._on_status_port_changed)
 
         self.baud_label = ttk.Label(toolbar, style="Panel.TLabel")
@@ -270,27 +277,30 @@ class HomePage(BasePage):
             state="readonly",
             width=10,
         )
-        self.baud_combo.grid(row=0, column=3, sticky="w")
+        self.baud_combo.grid(row=0, column=3, sticky="ew")
 
-        self.refresh_btn = ttk.Button(toolbar, style="Quiet.TButton", command=self.refresh_ports)
-        self.refresh_btn.grid(row=0, column=4, padx=(8, 0))
+        connection_actions = ttk.Frame(toolbar, style="Panel.TFrame")
+        connection_actions.grid(row=1, column=0, columnspan=4, sticky="w", pady=(12, 0))
 
-        self.connect_btn = ttk.Button(toolbar, style="Primary.TButton", command=self.toggle_connection)
-        self.connect_btn.grid(row=0, column=5, padx=(8, 0))
+        self.refresh_btn = ttk.Button(connection_actions, style="Quiet.TButton", command=self.refresh_ports)
+        self.refresh_btn.grid(row=0, column=0, padx=(0, 8))
 
-        self.flash_btn = ttk.Button(toolbar, style="Secondary.TButton", command=self.open_firmware_flash_dialog)
-        self.flash_btn.grid(row=0, column=6, padx=(8, 0))
+        self.connect_btn = ttk.Button(connection_actions, style="Primary.TButton", command=self.toggle_connection)
+        self.connect_btn.grid(row=0, column=1, padx=(0, 8))
+
+        self.flash_btn = ttk.Button(connection_actions, style="Secondary.TButton", command=self.open_firmware_flash_dialog)
+        self.flash_btn.grid(row=0, column=2)
 
         self.current_port_name_label = ttk.Label(toolbar, style="Panel.TLabel")
-        self.current_port_name_label.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
+        self.current_port_name_label.grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(12, 0))
 
         self.current_port_name_var = tk.StringVar(value="")
         ttk.Label(toolbar, textvariable=self.current_port_name_var, style="Muted.TLabel").grid(
-            row=1, column=1, columnspan=6, sticky="w", pady=(10, 0)
+            row=2, column=1, columnspan=3, sticky="w", pady=(12, 0)
         )
 
         self.i2c_label = ttk.Label(toolbar, style="Panel.TLabel")
-        self.i2c_label.grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
+        self.i2c_label.grid(row=3, column=0, sticky="w", padx=(0, 8), pady=(12, 0))
 
         self.i2c_speed_var = tk.StringVar(value="400000")
         self.i2c_speed_combo = ttk.Combobox(
@@ -300,35 +310,46 @@ class HomePage(BasePage):
             state="readonly",
             width=10,
         )
-        self.i2c_speed_combo.grid(row=2, column=1, sticky="w", pady=(10, 0))
+        self.i2c_speed_combo.grid(row=3, column=1, sticky="ew", pady=(12, 0))
 
         self.i2c_btn = ttk.Button(toolbar, style="Secondary.TButton", command=self.apply_i2c_speed)
-        self.i2c_btn.grid(row=2, column=2, sticky="w", padx=(8, 0), pady=(10, 0))
+        self.i2c_btn.grid(row=3, column=2, columnspan=2, sticky="w", padx=(8, 0), pady=(12, 0))
 
-        rr_panel = ttk.Frame(panel, style="Panel.TFrame")
-        rr_panel.grid(row=4, column=0, sticky="ew", pady=(18, 0))
-        rr_panel.columnconfigure(7, weight=1)
+        register_card = ttk.Frame(panel, style="Module.TFrame", padding=16)
+        register_card.grid(row=1, column=0, sticky="ew", pady=(12, 0))
+        register_card.columnconfigure(0, weight=1)
+        self.register_card = register_card
+
+        register_title = ttk.Label(register_card, style="ModuleTitle.TLabel")
+        register_title.grid(row=0, column=0, sticky="w", pady=(0, self._module_spacing()))
+        self._register_module_spacing_widget(register_title)
+        self.bind_text(register_title, "home_register_title")
+
+        rr_panel = ttk.Frame(register_card, style="Panel.TFrame")
+        rr_panel.grid(row=1, column=0, sticky="ew")
+        rr_panel.columnconfigure(1, weight=1)
+        rr_panel.columnconfigure(3, weight=1)
 
         self.device_addr_label = ttk.Label(rr_panel, style="Panel.TLabel")
         self.device_addr_label.grid(row=0, column=0, sticky="w", padx=(0, 8))
 
         self.device_addr_var = tk.StringVar(value="0x44")
-        ttk.Entry(rr_panel, textvariable=self.device_addr_var, width=8).grid(row=0, column=1, sticky="w", padx=(0, 16))
+        ttk.Entry(rr_panel, textvariable=self.device_addr_var, width=8).grid(row=0, column=1, sticky="ew")
 
         self.reg_addr_label = ttk.Label(rr_panel, style="Panel.TLabel")
-        self.reg_addr_label.grid(row=0, column=2, sticky="w", padx=(0, 8))
+        self.reg_addr_label.grid(row=0, column=2, sticky="w", padx=(14, 8))
 
         self.reg_addr_var = tk.StringVar(value="0x00")
-        ttk.Entry(rr_panel, textvariable=self.reg_addr_var, width=8).grid(row=0, column=3, sticky="w", padx=(0, 16))
+        ttk.Entry(rr_panel, textvariable=self.reg_addr_var, width=8).grid(row=0, column=3, sticky="ew")
 
         self.write_value_label = ttk.Label(rr_panel, style="Panel.TLabel")
-        self.write_value_label.grid(row=0, column=4, sticky="w", padx=(0, 8))
+        self.write_value_label.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(12, 0))
 
         self.write_value_var = tk.StringVar(value="0x0000")
-        ttk.Entry(rr_panel, textvariable=self.write_value_var, width=10).grid(row=0, column=5, sticky="w", padx=(0, 16))
+        ttk.Entry(rr_panel, textvariable=self.write_value_var, width=10).grid(row=1, column=1, sticky="ew", pady=(12, 0))
 
         self.register_width_label = ttk.Label(rr_panel, style="Panel.TLabel")
-        self.register_width_label.grid(row=0, column=6, sticky="w", padx=(0, 8))
+        self.register_width_label.grid(row=1, column=2, sticky="w", padx=(14, 8), pady=(12, 0))
 
         self.register_width_var = tk.StringVar(value="16-bit")
         self.register_width_combo = ttk.Combobox(
@@ -338,16 +359,16 @@ class HomePage(BasePage):
             state="readonly",
             width=8,
         )
-        self.register_width_combo.grid(row=0, column=7, sticky="w")
+        self.register_width_combo.grid(row=1, column=3, sticky="ew", pady=(12, 0))
 
         self.read_value_label = ttk.Label(rr_panel, style="Panel.TLabel")
-        self.read_value_label.grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(10, 0))
+        self.read_value_label.grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(12, 0))
 
         self.read_value_var = tk.StringVar(value="")
-        ttk.Entry(rr_panel, textvariable=self.read_value_var, width=14).grid(row=1, column=1, sticky="w", padx=(0, 16), pady=(10, 0))
+        ttk.Entry(rr_panel, textvariable=self.read_value_var, width=14).grid(row=2, column=1, sticky="ew", pady=(12, 0))
 
         read_actions = ttk.Frame(rr_panel, style="Panel.TFrame")
-        read_actions.grid(row=1, column=2, columnspan=6, sticky="w", pady=(10, 0))
+        read_actions.grid(row=2, column=2, columnspan=2, sticky="w", padx=(14, 0), pady=(12, 0))
         self.rr_btn = ttk.Button(read_actions, style="Secondary.TButton", command=self.read_register)
         self.rr_btn.grid(row=0, column=0, padx=(0, 8))
 
