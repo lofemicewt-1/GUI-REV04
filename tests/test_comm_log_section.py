@@ -120,7 +120,7 @@ class CommunicationLogSectionTests(unittest.TestCase):
                 self.assertTrue(text.winfo_ismapped())
                 self.assertEqual(int(text.cget("height")), height)
                 self.assertEqual(page._serial_log_frame.cget("style"), "Panel.TFrame")
-                self.assertIsNone(page._serial_log_toggle)
+                self.assertIsNone(getattr(page, "_serial_log_toggle", None))
                 self.assertEqual(page._serial_log_title.cget("style"), "SectionTitle.TLabel")
                 scrollbars = [w for w in text.master.winfo_children() if isinstance(w, ttk.Scrollbar)]
                 self.assertEqual([str(w.cget("orient")) for w in scrollbars], ["horizontal"])

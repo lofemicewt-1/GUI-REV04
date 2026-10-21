@@ -215,14 +215,6 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         plot = ttk.Frame(self, style="Panel.TFrame", padding=8, width=380)
         self.plot_panel = plot
         plot.grid(row=0, column=1, sticky="nsew")
-        self._waveform_width_clamp = WaveformWidthClamp(
-            self,
-            self,
-            plot,
-            reserved_width=lambda: max(550, int(self.controls.winfo_reqwidth())) + 10
-            if getattr(self, "_button_side_by_side", True)
-            else 0,
-        )
         self._waveform_width_spacer = ttk.Frame(self, style="App.TFrame")
         self._waveform_width_spacer.grid(row=0, column=2, sticky="nsew")
         plot.columnconfigure(0, weight=1)
@@ -245,6 +237,17 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         self.read_slices_scrollbar.grid(row=2, column=1, sticky="ns")
         self.read_slices_text.configure(yscrollcommand=self.read_slices_scrollbar.set, state="disabled")
         self.read_slices_xscrollbar = None
+        self._waveform_width_clamp = WaveformWidthClamp(
+            self,
+            self,
+            plot,
+            reserved_width=lambda: max(550, int(self.controls.winfo_reqwidth())) + 10
+            if getattr(self, "_button_side_by_side", True)
+            else 0,
+            requested_height=lambda: self.canvas.winfo_reqheight()
+            + self.plot_toolbar.winfo_reqheight()
+            + self.read_slices_text.winfo_reqheight() + 21,
+        )
         for _, variable, _ in specs:
             variable.trace_add("write", lambda *_: self._on_param_changed())
             variable.trace_add("write", lambda *_: self.owner._on_button_progress_inputs_changed())

@@ -19,11 +19,13 @@ class WaveformWidthClamp:
         panel: tk.Misc,
         *,
         reserved_width: Callable[[], int] | None = None,
+        requested_height: Callable[[], int] | None = None,
     ) -> None:
         self.owner = owner
         self.container = container
         self.panel = panel
         self.reserved_width = reserved_width or (lambda: 0)
+        self.requested_height = requested_height
         self._binding = container.bind("<Configure>", self._on_configure, add="+")
         panel.grid_propagate(False)
         self.refresh()
@@ -33,6 +35,12 @@ class WaveformWidthClamp:
 
     def refresh(self) -> None:
         try:
+            # Disabling grid propagation freezes both axes, even though this
+            # helper only clamps width. Keep the content's height request alive.
+            if self.requested_height is not None:
+                height = max(1, int(self.requested_height()))
+                if int(float(self.panel.cget("height"))) != height:
+                    self.panel.configure(height=height)
             available = int(self.container.winfo_width())
             if available <= 1:
                 return

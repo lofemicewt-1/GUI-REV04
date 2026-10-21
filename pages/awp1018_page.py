@@ -3647,6 +3647,9 @@ class AWP1018NormalModePage(BasePage):
                 self,
                 parent,
                 self._rom_selector_preview,
+                requested_height=lambda: self.rom_canvas.winfo_reqheight()
+                + self.rom_metric_label.winfo_reqheight()
+                + self.rom_frequency_label.winfo_reqheight() + 12,
                 reserved_width=lambda: max(
                     280 if self.diff_mode else 340,
                     int(controls.winfo_reqwidth()),

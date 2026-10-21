@@ -1930,6 +1930,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 self._waveform_selector_shell,
                 preview,
                 reserved_width=lambda: int(form_column.winfo_reqwidth()) + 18,
+                requested_height=lambda: self.rom_canvas.winfo_reqheight()
+                + metric_label.winfo_reqheight() + frequency_label.winfo_reqheight() + 12,
             )
         self._bind_rom_preview_traces()
         yield

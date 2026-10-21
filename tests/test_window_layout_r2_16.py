@@ -17,6 +17,7 @@ from pages.waveform_layout import WaveformWidthClamp
 class _GeometryWidget:
     def __init__(self, width: int = 0) -> None:
         self.width = width
+        self.height = 0
         self.propagation = None
 
     def bind(self, _sequence, _callback, add=None):
@@ -33,12 +34,13 @@ class _GeometryWidget:
         return self.width
 
     def cget(self, key):
-        if key != "width":
+        if key not in ("width", "height"):
             raise KeyError(key)
-        return self.width
+        return getattr(self, key)
 
     def configure(self, **kwargs):
-        self.width = kwargs["width"]
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
 
 class WindowLayoutTierTests(unittest.TestCase):
@@ -71,6 +73,25 @@ class WindowLayoutTierTests(unittest.TestCase):
         container.width = 900
         clamp.refresh()
         self.assertEqual(panel.width, 300)
+        clamp.close()
+
+    def test_waveform_height_survives_width_clamping_and_hidden_first_show(self) -> None:
+        owner = SimpleNamespace(ctx=SimpleNamespace(state=SimpleNamespace(ui_scale=1)))
+        container = _GeometryWidget(width=1)
+        panel = _GeometryWidget()
+        requested_height = 480
+        clamp = WaveformWidthClamp(
+            owner, container, panel, requested_height=lambda: requested_height,
+        )
+        self.assertEqual(panel.height, 480)
+        container.width = 1200
+        clamp.refresh()
+        self.assertEqual(panel.height, 480)
+        self.assertEqual(panel.width, 960)
+        requested_height = 550
+        container.width = 800
+        clamp.refresh()
+        self.assertEqual((panel.width, panel.height), (800, 550))
         clamp.close()
 
 
