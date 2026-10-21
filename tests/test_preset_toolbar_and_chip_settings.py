@@ -147,13 +147,13 @@ class PresetToolbarTests(unittest.TestCase):
         )
 
         self._settle()
-        self.assertEqual(toolbar.buttons["software_preset_1"].cget("text"), "Built-in Example 1 (writes chip)")
+        self.assertEqual(toolbar.buttons["software_preset_1"].cget("text"), "Preset Example 1")
         self.assertEqual(toolbar.slot_label.cget("text"), "Offline slot")
         self.assertEqual(toolbar._software_title_label.cget("text"), "Software")
         language[0] = "zh"
         toolbar.refresh_language()
         self._settle()
-        self.assertEqual(toolbar.buttons["software_preset_1"].cget("text"), "内置示例 1（写入芯片）")
+        self.assertEqual(toolbar.buttons["software_preset_1"].cget("text"), "预设示例 1")
         self.assertEqual(toolbar.slot_label.cget("text"), "脱机槽位")
         self.assertEqual(toolbar._software_title_label.cget("text"), "软件")
         self.assertEqual(toolbar._board_title_label.cget("text"), "上电启动")
