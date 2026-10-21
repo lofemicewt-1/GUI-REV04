@@ -1,14 +1,75 @@
 """Cancel/close must never block the Tk thread, whatever pyserial is doing."""
 from __future__ import annotations
 
-import threading
+import faulthandler
 import os
+import threading
 import time
+import traceback
+import tkinter as tk
 import unittest
 from unittest import mock
 
 import core.serial_manager as sm
 from app.application import PiezoApplication
+from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
+
+
+def _new_application(test: unittest.TestCase) -> PiezoApplication:
+    prepare_tk_test(test)
+    with mock.patch.dict(os.environ, {"PIEZO_BG_BUILD": "0"}):
+        app = PiezoApplication()
+    attach_tk_cleanup(test, app.root)
+
+    def close_app() -> None:
+        try:
+            if app.root.winfo_exists():
+                app.close()
+        except tk.TclError:
+            pass
+
+    # Registered after attach_tk_cleanup so shutdown happens before root
+    # teardown and worker joins. TestCase cleanups run in LIFO order.
+    test.addCleanup(close_app)
+    return app
+
+
+def _capture_callback_exceptions(root) -> tuple[list[str], dict[int, BaseException]]:
+    errors: list[str] = []
+    wrapped_exceptions: dict[int, BaseException] = {}
+
+    def report_callback_exception(exc_type, exc_value, exc_tb) -> None:
+        # Guarded callbacks already saved the original traceback before
+        # re-raising; avoid reporting the same exception twice.
+        if wrapped_exceptions.pop(id(exc_value), None) is not exc_value:
+            errors.append("".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
+
+    root.report_callback_exception = report_callback_exception
+    return errors, wrapped_exceptions
+
+
+def _guard_callback(callback, errors: list[str], wrapped_exceptions: dict[int, BaseException]):
+    def run() -> None:
+        try:
+            callback()
+        except BaseException as exc:
+            wrapped_exceptions[id(exc)] = exc
+            errors.append(traceback.format_exc())
+            raise
+
+    return run
+
+
+def _assert_mainloop_health(
+    test: unittest.TestCase, callback_errors: list[str], watchdog_recovery: list[bool]
+) -> None:
+    failures = []
+    if callback_errors:
+        failures.append("Tk callback exceptions:\n" + "\n".join(callback_errors))
+    if watchdog_recovery:
+        failures.append("Tk mainloop watchdog had to recover the test")
+    if failures:
+        test.fail("\n".join(failures))
 
 
 class _FakeCH340:
@@ -52,12 +113,21 @@ class _FakeCH340:
         self.is_open = False
 
 
+def _reset_fake_ch340(*, open_s: float = 0.0) -> None:
+    _FakeCH340.open_s = open_s
+    _FakeCH340.write_s = 2.0
+    _FakeCH340.close_s = 2.0
+    _FakeCH340.instances = []
+
+
 class BlockingCancelTests(unittest.TestCase):
     def setUp(self) -> None:
+        _reset_fake_ch340()
         from app.application import LocalI2cBridge
         # A real asynchronous port scan must not replace this test's fake
         # selection before the simulated click. No live bridge/port probing.
         for patcher in (
+            mock.patch.object(sm.serial, "Serial", _FakeCH340),
             mock.patch.object(sm.SerialManager, "list_port_info", return_value=[sm.SerialPortInfo("COM14", "Fake CH340")]),
             mock.patch("app.application.is_known_bluetooth_port", return_value=False),
             mock.patch.object(LocalI2cBridge, "start", lambda _self: None),
@@ -67,29 +137,26 @@ class BlockingCancelTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def _run(self, open_s: float) -> None:
-        # Collect Tk objects (e.g. PhotoImage) left by earlier tests' apps now,
-        # on the main thread; otherwise a GC pass inside the connect worker
-        # runs their __del__ against a dead interpreter and blocks it.
-        import gc
-        gc.collect()
-        _FakeCH340.instances = []
-        _FakeCH340.open_s = open_s
+        _reset_fake_ch340(open_s=open_s)
         # Measures connect/cancel stalls only; background page builds are
         # covered elsewhere and would add their own (expected) slices.
-        with mock.patch.dict(os.environ, {"PIEZO_BG_BUILD": "0"}):
-            app = PiezoApplication()
+        app = _new_application(self)
         home = app.navigation.pages["home"]
         root = app.root
         home.port_var.set("COM14")
         gaps: list[float] = []
         out: dict[str, object] = {}
         last = [time.perf_counter()]
+        callback_errors, wrapped_exceptions = _capture_callback_exceptions(root)
+
+        def schedule(delay_ms: int, callback) -> None:
+            root.after(delay_ms, _guard_callback(callback, callback_errors, wrapped_exceptions))
 
         def beat() -> None:
             now = time.perf_counter()
             gaps.append(now - last[0])
             last[0] = now
-            root.after(10, beat)
+            schedule(10, beat)
 
         def step_connect() -> None:
             home.port_var.set("COM14")
@@ -97,7 +164,7 @@ class BlockingCancelTests(unittest.TestCase):
             home.toggle_connection()
             out["connect_s"] = time.perf_counter() - t0
             out["text_after_connect"] = home.connect_btn.cget("text")
-            root.after(600, step_cancel)
+            schedule(600, step_cancel)
 
         def step_cancel() -> None:
             out["text_before_cancel"] = home.connect_btn.cget("text")
@@ -106,7 +173,7 @@ class BlockingCancelTests(unittest.TestCase):
             out["cancel_s"] = time.perf_counter() - t0
             out["text_after_cancel"] = home.connect_btn.cget("text")
             out["status_after_cancel"] = home.status_label.cget("text")
-            root.after(int((open_s + 5.0) * 1000), step_check)
+            schedule(int((open_s + 5.0) * 1000), step_check)
 
         def step_check() -> None:
             out["text_final"] = home.connect_btn.cget("text")
@@ -114,13 +181,29 @@ class BlockingCancelTests(unittest.TestCase):
             out["closes"] = [(i.closed_on_main, i.is_open) for i in _FakeCH340.instances]
             root.quit()
 
-        with mock.patch.object(sm.serial, "Serial", _FakeCH340):
-            root.after(200, step_connect)
-            root.after(200, beat)
+        deadline_s = max(12.0, open_s + 12.0)
+        watchdog_recovery: list[bool] = []
+
+        def watchdog() -> None:
+            watchdog_recovery.append(True)
+            try:
+                root.quit()
+            except tk.TclError:
+                pass
+
+        schedule(int(deadline_s * 1000), watchdog)
+        faulthandler.dump_traceback_later(10.0, repeat=True)
+        try:
+            schedule(200, step_connect)
+            schedule(200, beat)
             root.mainloop()
-            t0 = time.perf_counter()
-            app.close()
-            close_s = time.perf_counter() - t0
+        finally:
+            faulthandler.cancel_dump_traceback_later()
+        t0 = time.perf_counter()
+        app.close()
+        close_s = time.perf_counter() - t0
+
+        _assert_mainloop_health(self, callback_errors, watchdog_recovery)
 
         self.assertLess(out["connect_s"], 0.1)
         self.assertEqual(out["text_after_connect"], home.tr("cancel_connect"))
@@ -142,21 +225,36 @@ class BlockingCancelTests(unittest.TestCase):
         self._run(open_s=2.0)
 
     def test_close_window_during_connect_is_immediate(self) -> None:
-        _FakeCH340.open_s = 0.0
-        app = PiezoApplication()
+        _reset_fake_ch340()
+        app = _new_application(self)
         home = app.navigation.pages["home"]
         home.port_var.set("COM14")
         out: dict[str, float] = {}
+        root = app.root
+        callback_errors, wrapped_exceptions = _capture_callback_exceptions(root)
+        watchdog_recovery: list[bool] = []
 
         def close() -> None:
             t0 = time.perf_counter()
             app.close()
             out["close_s"] = time.perf_counter() - t0
 
-        with mock.patch.object(sm.serial, "Serial", _FakeCH340):
-            app.root.after(100, home.toggle_connection)
-            app.root.after(700, close)
-            app.root.mainloop()
+        def hard_deadline() -> None:
+            watchdog_recovery.append(True)
+            try:
+                root.quit()
+            except tk.TclError:
+                pass
+
+        faulthandler.dump_traceback_later(10.0, repeat=True)
+        try:
+            root.after(100, _guard_callback(home.toggle_connection, callback_errors, wrapped_exceptions))
+            root.after(700, _guard_callback(close, callback_errors, wrapped_exceptions))
+            root.after(12_000, _guard_callback(hard_deadline, callback_errors, wrapped_exceptions))
+            root.mainloop()
+        finally:
+            faulthandler.cancel_dump_traceback_later()
+        _assert_mainloop_health(self, callback_errors, watchdog_recovery)
         self.assertLess(out["close_s"], 1.0)
 
 
@@ -216,23 +314,22 @@ class NoBoardConnectTests(unittest.TestCase):
         worker.join(1.0)
 
     def test_ui_caller_returns_before_ready_timeout(self) -> None:
-        import gc
-
-        gc.collect()
         self.assertGreaterEqual(sm.SerialManager.CONNECT_READY_TIMEOUT, 30.0)
-        saved = (_FakeCH340.open_s, _FakeCH340.write_s, _FakeCH340.close_s)
+        saved = (_FakeCH340.open_s, _FakeCH340.write_s, _FakeCH340.close_s, _FakeCH340.instances)
         _FakeCH340.open_s = 0.0
         _FakeCH340.write_s = 0.0
         _FakeCH340.close_s = 0.0
+        _FakeCH340.instances = []
         try:
-            with mock.patch.dict(os.environ, {"PIEZO_BG_BUILD": "0"}):
-                app = PiezoApplication()
+            serial_patcher = mock.patch.object(sm.serial, "Serial", _FakeCH340)
+            serial_patcher.start()
+            self.addCleanup(serial_patcher.stop)
+            app = _new_application(self)
             home = app.navigation.pages["home"]
             home.port_var.set("COM21")
-            with mock.patch.object(sm.serial, "Serial", _FakeCH340):
-                t0 = time.perf_counter()
-                home.toggle_connection()
-                elapsed = time.perf_counter() - t0
+            t0 = time.perf_counter()
+            home.toggle_connection()
+            elapsed = time.perf_counter() - t0
             self.assertLess(elapsed, 0.25)
             self.assertIsNotNone(home._connect_attempt)
             self.assertEqual(home.connect_btn.cget("text"), home.tr("cancel_connect"))
@@ -244,7 +341,7 @@ class NoBoardConnectTests(unittest.TestCase):
             app.close()
             self.assertLess(time.perf_counter() - t2, 1.0)
         finally:
-            _FakeCH340.open_s, _FakeCH340.write_s, _FakeCH340.close_s = saved
+            _FakeCH340.open_s, _FakeCH340.write_s, _FakeCH340.close_s, _FakeCH340.instances = saved
 
 
 if __name__ == "__main__":
