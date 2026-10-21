@@ -40,7 +40,7 @@ DEFAULT_LABEL_KEYS: dict[str, str] = {
 
 
 class PresetToolbar(ttk.Frame):
-    """Render two responsive, single-row groups for presets and board slots.
+    """Render two responsive groups with inline titles and natural-size controls.
 
     Unsupported actions are disabled by default. Add an unsupported action to
     hidden_capabilities to hide its legacy button reference. Actions listed in
@@ -93,6 +93,8 @@ class PresetToolbar(ttk.Frame):
         self._grid_update_count = 0
         self._bound_widgets: list[tuple[tk.Misc, str, str | None]] = []
         self._parent_for_header: tk.Misc | None = None
+        self._group_rows: dict[ttk.Frame, list[ttk.Frame]] = {}
+        self._control_layouts: dict[ttk.Frame, tuple[Any, ...]] = {}
 
         self.software_frame, self._software_title, self._software_title_label, self._software_help = (
             self._make_group("r2b_toolbar_software_title", "r2b_toolbar_software_help")
@@ -110,7 +112,6 @@ class PresetToolbar(ttk.Frame):
         initial_slot = self._choose_initial_slot(selected_slot)
         self.slot_var = tk.StringVar(self, value="" if initial_slot is None else str(initial_slot))
         self.slot_frame = ttk.Frame(self.board_frame, style="App.TFrame")
-        self.slot_frame.columnconfigure(1, weight=1)
         self.slot_label = ttk.Label(
             self.slot_frame,
             style="App.TLabel",
@@ -124,7 +125,7 @@ class PresetToolbar(ttk.Frame):
             state="readonly",
             width=4,
         )
-        self.slot_combo.grid(row=0, column=1, sticky="ew")
+        self.slot_combo.grid(row=0, column=1, sticky="w")
         self.slot_combo.bind("<<ComboboxSelected>>", self._on_slot_selected)
         slot_tooltip_key = self.tooltip_keys.get("slot_selection")
         if slot_tooltip_key:
@@ -150,8 +151,8 @@ class PresetToolbar(ttk.Frame):
             for action in BOARD_ACTIONS
             if self._action_is_visible(action)
         )
-        self._place_group_controls(self.software_frame, self._software_controls)
-        self._place_group_controls(self.board_frame, self._board_controls)
+        self._place_group_controls(self.software_frame, self._software_title, self._software_controls)
+        self._place_group_controls(self.board_frame, self._board_title, self._board_controls)
         self._create_auxiliary_menu()
         self._bind_layout_signals()
         self.refresh_language()
@@ -184,7 +185,7 @@ class PresetToolbar(ttk.Frame):
         self._queue_layout(invalidate_measurements=True)
 
     def reflow(self, available_width: int) -> str:
-        """Place boxes side-by-side when both fit; otherwise stack whole boxes."""
+        """Stack groups when needed, wrapping controls within each group."""
         if self._destroyed:
             return self._last_orientation or "stacked"
         self.update_idletasks()
@@ -236,6 +237,15 @@ class PresetToolbar(ttk.Frame):
             self.columnconfigure(1, minsize=board_min)
 
         self._last_orientation = orientation
+        spare = max(0, width - software_min - board_min - 8)
+        software_width = software_min + spare // 2 if side_by_side else width
+        board_width = board_min + spare - spare // 2 if side_by_side else width
+        self._place_group_controls(
+            self.software_frame, self._software_title, self._software_controls, software_width
+        )
+        self._place_group_controls(
+            self.board_frame, self._board_title, self._board_controls, board_width
+        )
         return orientation
 
     def destroy(self) -> None:
@@ -249,14 +259,16 @@ class PresetToolbar(ttk.Frame):
         help_key: str,
         *,
         board: bool = False,
-    ) -> tuple[ttk.LabelFrame, ttk.Frame, ttk.Label, ttk.Label]:
-        group = ttk.LabelFrame(self, style="TLabelframe", padding=(6, 2))
+    ) -> tuple[ttk.Frame, ttk.Frame, ttk.Label, ttk.Label]:
+        group = ttk.Frame(
+            self, style="App.TFrame", padding=(6, 2), borderwidth=1, relief="solid"
+        )
+        group.columnconfigure(0, weight=1)
         title = ttk.Frame(group, style="App.TFrame")
         title_label = ttk.Label(title, style="App.TLabel", text=self._translate(title_key))
         title_label.grid(row=0, column=0, sticky="w")
         help_label = ttk.Label(title, style="App.TLabel", text="?")
         help_label.grid(row=0, column=1, sticky="w", padx=(4, 2))
-        group.configure(labelwidget=title)
         self._tooltips.append(SimpleTooltip(help_label, lambda key=help_key: self._translate(key)))
         if board:
             self._board_title_menu_button = ttk.Menubutton(
@@ -273,11 +285,13 @@ class PresetToolbar(ttk.Frame):
             )
         return group, title, title_label, help_label
 
-    def _make_action_button(self, action: str, parent: ttk.LabelFrame) -> None:
+    def _make_action_button(self, action: str, parent: ttk.Frame) -> None:
         button = ttk.Button(
             parent,
             style="Bg.TButton",
             text=self._translate(self.label_keys[action]),
+            width=0,
+            padding=(6, 3),
             command=lambda name=action: self._invoke(name),
         )
         self.buttons[action] = button
@@ -291,10 +305,43 @@ class PresetToolbar(ttk.Frame):
                     SimpleTooltip(button, lambda key=tooltip_key: self._translate(key))
                 )
 
-    def _place_group_controls(self, group: ttk.LabelFrame, controls: Sequence[tk.Widget]) -> None:
-        for column, widget in enumerate(controls):
-            group.columnconfigure(column, weight=1)
-            widget.grid(row=0, column=column, sticky="ew", padx=2, pady=2)
+    def _place_group_controls(
+        self,
+        group: ttk.Frame,
+        title: ttk.Frame,
+        controls: Sequence[tk.Widget],
+        available_width: int | None = None,
+    ) -> None:
+        # Each line has its own grid so a long control on another line cannot
+        # widen the columns here. Widgets retain their original group parent.
+        inner_width = max(1, available_width - 14) if available_width is not None else None
+        lines: list[list[tk.Widget]] = [[title]]
+        used = title.winfo_reqwidth() + 4
+        for index, widget in enumerate(controls):
+            required = widget.winfo_reqwidth() + 4
+            # Keep the title and first control together, even at tiny widths.
+            if index > 0 and inner_width is not None and used + required > inner_width:
+                lines.append([])
+                used = 0
+            lines[-1].append(widget)
+            used += required
+        signature = tuple(tuple(str(widget) for widget in line) for line in lines)
+        if self._control_layouts.get(group) == signature:
+            return
+        rows = self._group_rows.setdefault(group, [])
+        while len(rows) < len(lines):
+            rows.append(ttk.Frame(group, style="App.TFrame"))
+        for row, line in enumerate(lines):
+            row_frame = rows[row]
+            row_frame.grid(row=row, column=0, sticky="w")
+            for column, widget in enumerate(line):
+                widget.grid(in_=row_frame, row=0, column=column, sticky="w", padx=2, pady=2)
+                # Row frames are younger siblings of the controls; keep the
+                # controls above their geometry container in Tk's stacking order.
+                widget.lift()
+        for row_frame in rows[len(lines):]:
+            row_frame.grid_remove()
+        self._control_layouts[group] = signature
 
     def _create_auxiliary_menu(self) -> None:
         self._auxiliary_menu_indexes: dict[str, int] = {}
@@ -479,8 +526,15 @@ class PresetToolbar(ttk.Frame):
             return
         self.update_idletasks()
         self._measured_widths = {
-            "software": max(1, int(self.software_frame.winfo_reqwidth())),
-            "board": max(1, int(self.board_frame.winfo_reqwidth())),
+            # Measure the unwrapped controls, independent of the current rows.
+            "software": 14 + sum(
+                widget.winfo_reqwidth() + 4
+                for widget in [self._software_title, *self._software_controls]
+            ),
+            "board": 14 + sum(
+                widget.winfo_reqwidth() + 4
+                for widget in [self._board_title, *self._board_controls]
+            ),
         }
         self._measurement_signature = signature
         self._measurements_dirty = False

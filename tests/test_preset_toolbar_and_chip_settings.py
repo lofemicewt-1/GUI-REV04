@@ -44,6 +44,8 @@ class PresetToolbarTests(unittest.TestCase):
         toolbar.reflow(2000)
 
         self.assertEqual(tuple(toolbar.buttons), PRESET_ACTIONS)
+        self.assertIsInstance(toolbar.software_frame, ttk.Frame)
+        self.assertNotIsInstance(toolbar.software_frame, ttk.LabelFrame)
         self.assertEqual(toolbar.software_frame.cget("style"), toolbar.board_frame.cget("style"))
         self.assertIs(toolbar.buttons["software_preset_1"].master, toolbar.software_frame)
         self.assertIs(toolbar.buttons["export_page_settings"].master, toolbar.software_frame)
@@ -60,6 +62,70 @@ class PresetToolbarTests(unittest.TestCase):
         toolbar._on_slot_selected()
         self.assertEqual(calls, ["preset-1"])
         self.assertEqual(toolbar.selected_slot, 2)
+
+    def test_inline_titles_and_natural_button_widths_across_window_sizes(self) -> None:
+        language = ["zh"]
+        self.root.deiconify()
+        toolbar = self._make_toolbar(translate=lambda key: t(language[0], key))
+        for lang in ("zh", "en"):
+            language[0] = lang
+            toolbar.refresh_language()
+            for width, height in ((460, 608), (700, 608), (1024, 608), (1366, 768),
+                                  (1920, 1080), (2560, 1440)):
+                with self.subTest(language=lang, width=width):
+                    self.root.geometry(f"{width}x{height}")
+                    self._settle()
+                    for group, title, help_icon, controls in (
+                        (toolbar.software_frame, toolbar._software_title,
+                         toolbar._software_help, toolbar._software_controls),
+                        (toolbar.board_frame, toolbar._board_title,
+                         toolbar._board_help, toolbar._board_controls),
+                    ):
+                        self.assertLessEqual(group.winfo_rootx() + group.winfo_width(),
+                                             toolbar.winfo_rootx() + toolbar.winfo_width())
+                        first = controls[0]
+                        first_line = title.grid_info()["in"]
+                        self.assertEqual(first_line, first.grid_info()["in"])
+                        self.assertEqual(int(first_line.grid_info()["row"]), 0)
+                        self.assertEqual(int(title.grid_info()["row"]),
+                                         int(first.grid_info()["row"]))
+                        self.assertIs(help_icon.master, title)
+                        self.assertLess(title.winfo_rootx(), first.winfo_rootx())
+                        title_center = title.winfo_rooty() + title.winfo_height() / 2
+                        first_center = first.winfo_rooty() + first.winfo_height() / 2
+                        self.assertLessEqual(abs(title_center - first_center), 1)
+                        for widget in (title, *controls):
+                            self.assertGreaterEqual(widget.winfo_rootx(), group.winfo_rootx())
+                            self.assertLessEqual(
+                                widget.winfo_rootx() + widget.winfo_width(),
+                                group.winfo_rootx() + group.winfo_width(),
+                            )
+                        # Buttons and the slot selector retain their requested
+                        # widths even when the enclosing group fills the screen.
+                        for widget in controls:
+                            self.assertEqual(widget.winfo_width(), widget.winfo_reqwidth())
+                            self.assertNotIn("e", widget.grid_info()["sticky"])
+                        for left, right in zip(controls, controls[1:]):
+                            if left.grid_info()["in"] == right.grid_info()["in"]:
+                                self.assertLessEqual(left.winfo_rootx() + left.winfo_width(),
+                                                     right.winfo_rootx())
+                    for button in toolbar.buttons.values():
+                        self.assertEqual(int(button.cget("width")), 0)
+                    if width == 460:
+                        self.assertGreater(
+                            len({str(widget.grid_info()["in"])
+                                 for widget in toolbar._software_controls}), 1
+                        )
+
+    def test_wrapping_keeps_auxiliary_menu_with_board_title(self) -> None:
+        self.root.geometry("700x608")
+        self.root.deiconify()
+        toolbar = self._make_toolbar(auxiliary_actions=("read_and_apply",))
+        self._settle()
+        self.assertIs(toolbar._board_title_menu_button.master, toolbar._board_title)
+        self.assertEqual(toolbar._board_title.grid_info()["in"],
+                         toolbar.slot_frame.grid_info()["in"])
+        self.assertEqual(toolbar.buttons["read_and_apply"].winfo_manager(), "")
 
     def test_unsupported_capabilities_can_hide_or_disable_controls(self) -> None:
         toolbar = self._make_toolbar(
