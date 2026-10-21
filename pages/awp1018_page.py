@@ -2134,7 +2134,13 @@ class AWP1018NormalModePage(BasePage):
         )
         title_row.grid_configure(sticky="ew")
         parent.columnconfigure(0, weight=1)
-        self.adc_legend = AdcLegend(parent, self.tr, self.colors, stage_count=4)
+        self.adc_legend = AdcLegend(
+            parent,
+            self.tr,
+            self.colors,
+            stage_count=4,
+            on_stage_activate=self._activate_stage_from_legend,
+        )
         self.adc_legend.grid(row=1, column=0, columnspan=2, sticky="ew")
         yield
 
@@ -2864,6 +2870,19 @@ class AWP1018NormalModePage(BasePage):
         for name, button in self._stage_buttons.items():
             button.configure(style="Selected.TButton" if name == stage else "Secondary.TButton")
         self._queue_adc_legend_rules()
+
+    def _activate_stage_from_legend(self, stage_id: str) -> None:
+        stage = str(stage_id).strip()
+        if stage not in getattr(self, "_stage_frames", {}):
+            return
+        self._show_stage(stage)
+        progress = getattr(self, "step_progress", None)
+        scroll_to_step = getattr(progress, "scroll_to_step", None)
+        if callable(scroll_to_step):
+            try:
+                scroll_to_step("adc")
+            except (tk.TclError, KeyError, TypeError, ValueError):
+                pass
 
     def _on_stage_group_start_changed(self, stage: str, group: int) -> None:
         variables = self.stage_group_start_vars.get(stage)

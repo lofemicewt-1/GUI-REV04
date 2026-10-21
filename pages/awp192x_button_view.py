@@ -595,7 +595,13 @@ class ButtonModeView:
         )
         diagram.columnconfigure(0, weight=1)
         yield
-        self.adc_legend = AdcLegend(diagram, self.tr, self.colors, stage_count=2)
+        self.adc_legend = AdcLegend(
+            diagram,
+            self.tr,
+            self.colors,
+            stage_count=2,
+            on_stage_activate=self._activate_button_adc_stage,
+        )
         self.adc_legend.grid(row=0, column=0, sticky="ew")
         self._refresh_button_adc_legend_rules()
         params_section, params = self.make_module_section(
@@ -617,8 +623,14 @@ class ButtonModeView:
         middle.bind("<Configure>", self._queue_button_adc_split_reflow, add="+")
         for col in range(4):
             params.columnconfigure(col, weight=1)
-        self._button_field(params, 0, 0, "press_threshold", self.press_threshold_var, value=self.press_threshold_hex_var)
-        self._button_field(params, 0, 1, "release_threshold", self.release_threshold_var, value=self.release_threshold_hex_var)
+        self._active_adc_stage_id = "Stage0"
+        self._button_adc_stage_fields = {}
+        self._button_adc_stage_fields["Stage0"] = self._button_field(
+            params, 0, 0, "press_threshold", self.press_threshold_var, value=self.press_threshold_hex_var
+        )
+        self._button_adc_stage_fields["Stage1"] = self._button_field(
+            params, 0, 1, "release_threshold", self.release_threshold_var, value=self.release_threshold_hex_var
+        )
         self._button_field(params, 0, 2, "adc_average_time", self.adc_average_time_var, [x[0] for x in self.ADC_AVERAGE_OPTIONS])
         self._button_field(params, 0, 3, "adc_ovv_time", self.adc_ovv_time_var, [x[0] for x in self.ADC_OVV_OPTIONS])
         self._button_field(params, 1, 0, "adc_pol", self.button_adc_pol_var, ["OUT+", "OUT-"])
@@ -758,6 +770,34 @@ class ButtonModeView:
         widget.grid(row=1, column=0, sticky="w", pady=3)
         if value is not None:
             ttk.Label(cell, textvariable=value, style="Muted.TLabel").grid(row=2, column=0, sticky="w")
+        return widget
+
+    def _activate_button_adc_stage(self, stage_id: str) -> None:
+        stage = str(stage_id).strip()
+        if stage not in {"Stage0", "Stage1"}:
+            return
+        field = getattr(self, "_button_adc_stage_fields", {}).get(stage)
+        if field is None:
+            return
+        exists = getattr(field, "winfo_exists", None)
+        if callable(exists):
+            try:
+                if not exists():
+                    return
+            except tk.TclError:
+                return
+        self._active_adc_stage_id = stage
+        try:
+            field.focus_set()
+        except tk.TclError:
+            pass
+        progress = getattr(self, "step_progress", None)
+        scroll_to_step = getattr(progress, "scroll_to_step", None)
+        if callable(scroll_to_step):
+            try:
+                scroll_to_step("config")
+            except (tk.TclError, KeyError, TypeError, ValueError):
+                pass
 
     def _set_button_adc_display(self, value):
         code = value & 0xFFF

@@ -33,6 +33,8 @@ class AdcLegend(ttk.Frame):
         tr: Callable[..., str],
         colors: Mapping[str, str],
         stage_count: int = 2,
+        *,
+        on_stage_activate: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(parent, style="Panel.TFrame")
         self.tr = tr
@@ -44,6 +46,7 @@ class AdcLegend(ttk.Frame):
         self._live_state = "idle"
         self._live_detail = ""
         self._channel_states: dict[Any, Any] = {}
+        self._on_stage_activate = on_stage_activate
         self._render_job: str | None = None
         self._disposed = False
         self._canvas_bind_id: str | None = None
@@ -75,6 +78,9 @@ class AdcLegend(ttk.Frame):
         )
         self.canvas.grid(row=3, column=0, sticky="ew")
         self._canvas_bind_id = self.canvas.bind("<Configure>", self._on_canvas_configure, add="+")
+        self.canvas.tag_bind("stage_click", "<Button-1>", self._on_canvas_stage_click)
+        self.canvas.tag_bind("stage_click", "<Enter>", self._on_canvas_stage_enter)
+        self.canvas.tag_bind("stage_click", "<Leave>", self._on_canvas_stage_leave)
 
         self._table = ttk.Frame(self, style="Panel.TFrame")
         self._table.grid(row=4, column=0, sticky="ew", pady=(5, 0))
@@ -190,6 +196,68 @@ class AdcLegend(ttk.Frame):
         self._refresh_rule_table()
         self._schedule_render()
 
+    def set_stage_activate(self, callback: Callable[[str], None] | None) -> None:
+        """Set the callback used when a Stage card or table cell is activated."""
+        self._on_stage_activate = callback
+
+    def activate_stage(self, stage_id: Any) -> None:
+        """Activate a Stage using the same ID normalization as the legend."""
+        if self._disposed or self._on_stage_activate is None:
+            return
+        self._on_stage_activate(self._stage_id(stage_id))
+
+    def _current_canvas_stage(self) -> str | None:
+        try:
+            current = self.canvas.find_withtag("current")
+            if not current:
+                return None
+            for tag in self.canvas.gettags(current[-1]):
+                if self._target_id(tag) == tag:
+                    return tag
+        except tk.TclError:
+            return None
+        return None
+
+    def _on_canvas_stage_click(self, _event: tk.Event | None = None) -> None:
+        if self._disposed:
+            return
+        stage_id = self._current_canvas_stage()
+        if stage_id is not None:
+            self.activate_stage(stage_id)
+
+    def _on_canvas_stage_enter(self, _event: tk.Event | None = None) -> None:
+        if self._disposed or self._on_stage_activate is None or self._current_canvas_stage() is None:
+            return
+        try:
+            self.canvas.configure(cursor="hand2")
+        except tk.TclError:
+            pass
+
+    def _on_canvas_stage_leave(self, _event: tk.Event | None = None) -> None:
+        if self._disposed:
+            return
+        try:
+            self.canvas.configure(cursor="")
+        except tk.TclError:
+            pass
+
+    def _on_rule_stage_click(self, stage_id: str, _event: tk.Event | None = None) -> None:
+        self.activate_stage(stage_id)
+
+    def _on_rule_stage_enter(self, event: tk.Event) -> None:
+        if self._disposed or self._on_stage_activate is None:
+            return
+        try:
+            event.widget.configure(cursor="hand2")
+        except tk.TclError:
+            pass
+
+    def _on_rule_stage_leave(self, event: tk.Event) -> None:
+        try:
+            event.widget.configure(cursor="")
+        except (tk.TclError, AttributeError):
+            pass
+
     def set_live(self, state: str, detail: str = "", channel_states: Mapping[Any, Any] | None = None) -> None:
         if self._disposed:
             return
@@ -297,13 +365,13 @@ class AdcLegend(ttk.Frame):
                     fill = self._tint(border, fill, 0.10)
                 self.canvas.create_rectangle(
                     x0, y0, x1, y1, fill=fill, outline=border,
-                    width=3 if preview else 2, tags=("stage_box", stage["id"]),
+                    width=3 if preview else 2, tags=("stage_box", "stage_click", stage["id"]),
                 )
                 heading = stage["id"]
                 self.canvas.create_text(
                     (x0 + x1) / 2, y0 + 16, text=heading, fill=text,
                     font=("TkDefaultFont", 10, "bold"), width=card_width - 12,
-                    tags=("stage_heading", stage["id"]),
+                    tags=("stage_heading", "stage_click", stage["id"]),
                 )
                 markers = self._starts.get(stage["id"], [])
                 marker_text = " · ".join(
@@ -315,7 +383,7 @@ class AdcLegend(ttk.Frame):
                     self.canvas.create_text(
                         (x0 + x1) / 2, y0 + 37, text=marker_text, fill=border,
                         font=("TkDefaultFont", 8, "bold"), width=card_width - 12,
-                        tags=("stage_marker", stage["id"]),
+                        tags=("stage_marker", "stage_click", stage["id"]),
                     )
                 if unused:
                     body_text = self._tr("adc_legend_unused_self")
@@ -326,14 +394,14 @@ class AdcLegend(ttk.Frame):
                 self.canvas.create_text(
                     (x0 + x1) / 2, y0 + 66, text=body_text, fill=text,
                     font=("TkDefaultFont", 9), width=card_width - 12,
-                    tags=("stage_wait", stage["id"]),
+                    tags=("stage_wait", "stage_click", stage["id"]),
                 )
                 if wave_text:
                     self.canvas.create_text(
                         (x0 + x1) / 2, y0 + 91,
                         text=f"{self._tr('adc_legend_play_wave')} {wave_text}", fill=self.colors.get("muted", "#6B7280"),
                         font=("TkDefaultFont", 9), width=card_width - 12,
-                        tags=("stage_waveform", stage["id"]),
+                        tags=("stage_waveform", "stage_click", stage["id"]),
                     )
 
             # Immediate forward transitions stay above the row; returns and
@@ -446,9 +514,17 @@ class AdcLegend(ttk.Frame):
                     target = stage["target"] or self._tr("adc_legend_unknown")
                     style = "Panel.TLabel"
                 for column, value in enumerate((label, wave, wait, target)):
-                    ttk.Label(self._table, text=value, style=style, wraplength=220).grid(
+                    cell = ttk.Label(self._table, text=value, style=style, wraplength=220)
+                    cell.grid(
                         row=row, column=column, sticky="w", padx=(5, 8), pady=3
                     )
+                    if column == 0:
+                        cell.bind(
+                            "<Button-1>",
+                            lambda event, selected=stage_id: self._on_rule_stage_click(selected, event),
+                        )
+                        cell.bind("<Enter>", self._on_rule_stage_enter)
+                        cell.bind("<Leave>", self._on_rule_stage_leave)
         except tk.TclError:
             return
 

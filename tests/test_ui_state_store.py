@@ -4,7 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 import tkinter as tk
-from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
+from tests.tk_cleanup import attach_tk_cleanup, cancel_after_jobs, prepare_tk_test
 from unittest import mock
 import unittest
 

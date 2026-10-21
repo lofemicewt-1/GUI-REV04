@@ -1426,7 +1426,13 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         diagram.columnconfigure(0, weight=1)
         diagram.rowconfigure(0, weight=1)
         yield
-        self.adc_legend = AdcLegend(diagram, self.tr, self.colors, stage_count=2)
+        self.adc_legend = AdcLegend(
+            diagram,
+            self.tr,
+            self.colors,
+            stage_count=2,
+            on_stage_activate=self._activate_button_stage_from_legend,
+        )
         self.adc_legend.grid(row=0, column=0, sticky="ew")
         self._refresh_button_adc_legend()
         adc_panel_section, adc_panel = self._button_section(
@@ -2289,6 +2295,23 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         for index, button in self._button_stage_buttons.items():
             button.configure(style="Selected.TButton" if index == stage_index else "Secondary.TButton")
         self._refresh_button_adc_legend()
+
+    def _activate_button_stage_from_legend(self, stage_id: str) -> None:
+        text = str(stage_id).strip()
+        if not text.startswith("Stage") or not text[5:].isdigit():
+            return
+        stage_index = int(text[5:])
+        frames = getattr(self, "_button_stage_frames", {})
+        if stage_index not in frames or stage_index >= len(getattr(self, "_button_stage_vars", ())):
+            return
+        self._show_button_stage(stage_index)
+        progress = getattr(self, "step_progress", None)
+        scroll_to_step = getattr(progress, "scroll_to_step", None)
+        if callable(scroll_to_step):
+            try:
+                scroll_to_step("adc")
+            except (tk.TclError, KeyError, TypeError, ValueError):
+                pass
 
     def _read_adc_value(self, register: int, device_addr: int | None = None) -> int:
         address = self.device_addr() if device_addr is None else device_addr
