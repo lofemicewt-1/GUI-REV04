@@ -17,8 +17,13 @@ def cancel_after_jobs(root: Any) -> None:
     except tk.TclError:
         return
     for job in jobs:
+        # Cancel at Tcl level only. ``root.after_cancel`` would also delete the
+        # Python command, which may be owned by a child widget (e.g. AdcLegend's
+        # after_idle render); that child's destroy() then raises "can't delete
+        # Tcl command", aborting root.destroy() and leaking a live root that
+        # keeps later mainloop() calls running forever.
         try:
-            root.after_cancel(job)
+            root.tk.call("after", "cancel", job)
         except tk.TclError:
             pass
 
@@ -75,7 +80,11 @@ def attach_tk_cleanup(test: unittest.TestCase, root: Any, *owned: Any):
             try:
                 root_obj.destroy()
             except tk.TclError:
-                pass
+                # Never leave a live root behind: fall back to a Tcl-level destroy.
+                try:
+                    root_obj.tk.call("destroy", root_obj._w)
+                except tk.TclError:
+                    pass
 
     def destroy_owned() -> None:
         for widget in state.get("owned", ()):

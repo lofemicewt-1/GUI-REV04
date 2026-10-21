@@ -1,6 +1,7 @@
 """Cancel/close must never block the Tk thread, whatever pyserial is doing."""
 from __future__ import annotations
 
+import _tkinter
 import faulthandler
 import os
 import threading
@@ -12,6 +13,7 @@ from unittest import mock
 
 import core.serial_manager as sm
 from app.application import PiezoApplication
+from tests._diag_tk_roots import report_live_tk_roots
 from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
 
 
@@ -60,16 +62,27 @@ def _guard_callback(callback, errors: list[str], wrapped_exceptions: dict[int, B
     return run
 
 
-def _assert_mainloop_health(
-    test: unittest.TestCase, callback_errors: list[str], watchdog_recovery: list[bool]
+def _pump_until(
+    test: unittest.TestCase, root, done, callback_errors: list[str], *, timeout_s: float
 ) -> None:
-    failures = []
+    # mainloop() counts all live Tk roots in this thread, including roots from
+    # other tests. Its after-based watchdog also disappears on root.destroy().
+    # The Tcl interpreter can still process events after its window is gone.
+    deadline = time.perf_counter() + timeout_s
+    while True:
+        if callback_errors:
+            test.fail("Tk callback exceptions:\n" + "\n".join(callback_errors))
+        if time.perf_counter() >= deadline:
+            test.fail(f"Tk event pump exceeded {timeout_s:.1f}s wall-clock deadline before completion")
+        if done():
+            return
+        if not root.tk.dooneevent(_tkinter.DONT_WAIT):
+            time.sleep(0.005)
+
+
+def _assert_no_callback_errors(test: unittest.TestCase, callback_errors: list[str]) -> None:
     if callback_errors:
-        failures.append("Tk callback exceptions:\n" + "\n".join(callback_errors))
-    if watchdog_recovery:
-        failures.append("Tk mainloop watchdog had to recover the test")
-    if failures:
-        test.fail("\n".join(failures))
+        test.fail("Tk callback exceptions:\n" + "\n".join(callback_errors))
 
 
 class _FakeCH340:
@@ -122,6 +135,11 @@ def _reset_fake_ch340(*, open_s: float = 0.0) -> None:
 
 class BlockingCancelTests(unittest.TestCase):
     def setUp(self) -> None:
+        # Last resort if construction, a callback, or cleanup blocks inside
+        # Python/Tcl. The normal 12–14s deadline is enforced by _pump_until.
+        faulthandler.dump_traceback_later(120.0, exit=True)
+        self.addCleanup(faulthandler.cancel_dump_traceback_later)
+        report_live_tk_roots(f"start of {self.id()}")
         _reset_fake_ch340()
         from app.application import LocalI2cBridge
         # A real asynchronous port scan must not replace this test's fake
@@ -148,6 +166,7 @@ class BlockingCancelTests(unittest.TestCase):
         out: dict[str, object] = {}
         last = [time.perf_counter()]
         callback_errors, wrapped_exceptions = _capture_callback_exceptions(root)
+        done = False
 
         def schedule(delay_ms: int, callback) -> None:
             root.after(delay_ms, _guard_callback(callback, callback_errors, wrapped_exceptions))
@@ -176,34 +195,21 @@ class BlockingCancelTests(unittest.TestCase):
             schedule(int((open_s + 5.0) * 1000), step_check)
 
         def step_check() -> None:
+            nonlocal done
             out["text_final"] = home.connect_btn.cget("text")
             out["connected"] = app.serial.is_port_connected("COM14")
             out["closes"] = [(i.closed_on_main, i.is_open) for i in _FakeCH340.instances]
-            root.quit()
+            done = True
 
         deadline_s = max(12.0, open_s + 12.0)
-        watchdog_recovery: list[bool] = []
-
-        def watchdog() -> None:
-            watchdog_recovery.append(True)
-            try:
-                root.quit()
-            except tk.TclError:
-                pass
-
-        schedule(int(deadline_s * 1000), watchdog)
-        faulthandler.dump_traceback_later(10.0, repeat=True)
-        try:
-            schedule(200, step_connect)
-            schedule(200, beat)
-            root.mainloop()
-        finally:
-            faulthandler.cancel_dump_traceback_later()
+        schedule(200, step_connect)
+        schedule(200, beat)
+        _pump_until(self, root, lambda: done, callback_errors, timeout_s=deadline_s)
         t0 = time.perf_counter()
         app.close()
         close_s = time.perf_counter() - t0
 
-        _assert_mainloop_health(self, callback_errors, watchdog_recovery)
+        _assert_no_callback_errors(self, callback_errors)
 
         self.assertLess(out["connect_s"], 0.1)
         self.assertEqual(out["text_after_connect"], home.tr("cancel_connect"))
@@ -232,29 +238,24 @@ class BlockingCancelTests(unittest.TestCase):
         out: dict[str, float] = {}
         root = app.root
         callback_errors, wrapped_exceptions = _capture_callback_exceptions(root)
-        watchdog_recovery: list[bool] = []
+        done = False
 
         def close() -> None:
+            nonlocal done
             t0 = time.perf_counter()
             app.close()
             out["close_s"] = time.perf_counter() - t0
-
-        def hard_deadline() -> None:
-            watchdog_recovery.append(True)
             try:
-                root.quit()
+                exists = root.winfo_exists()
             except tk.TclError:
-                pass
+                exists = False  # winfo itself is deleted with the root
+            self.assertFalse(exists, "app.close() left its Tk root alive")
+            done = True
 
-        faulthandler.dump_traceback_later(10.0, repeat=True)
-        try:
-            root.after(100, _guard_callback(home.toggle_connection, callback_errors, wrapped_exceptions))
-            root.after(700, _guard_callback(close, callback_errors, wrapped_exceptions))
-            root.after(12_000, _guard_callback(hard_deadline, callback_errors, wrapped_exceptions))
-            root.mainloop()
-        finally:
-            faulthandler.cancel_dump_traceback_later()
-        _assert_mainloop_health(self, callback_errors, watchdog_recovery)
+        root.after(100, _guard_callback(home.toggle_connection, callback_errors, wrapped_exceptions))
+        root.after(700, _guard_callback(close, callback_errors, wrapped_exceptions))
+        _pump_until(self, root, lambda: done, callback_errors, timeout_s=12.0)
+        _assert_no_callback_errors(self, callback_errors)
         self.assertLess(out["close_s"], 1.0)
 
 
