@@ -550,6 +550,7 @@ class VerticalScrollArea(ttk.Frame):
         self._layout_job: str | None = None
         self._yview_key: tuple[str, str] | None = None
         self._xview_key: tuple[str, str] | None = None
+        self._view_edges: dict[str, tuple[int, float, float, bool]] = {}
 
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
@@ -560,6 +561,7 @@ class VerticalScrollArea(ttk.Frame):
             borderwidth=0,
             yscrollincrement=1,
         )
+        self.canvas._view_observer = self._record_view_endpoint
         self.canvas.grid(row=0, column=0, sticky="nsew")
 
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
@@ -719,10 +721,51 @@ class VerticalScrollArea(ttk.Frame):
         return scaled_scroll_px(getattr(state, "ui_scale", 1.0) if state is not None else 1.0)
 
     def _on_yview(self, first: str, last: str) -> None:
+        first, last = self._preserve_view_endpoint("y", first, last)
         self._yview_key = relay_vertical_scroll(self.scrollbar, self._yview_key, first, last)
 
     def _on_xview(self, first: str, last: str) -> None:
+        first, last = self._preserve_view_endpoint("x", first, last)
         self._xview_key = relay_vertical_scroll(self.horizontal_scrollbar, self._xview_key, first, last)
+
+    def _preserve_view_endpoint(self, axis: str, first: str, last: str) -> tuple[str, str]:
+        """Keep an end reached before a delayed viewport/content resize."""
+        canvas = self.canvas
+        try:
+            region = tuple(map(float, canvas.tk.splitlist(canvas.cget("scrollregion"))))
+            if len(region) != 4:
+                return first, last
+            index = 0 if axis == "x" else 1
+            extent = canvas.winfo_width() if axis == "x" else canvas.winfo_height()
+            span = region[index + 2] - region[index]
+            origin = float(canvas.tk.call(canvas._w, "canvas" + axis, 0))
+            previous = self._view_edges.get(axis)
+            if (previous is not None and previous[3]
+                    and (extent != previous[0] or span != previous[1])
+                    and abs(origin - previous[2]) < 0.5 and float(last) < 1.0):
+                # Use native calls: correcting geometry must not enqueue a new
+                # presentation. A changed origin means the user scrolled away.
+                canvas.tk.call(canvas._w, axis + "view", "moveto", 1.0)
+                first, last = map(str, canvas.tk.call(canvas._w, axis + "view"))
+                origin = float(canvas.tk.call(canvas._w, "canvas" + axis, 0))
+            self._view_edges[axis] = (extent, span, origin, float(first) > 0 and float(last) >= 1.0)
+        except tk.TclError:
+            pass
+        return first, last
+
+    def _record_view_endpoint(self, axis: str) -> None:
+        # A scroll command and a resize can share one later Tk scroll callback.
+        # Capture the command's result now, including when a queued frame runs.
+        canvas = self.canvas
+        region = tuple(map(float, canvas.tk.splitlist(canvas.cget("scrollregion"))))
+        if len(region) != 4:
+            return
+        index = 0 if axis == "x" else 1
+        extent = canvas.winfo_width() if axis == "x" else canvas.winfo_height()
+        first, last = map(float, canvas.tk.call(canvas._w, axis + "view"))
+        origin = float(canvas.tk.call(canvas._w, "canvas" + axis, 0))
+        self._view_edges[axis] = (extent, region[index + 2] - region[index], origin,
+                                  first > 0 and last >= 1.0)
 
     def _on_mousewheel(self, event: tk.Event) -> None:
         try:

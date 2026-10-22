@@ -223,7 +223,12 @@ class ViewportCanvas(tk.Canvas):
                 presentation.canvas_destroyed(self)
 
     def _view(self, axis: str, args):
-        operation = lambda: self.tk.call(self._w, axis, *args)
+        def operation():
+            result = self.tk.call(self._w, axis, *args)
+            observer = getattr(self, "_view_observer", None)
+            if args and observer is not None:
+                observer(axis[0])
+            return result
         presentation = getattr(self._root(), '_piezo_viewport_presentation', None)
         if args and presentation is not None:
             return presentation.scroll(self, operation)

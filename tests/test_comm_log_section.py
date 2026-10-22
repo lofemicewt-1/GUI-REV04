@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import tkinter as tk
+import time
 from tkinter import font as tkfont, ttk
 import unittest
 from unittest.mock import patch
@@ -50,8 +51,24 @@ class CommunicationLogSectionTests(unittest.TestCase):
         host = self.app.navigation.pages[chip]
         if mode:
             host.show_mode(mode)
-        _flush(self.root, 5)
-        return host.mode_pages[mode] if mode else host
+        page = host.mode_pages[mode] if mode else host
+        self.settle(page)
+        return page
+
+    def settle(self, page):
+        # A fixed count of update() calls need not advance scheduled layout
+        # timers. Check geometry only after the selected page is actually ready.
+        deadline = time.monotonic() + 5
+        stable = 0
+        while time.monotonic() < deadline:
+            _flush(self.root, 1)
+            self.root.after(20, self.root.quit)
+            self.root.mainloop()
+            ready = page.winfo_ismapped() and self.app.navigation._page_layout_ready()
+            stable = stable + 1 if ready else 0
+            if stable >= 2:
+                return
+        self.fail("selected page did not finish layout within five seconds")
 
     def test_single_unwrapped_header_and_both_scrollbars_on_all_chip_modes(self):
         for chip, mode in self.CASES:
@@ -98,7 +115,7 @@ class CommunicationLogSectionTests(unittest.TestCase):
                 with self.subTest(chip=chip, mode=mode, size=(width, height)):
                     self.root.geometry(f"{width}x{height}+0+0")
                     self.app._apply_visual_settings()
-                    _flush(self.root, 5)
+                    self.settle(page)
                     self.assertEqual((self.root.winfo_width(), self.root.winfo_height()), (width, height))
                     text = page._serial_log_text
                     self.assertTrue(page._serial_log_body.winfo_ismapped())

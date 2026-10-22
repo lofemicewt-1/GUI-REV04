@@ -16,7 +16,8 @@ class ScrollEndpointTests(unittest.TestCase):
         ctx=SimpleNamespace(colors=colors,state=SimpleNamespace(ui_scale=1.0))
         self.area=VerticalScrollArea(self.root,ctx,horizontal=True)
         self.area.pack(fill='both',expand=True)
-        ttk.Frame(self.area.content,width=1200,height=1000).grid(row=0,column=0)
+        self.body=ttk.Frame(self.area.content,width=1200,height=1000)
+        self.body.grid(row=0,column=0)
         self.pump()
 
     def pump(self):
@@ -34,5 +35,15 @@ class ScrollEndpointTests(unittest.TestCase):
         self.area.canvas.xview_moveto(.2);self.area.canvas.yview_moveto(.2);self.pump()
         self.assertAlmostEqual(self.area.canvas.xview()[0],.2,places=2)
         self.assertAlmostEqual(self.area.canvas.yview()[0],.2,places=2)
+
+    def test_content_growth_before_scroll_callback_keeps_endpoint(self):
+        self.area.canvas.xview_moveto(1)
+        self.area.canvas.yview_moveto(1)
+        # Tk coalesces the scroll callback with the subsequent region update.
+        self.body.configure(width=1400,height=1200)
+        self.area.canvas.configure(scrollregion=(0,0,1400,1216))
+        self.pump()
+        self.assertAlmostEqual(self.area.canvas.xview()[1],1)
+        self.assertAlmostEqual(self.area.canvas.yview()[1],1)
 
 if __name__=='__main__':unittest.main()
