@@ -30,8 +30,8 @@ class SincTimingTests(unittest.TestCase):
         self.canvas = tk.Canvas(self.root, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         attach_tk_cleanup(self, self.root, self.canvas)
-    def draw(self, serial, times, depth, repeat, width, language, theme):
-        self.root.geometry(f"{width}x520")
+    def draw(self, serial, times, depth, repeat, width, language, theme, height=520):
+        self.root.geometry(f"{width}x{height}")
         self.root.update()
         params = awp1221_sinc_parse_params("80", "12", *(str(v) for v in times[:3]), str(depth),
                     str(times[3]) if len(times) == 4 else None, str(repeat))
@@ -58,19 +58,28 @@ class SincTimingTests(unittest.TestCase):
         for serial, times, depth, repeat, durations in cases:
             for width, language, theme in ((820, "zh", "light"), (360, "en", "dark")):
                 with self.subTest(serial=serial, repeat=repeat, width=width):
-                    self.draw(serial, times, depth, repeat, width, language, theme)
-                    cards = self.canvas.find_withtag("sinc_segment_card")
+                    self.draw(serial, times, depth, repeat, width, language, theme, height=400)
+                    self.assertFalse(self.canvas.find_withtag("sinc_segment_card"))
                     labels = self.canvas.find_withtag("sinc_segment_duration")
                     self.assertEqual(len(labels), len(durations))
-                    for item, card, duration, end in zip(labels, cards, durations, accumulate(durations)):
+                    boxes = []
+                    for item, duration, end in zip(labels, durations, accumulate(durations)):
                         text = self.canvas.itemcget(item, "text")
                         self.assertIn(f": {duration:g} ms" if language == "en" else f"：{duration:g} ms", text)
                         self.assertIn(f"{end:g} ms", text)
-                        box, bounds = self.canvas.bbox(item), self.canvas.coords(card)
-                        self.assertGreaterEqual(box[0], bounds[0])
-                        self.assertLessEqual(box[2], bounds[2])
-                        self.assertGreaterEqual(box[1], bounds[1])
-                        self.assertLessEqual(box[3], bounds[3])
+                        box = self.canvas.bbox(item)
+                        self.assertGreaterEqual(box[0], 0)
+                        self.assertLessEqual(box[2], self.canvas.winfo_width())
+                        self.assertLessEqual(box[3], self.canvas.winfo_height())
+                        self.assertEqual(self.canvas.itemcget(item, "fill"), get_colors(theme)["muted"])
+                        boxes.append(box)
+                    for index, box in enumerate(boxes):
+                        for other in boxes[index + 1:]:
+                            self.assertFalse(box[0] < other[2] and box[2] > other[0] and
+                                             box[1] < other[3] and box[3] > other[1])
+                    curves = self.canvas.find_withtag("wave_curve")
+                    self.assertGreater(min(box[1] for box in boxes),
+                                       max(self.canvas.bbox(item)[3] for item in curves) + 30)
                     if len(durations) == 4:
                         self.assertIn(f"×{repeat}", self.canvas.itemcget(labels[0], "text"))
                     summary = self.canvas.find_withtag("wave_duration")[0]

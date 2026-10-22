@@ -15,6 +15,7 @@ from typing import Any, Callable
 from config.lang_r2_c import install as _install_r2c_language
 from core.lazy_pages import LazyPages
 from core import chip_status_cache
+from styles.theme import waveform_choice_styles
 
 from core.awp1221_command_gate import AWP1221_CMD_GATE_BIT, ensure_awp1221_cmd_gate
 from core.awp1221_page_script import (
@@ -57,7 +58,6 @@ from pages.base_page import BasePage, SimpleTooltip, WrappingGroupBar, attach_gl
 from pages.adc_legend import AdcLegend
 from pages.step_progress import ProgressContext, StepSpec
 from pages.waveform_preview import PreviewSegment, compact_preview, draw_omissions
-from pages.waveform_layout import WaveformWidthClamp
 from pages.awp1221_board_presets import AWP1221BoardPresetMixin
 from pages.chip_settings_model import ChipSettingsModel, ChipSettingsStore
 from pages.preset_toolbar import PresetToolbar
@@ -1301,6 +1301,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         yield from self._build_adc_settings_steps(left, row=4)
         yield from self._build_control_buttons_steps(left, row=5)
         self._build_gpio_settings(left, row=6)
+        yield
 
         right = ttk.Frame(body, style="Panel.TFrame", padding=10)
         right.grid(row=0, column=1, sticky="nsew")
@@ -1309,6 +1310,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         right.rowconfigure(2, weight=2)
         self._labels["awp1221_basic_parameters"] = self.make_full_mode_label(right, "awp1221_basic_parameters", step=2, style="Muted.TLabel")
         self._labels["awp1221_basic_parameters"].grid(row=0, column=0, sticky="w", padx=4, pady=(4, 10))
+        yield
 
         self.tools_notebook = ttk.Notebook(right)
         self.tools_notebook.grid(row=1, column=0, sticky="nsew")
@@ -1329,7 +1331,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
         yield
         self._show_stage(0)
-        self.refresh_language()
+        yield from self._refresh_language_steps()
         yield
 
     def _build_button_mode_ui(self) -> None:
@@ -1367,8 +1369,13 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         self._button_waveform_section = waveform_section
         waveform.columnconfigure(0, weight=1)
-        selector_holder = ttk.Frame(waveform, style="Panel.TFrame", height=520)
-        selector_holder.grid(row=0, column=0, sticky="ew")
+        selector_scroll, selector_holder = self.make_vertical_scroll_area(
+            waveform, min_content_width=1000, scroll_region_extra=0,
+        )
+        selector_scroll.grid(row=0, column=0, sticky="ew")
+        selector_scroll.canvas.configure(width=320, height=520)
+        self._button_waveform_scroll = selector_scroll
+        selector_holder.configure(style="Panel.TFrame", height=520)
         selector_holder.grid_propagate(False)
         selector_holder.columnconfigure(0, weight=1)
         yield
@@ -1410,9 +1417,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             role="reference",
             help_key="awp1221_help_adc_legend",
         )
-        diagram_section.grid_configure(column=0, sticky="nsew", padx=(0, 10))
+        diagram_section.grid_configure(column=0, sticky="new", padx=(0, 10))
         diagram.columnconfigure(0, weight=1)
-        diagram.rowconfigure(0, weight=1)
+        diagram.rowconfigure(0, weight=0)
         yield
         self.adc_legend = AdcLegend(
             diagram,
@@ -1431,7 +1438,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             step_total=4,
             help_key="awp1221_help_adc_params",
         )
-        adc_panel_section.grid_configure(column=1, sticky="nsew")
+        adc_panel_section.grid_configure(column=1, sticky="new")
         self._button_adc_split = middle
         self._button_adc_panels = (diagram_section, adc_panel_section)
         self._button_adc_split_job = None
@@ -1481,6 +1488,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         details = self.make_serial_log(
             body, subscribe=True, collapsed=True,
             toggle_command=self._toggle_communication_log,
+            bordered=False,
         )
         yield
         details.grid(row=4, column=0, sticky="ew", pady=(10, 0))
@@ -1489,7 +1497,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._communication_log_toggle = self._serial_log_toggle
         yield
         self._mount_button_step_progress()
-        self.refresh_language()
+        yield
+        yield from self._refresh_language_steps()
         self._schedule_button_rom_preview()
 
     def _toggle_communication_log(self) -> None:
@@ -1556,6 +1565,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             column=0,
             sticky="ew",
             padding=10,
+            bordered=False,
             step=step,
             step_total=step_total,
             role=role,
@@ -1610,6 +1620,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self._auto_serial_check.grid_remove()
             self._set_selector_row_visible("awp1221_rom_waveform", False)
             return
+        self.rom_canvas.configure(height=500)
         controls = self._button_waveform_controls
         self._auto_serial_check.grid_configure(row=0, column=0, columnspan=2, sticky="w")
         self._set_selector_row_visible("awp1221_rom_source", False)
@@ -1680,6 +1691,10 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         return self.tr(key) if key else raw
 
     def _refresh_button_adc_legend(self) -> None:
+        if getattr(self, "_settings_sync_depth", 0):
+            # Model restoration changes many traced variables. Refresh once
+            # after all values in the transaction have been restored.
+            return
         legend = getattr(self, "adc_legend", None)
         if legend is None or self.mode_key != "button_mode":
             return
@@ -1691,13 +1706,13 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             target_index = self._stage_index_from_text(variables["jump_target"].get())
             target = f"Stage{target_index}" if target_index in {0, 1} else None
             precision_key = "adc_legend_precision_high" if variables["use_high_12_bits"].get() else "adc_legend_precision_low"
-            unit = f"ADC · {self.tr(precision_key)}"
             stage_data.append({
                 "id": f"Stage{index}",
                 "condition": condition,
                 "comparator": ">=" if mode == "press" else "<=" if mode == "release" else "?",
                 "threshold": threshold,
-                "unit": unit,
+                "unit": "",
+                "adc_precision": self.tr(precision_key),
                 "waveform": self._button_legend_wave_label(variables["wave"].get()),
                 "target": target,
                 "unused": False,
@@ -1724,13 +1739,9 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self._waveform_selector_title = title
         else:
             self._waveform_selector_shell.columnconfigure(0, weight=0)
-            self._waveform_selector_shell.columnconfigure(1, weight=0)
-            self._waveform_selector_shell.columnconfigure(2, weight=1)
+            self._waveform_selector_shell.columnconfigure(1, weight=1)
             yield
             self._waveform_selector_shell.rowconfigure(1, weight=1)
-            ttk.Frame(self._waveform_selector_shell, style="Panel.TFrame").grid(
-                row=1, column=2, sticky="nsew"
-            )
             title_row, title = self.make_module_title_row(
                 self._waveform_selector_shell,
                 "awp1221_rom_selector_title",
@@ -1932,15 +1943,6 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         )
         self.rom_canvas.grid(row=2, column=0, sticky="nsew")
         self.rom_canvas.bind("<Configure>", lambda _event: self._schedule_button_rom_preview())
-        if self.mode_key == "button_mode":
-            self._waveform_selector_width_clamp = WaveformWidthClamp(
-                self,
-                self._waveform_selector_shell,
-                preview,
-                reserved_width=lambda: int(form_column.winfo_reqwidth()) + 18,
-                requested_height=lambda: self.rom_canvas.winfo_reqheight()
-                + metric_label.winfo_reqheight() + frequency_label.winfo_reqheight() + 12,
-            )
         self._bind_rom_preview_traces()
         yield
         for variable in (self.rom_micro_bias_var, self.rom_vpk_var):
@@ -2384,6 +2386,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self.preset_toolbar = PresetToolbar(
             parent,
             translate=self.tr,
+            bordered=False,
             callbacks={
                 "software_preset_1": lambda: self.apply_software_preset(0),
                 "software_preset_2": lambda: self.apply_software_preset(1),
@@ -2994,6 +2997,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         shared = target.shared
         self._settings_model = target
         self._settings_sync_depth += 1
+        if self.host is not None:
+            self.host._settings_sync_depth += 1
         try:
             with self._suspend_adc_live_writes():
                 descriptors = shared.get("waveform_descriptors", {})
@@ -3051,11 +3056,15 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                     self.host._apply_settings_gpio(target.advanced.get("gpio"))
                 finally:
                     self.host._settings_sync_depth -= 1
-            self._refresh_waveform_controls()
-            self._schedule_button_rom_preview()
-            self._refresh_adc_bits()
         finally:
             self._settings_sync_depth -= 1
+            if self.host is not None:
+                self.host._settings_sync_depth -= 1
+
+        self._sync_auto_serial_page_state()
+        self._schedule_button_rom_preview()
+        self._refresh_adc_bits()
+        self._refresh_button_adc_legend()
 
     def _apply_waveform_recipe(self, recipe: dict[str, Any]) -> None:
         self._board_rom_loading = True
@@ -3924,14 +3933,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
 
     def _refresh_waveform_choice_labels(self) -> None:
         unsupported: list[str] = []
-        style = ttk.Style(self)
-        normal_style = "R2cWaveform.TCombobox"
-        unsupported_style = "R2cUnsupportedWaveform.TCombobox"
         colors = getattr(self.ctx, "colors", {})
-        normal_color = colors.get("text", "#111827")
-        muted_color = colors.get("muted", "#64748B")
-        style.configure(normal_style, foreground=normal_color, fieldforeground=normal_color)
-        style.configure(unsupported_style, foreground=muted_color, fieldforeground=muted_color)
+        normal_style, unsupported_style = waveform_choice_styles(self, colors)
         for binding in tuple(getattr(self, "_waveform_choice_bindings", ())):
             combo = binding["combo"]
             try:
@@ -4085,7 +4088,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             form.grid(row=1, column=0, columnspan=1, sticky="nsew", padx=(0, 18))
             form.rowconfigure(0, weight=1)
         if preview is not None:
-            preview.grid(row=0, column=1, rowspan=2, sticky="nw")
+            preview.grid(row=0, column=1, rowspan=2, sticky="new")
         if scroll is not None:
             scroll.canvas.configure(height=1)
         shell.rowconfigure(1, weight=1)
@@ -4657,7 +4660,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self._refreshing_playback_options = False
 
     def _refresh_waveform_controls(self) -> None:
-        if getattr(self, "_refreshing_waveform_controls", False):
+        if getattr(self, "_settings_sync_depth", 0) or getattr(self, "_refreshing_waveform_controls", False):
             return
         self._refreshing_waveform_controls = True
         try:
@@ -4711,7 +4714,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             is_sinc and serial in {"serial1", "serial2"},
         )
         self._set_selector_row_visible("awp1221_sinc_slice_group", is_sinc and window_count > 1)
-        self._set_selector_row_visible("awp1221_rom_preview_captions", not is_sinc)
+        self._set_selector_row_visible("awp1221_rom_preview_captions",
+                                       not is_sinc and self.mode_key != "button_mode")
         for index in range(4):
             self._set_selector_row_visible(
                 f"awp1221_sinc_time{index + 1}",
@@ -4815,6 +4819,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         return register_value & ~AWP1221_AUTO_SERIAL_MASK
 
     def _sync_auto_serial_page_state(self) -> None:
+        if getattr(self, "_settings_sync_depth", 0) or getattr(self.host, "_settings_sync_depth", 0):
+            return
         self._refresh_trigger_waveform_options()
         self._sync_waveform_options_with_auto_serial()
         if not self._auto_serial_enabled():
@@ -5313,7 +5319,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         canvas.delete("all")
         width = max(1, canvas.winfo_width())
         height = max(1, canvas.winfo_height())
-        left, right, top, bottom = 48, 20, 24, 72
+        left, right, top, bottom = 48, 20, 24, 130 if self.mode_key == "button_mode" else 72
         plot_width = max(1, width - left - right)
         plot_height = max(1, height - top - bottom)
         middle = top + plot_height / 2
@@ -5347,6 +5353,12 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if getattr(self, "mode_key", None) == "button_mode":
             self._annotate_button_preview(values, positions, left, plot_width, middle, scale)
             self._draw_button_time_axis(period_us, left, plot_width, height - bottom, total=False)
+            canvas.create_text(
+                left, height - bottom + 40, anchor="nw", width=plot_width,
+                fill=muted,
+                text=f"{self.rom_metric_var.get()}\n{self.rom_frequency_var.get()}",
+                tags="rom_preview_details",
+            )
             return
         vmin = min(values)
         vmax = max(values)
@@ -5396,11 +5408,11 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             return
         width = max(1, canvas.winfo_width())
         height = max(1, canvas.winfo_height())
-        left, right, top, bottom = 48, 20, 24, 150 if getattr(self, "mode_key", None) == "button_mode" else 24
+        left, right, top, bottom = 48, 20, 24, 130 if getattr(self, "mode_key", None) == "button_mode" else 24
         plot_width = max(1, width - left - right)
         segment_count = 4 if plan.serial in {"serial3", "serial4"} else 3
         if getattr(self, "mode_key", None) == "button_mode" and plot_width < segment_count * 130:
-            bottom += 66
+            bottom += 64
         plot_height = max(1, height - top - bottom)
         middle = top + plot_height / 2
         peak = max(plan.solution.peak_volts, plan.solution.trough_volts, 1.0)
@@ -5546,17 +5558,16 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             for index, (name, duration) in enumerate(zip(names, segment_durations)):
                 row, column = divmod(index, columns)
                 x = left + card_width * column
-                y = bottom + row * 66
-                canvas.create_rectangle(x + 2, y + 48, x + card_width - 2, y + 108,
-                    fill=self.colors["panel_alt"], outline=self.colors["border"], tags="sinc_segment_card")
-                canvas.create_text(x + card_width / 2, y + 53, anchor="n", justify="center",
-                    width=max(1, card_width - 10), fill=self.colors["text"],
+                y = bottom + row * 64
+                canvas.create_text(x + card_width / 2, y + 40, anchor="n", justify="center",
+                    width=max(1, card_width - 10), fill=color,
                     text=self.tr("awp1221_segment_time", name=name, duration=f"{duration / 1000:g}",
                                  end=f"{times[index + 1] / 1000:g}"),
                     tags=("sinc_segment_duration", f"sinc_segment_{index}"))
         key = "awp1221_preview_total_time" if total else "awp1221_preview_period"
-        summary_offset = 120 + (66 if segment_durations and len(segment_durations) > columns else 0) if segment_durations else 36
-        canvas.create_text(left, bottom + summary_offset, anchor="nw", fill=self.colors["text"],
+        summary_offset = 104 + (64 if segment_durations and len(segment_durations) > columns else 0)
+        canvas.create_text(left, bottom + summary_offset, anchor="nw",
+                           fill=color,
                            text=self.tr(key, duration=f"{duration_us / 1000:g}"), tags="wave_duration")
 
     def _annotate_button_preview(self, values, positions, left, plot_width, ground, scale,
@@ -6286,8 +6297,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         if self.mode_key != "button_mode":
             yield from self._build_adc_readout_steps(section, row=5)
         else:
-            # Global ADC values: labels always stay on one line; the six fields
-            # use a single row when wide enough, otherwise three per row.
+            # Global ADC values keep labels on one line and reflow the fields
+            # according to the actual space available, including help marks.
             fields: list[list[tk.Widget | None]] = [[None, None] for _ in range(6)]
             for widget in section.winfo_children():
                 info = widget.grid_info()
@@ -6333,6 +6344,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 if section.winfo_exists():
                     self._reflow_button_adc_settings(section)
                     self._reflow_button_stage_fields(section)
+                    self._queue_button_adc_split_reflow()
             except tk.TclError:
                 pass
         try:
@@ -6360,21 +6372,17 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 return
             legend, settings = panels
             previous = getattr(self, "_button_adc_split_signature", None)
-            # Fixed thresholds: measured reqwidth fed back through legend redraws.
-            if previous is True:
-                side_by_side = width >= 980
-            elif previous is False:
-                side_by_side = width >= 1180
-            else:
-                side_by_side = width >= max(1100, 920)
+            body_size = getattr(self.winfo_toplevel(), "_piezo_body_font_size", 10)
+            required = max(1100, round(420 * body_size / 10) + self._button_adc_parameter_width() + 60)
+            side_by_side = width >= required
             if side_by_side == previous:
                 return
             self._button_adc_split_signature = side_by_side
             if side_by_side:
                 split.columnconfigure(0, weight=2, uniform="button_adc_panels")
                 split.columnconfigure(1, weight=3, uniform="button_adc_panels")
-                legend.grid_configure(row=0, column=0, columnspan=1, sticky="nsew", padx=(0, 10), pady=0)
-                settings.grid_configure(row=0, column=1, columnspan=1, sticky="nsew", padx=0, pady=0)
+                legend.grid_configure(row=0, column=0, columnspan=1, sticky="new", padx=(0, 10), pady=0)
+                settings.grid_configure(row=0, column=1, columnspan=1, sticky="new", padx=0, pady=0)
             else:
                 split.columnconfigure(0, weight=1, uniform="")
                 split.columnconfigure(1, weight=0, uniform="")
@@ -6382,6 +6390,26 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 settings.grid_configure(row=1, column=0, columnspan=2, sticky="ew", padx=0, pady=0)
         except tk.TclError:
             return
+
+    @staticmethod
+    def _button_stage_column_widths(layout: dict, columns: int) -> list[int]:
+        widths = [max((max(label.winfo_reqwidth(), value.winfo_reqwidth()) + 12
+                       for label, value in layout["fields"][column::columns]), default=0)
+                  for column in range(columns)]
+        if columns >= 3:
+            widths[0] = max(widths[0], layout["event"][1].winfo_reqwidth() + 12)
+            for column, check in enumerate(layout["checks"][:2], start=1):
+                widths[column] = max(widths[column], check.winfo_reqwidth() + 12)
+        return widths
+
+    def _button_adc_parameter_width(self) -> int:
+        stage_width = max((sum(self._button_stage_column_widths(layout, 3)) + 24
+                           for layout in getattr(self, "_button_stage_layouts", ())), default=0)
+        fields = getattr(self, "_button_adc_fields", ())
+        adc_width = sum(max((max(label.winfo_reqwidth(), value.winfo_reqwidth()) + 14
+                             for label, value in fields[column::3]), default=0)
+                        for column in range(3))
+        return max(stage_width, adc_width)
 
     def _button_adc_decision_width(self, section: ttk.Frame) -> int:
         try:
@@ -6417,14 +6445,40 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                     self._queue_button_adc_reflow(section)
                 return
             self._button_adc_size_retries = 0
-            needed = sum(max(label.winfo_reqwidth(), value.winfo_reqwidth()) + 14
-                         for label, value in fields)
-            wide = len(fields)
-            slack = 24
-            if current == wide:
-                columns = wide if width + slack >= needed else 3
-            else:
-                columns = wide if width >= needed + slack else 3
+            # Hysteresis may delay adding columns, but must never keep a
+            # row wider than its panel: the final help marker gets clipped.
+            columns = 1
+            for candidate in (3, 2, 1):
+                needed = sum(
+                    max(max(label.winfo_reqwidth(), value.winfo_reqwidth()) + 14
+                        for label, value in fields[column::candidate])
+                    for column in range(candidate)
+                )
+                if width >= needed + (24 if candidate > current else 0):
+                    columns = candidate
+                    break
+        zps = getattr(self, "_button_adc_zps_frame", None)
+        if zps is not None:
+            controls = zps.winfo_children()
+            width = self._button_adc_decision_width(section)
+            pairs = list(zip(controls[::2], controls[1::2]))
+            flag_columns = 1
+            for candidate in (3, 2, 1):
+                needed = sum(
+                    max(check.winfo_reqwidth() + help_mark.winfo_reqwidth() + 18
+                        for check, help_mark in pairs[column::candidate])
+                    for column in range(candidate)
+                )
+                if width >= needed:
+                    flag_columns = candidate
+                    break
+            if flag_columns != getattr(self, "_button_adc_flag_columns", None):
+                self._button_adc_flag_columns = flag_columns
+                for index, (check, help_mark) in enumerate(pairs):
+                    flag_row, flag_column = divmod(index, flag_columns)
+                    check.grid_configure(row=flag_row, column=flag_column * 2,
+                                         padx=(14 if flag_column else 0, 0), pady=2)
+                    help_mark.grid_configure(row=flag_row, column=flag_column * 2 + 1, pady=2)
         if columns == current:
             return
         self._button_adc_reflowing = True
@@ -6454,17 +6508,13 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             width = self._button_adc_decision_width(section)
             if width <= 1:
                 return
-            fields = layouts[0]["fields"]
-            needed = sum(
-                max(label.winfo_reqwidth(), value.winfo_reqwidth()) + 12
-                for label, value in fields
-            ) + 24
-            wide = 5
-            slack = 16
-            if current == wide:
-                columns = wide if width + slack >= needed else 3
-            else:
-                columns = wide if width >= needed + slack else 3
+            columns = 1
+            for candidate in (3, 2, 1):
+                needed = max(sum(self._button_stage_column_widths(layout, candidate))
+                             for layout in layouts) + 24
+                if width >= needed:
+                    columns = candidate
+                    break
         if columns == current:
             return
         self._button_stage_reflowing = True
@@ -6486,15 +6536,15 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         rows = (len(layout["fields"]) + columns - 1) // columns
         base = rows * 2
         event_label, event_value = layout["event"]
-        event_label.grid_configure(row=base, column=0, columnspan=min(2, columns),
+        event_label.grid_configure(row=base, column=0, columnspan=1 if columns >= 3 else min(2, columns),
                                    sticky="w", padx=(0, 12), pady=(4, 3))
-        event_value.grid_configure(row=base + 1, column=0, columnspan=min(2, columns),
+        event_value.grid_configure(row=base + 1, column=0, columnspan=1 if columns >= 3 else min(2, columns),
                                    sticky="w", padx=(0, 12), pady=(0, 3))
         checks = layout["checks"]
-        if columns >= 5 and len(checks) >= 2:
-            checks[0].grid_configure(row=base + 1, column=2, columnspan=1,
+        if columns >= 3 and len(checks) >= 2:
+            checks[0].grid_configure(row=base + 1, column=1, columnspan=1,
                                      sticky="w", padx=(0, 8), pady=0)
-            checks[1].grid_configure(row=base + 1, column=3, columnspan=2,
+            checks[1].grid_configure(row=base + 1, column=2, columnspan=1,
                                      sticky="w", padx=(0, 8), pady=0)
         else:
             for offset, check in enumerate(checks):
@@ -6573,6 +6623,8 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._buttons["adc_read_on_trigger"] = trigger_button
 
     def _refresh_adc_bits(self) -> None:
+        if getattr(self, "_settings_sync_depth", 0):
+            return
         labels = getattr(self, "_adc_bit_labels", ())
         if not labels:
             return
@@ -6913,6 +6965,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             getattr(self, name, None) is not None
             for name in (
                 "_button_adc_reflow_job",
+                "_button_adc_split_job",
                 "_comm_log_layout_job",
                 "_comm_log_scroll_job",
                 "_button_adc_diagram_job",
@@ -6929,6 +6982,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         getattr(self, "_waveform_choice_trace_ids", []).clear()
         for name in (
             "_button_adc_reflow_job",
+            "_button_adc_split_job",
             "_comm_log_layout_job",
             "_comm_log_scroll_job",
             "_rom_preview_job",
@@ -7791,10 +7845,16 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         self._sync_full_event_mode(stage_index)
 
     def refresh_language(self) -> None:
+        for _ in self._refresh_language_steps():
+            pass
+
+    def _refresh_language_steps(self) -> Iterator[None]:
         super().refresh_language()
+        yield
         self._refresh_waveform_choice_labels()
         self._refresh_waveform_peak_to_peak()
         self._refresh_waveform_controls()
+        yield
         self.mode_title_label.configure(text=self.tr(self.mode_key))
         if self.preset_toolbar is not None:
             self.preset_toolbar.refresh_language()
@@ -7803,6 +7863,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                 self._on_adc_target_changed()
             self._refresh_pressure_status()
             self._refresh_button_adc_legend()
+            yield
             for widget, key in self._translated_widgets:
                 widget.configure(text=self.tr(key))
             board_keys = {
@@ -7815,6 +7876,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
             self._refresh_adc_read_buttons()
             self._refresh_sinc_slice_time_labels()
             self._schedule_button_rom_preview()
+            yield
             fields = getattr(self, "_button_adc_fields", ())
             if fields:
                 self._queue_button_adc_reflow(fields[0][0].master)
@@ -7827,6 +7889,7 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
         sram_editor = self._sram_editor
         if sram_editor is not None:
             sram_editor.refresh_language()
+        yield
         self.tools_notebook.tab(0, text=self.tr("awp1221_waveform_tab"))
         self.tools_notebook.tab(1, text=self.tr("awp1221_rom_tab"))
         for widget, key in self._translated_widgets:
@@ -7870,12 +7933,6 @@ class AWP1221ModePage(AWP1221BoardPresetMixin, AWP1221RealtimeMixin, BasePage):
                     window.refresh_theme(colors)
             except tk.TclError:
                 pass
-
-    def refresh_layout(self) -> None:
-        super().refresh_layout()
-        clamp = getattr(self, "_waveform_selector_width_clamp", None)
-        if clamp is not None:
-            clamp.refresh()
 
 
 class AWP1221Page(BasePage):
@@ -7989,9 +8046,13 @@ class AWP1221Page(BasePage):
         self._on_addr_changed()
         yield
         yield from self.mode_pages.prepare("button_mode")
+        yield
         self.show_mode("button_mode")
+        yield
         self._remember_settings_defaults()
-        self.refresh_language()
+        yield
+        self.refresh_language(include_modes=False)
+        yield
 
     def _remember_settings_defaults(self) -> None:
         if self._settings_defaults is not None:
@@ -9024,7 +9085,7 @@ class AWP1221Page(BasePage):
         if not same_en_session:
             self._notify_shared_d4_gpio_panel(None)
 
-    def refresh_language(self) -> None:
+    def refresh_language(self, *, include_modes: bool = True) -> None:
         super().refresh_language()
         self._refresh_en_status()
         for key, label in self._labels.items():
@@ -9033,8 +9094,9 @@ class AWP1221Page(BasePage):
             button.configure(text=self.tr(key))
         for key, button in self.mode_buttons.items():
             button.configure(text=self.tr(key))
-        for page in dict.values(self.mode_pages):
-            page.refresh_language()
+        if include_modes:
+            for page in dict.values(self.mode_pages):
+                page.refresh_language()
         gpio_controls = getattr(self, "gpio_controls", None)
         if gpio_controls is not None:
             gpio_controls.refresh_language()

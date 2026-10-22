@@ -86,7 +86,8 @@ class NavigationPaintTests(unittest.TestCase):
             self.assertTrue(page.mode_scroll.winfo_ismapped())
             self.assertGreater(page.mode_scroll.winfo_height(), 30)
             self.assertTrue(page.identity_bar.winfo_ismapped())
-            self.assertIs(page._floating_group.master, page.mode_scroll.canvas)
+            # Chrome belongs to the reserved band outside the scrolling canvas.
+            self.assertIs(page._floating_group.master, page.mode_scroll)
             self.assertTrue(page._floating_group.winfo_ismapped())
             page.mode_scroll.canvas.yview_moveto(1)
             pump(app.root, .1)

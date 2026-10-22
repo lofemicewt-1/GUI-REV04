@@ -48,7 +48,70 @@ class PagePreparationTests(unittest.TestCase):
             list(pages.prepare('target'))
 
 
+class LayoutCoalescingTests(unittest.TestCase):
+    def test_unchanged_adc_flags_do_not_restart_native_grid_layout(self):
+        from unittest.mock import Mock
+        from pages.awp1221_page import AWP1221ModePage
+        page = object.__new__(AWP1221ModePage)
+        page._button_adc_fields = [(Mock(), Mock())] * 6
+        page._button_adc_columns = 3
+        page._button_adc_decision_width = lambda section: 600
+        controls = [Mock() for _ in range(6)]
+        for control in controls:
+            control.winfo_reqwidth.return_value = 20
+        page._button_adc_zps_frame = Mock()
+        page._button_adc_zps_frame.winfo_children.return_value = controls
+        section = Mock()
+        page._reflow_button_adc_settings(section, columns=3)
+        for control in controls:
+            control.grid_configure.assert_called_once()
+            control.grid_configure.reset_mock()
+        page._reflow_button_adc_settings(section, columns=3)
+        for control in controls:
+            control.grid_configure.assert_not_called()
+
+
 class RealPagePreparationTests(unittest.TestCase):
+    def test_restoring_shared_auto_serial_does_not_refresh_inactive_mode_mid_transaction(self):
+        from tests.validate_responsive_layout import mocked_application
+        with mocked_application() as app:
+            app.set_animations(False)
+            host = app.navigation.pages['awp1221']
+            button = host.mode_pages['button_mode']
+            full = host.mode_pages['full_mode']
+            model = host._settings_model
+            model.shared['adc_settings']['auto_serial'] = not button.auto_serial_var.get()
+            with patch.object(button, '_refresh_waveform_controls', wraps=button._refresh_waveform_controls) as refresh:
+                full._apply_settings_model_to_view(model)
+            refresh.assert_not_called()
+            self.assertEqual(full.auto_serial_var.get(), model.shared['adc_settings']['auto_serial'])
+            self.assertEqual(host._settings_sync_depth, 0)
+            self.assertEqual(full._settings_sync_depth, 0)
+
+    def test_prepared_commit_yields_to_cancellation_and_can_retry(self):
+        from tkinter import ttk
+        from tests.validate_responsive_layout import mocked_application
+        with mocked_application() as app:
+            nav, root = app.navigation, app.root
+            root.update()
+            pages = LazyPages(lambda *_: None)
+            pages.register('target', lambda defer_build=False: ttk.Frame(nav.content), staged=True)
+            committed = []
+            nav._start_preparation(pages, 'target', lambda: committed.append(True))
+            self.assertEqual(committed, [], 'commit ran in the generator completion callback')
+            self.assertIsNotNone(nav._pending_navigation)
+            self.assertGreaterEqual(len(nav._last_preparation_steps_ms), 3)
+            nav.cancel_pending_navigation()
+            root.update()
+            self.assertEqual(committed, [])
+            self.assertEqual(app.state.current_page, 'home')
+            nav._start_preparation(pages, 'target', lambda: committed.append(True))
+            root.after(20, root.quit)
+            root.mainloop()
+            self.assertEqual(committed, [True])
+            self.assertIsNone(nav._pending_navigation)
+            pages['target'].destroy()
+
     def test_connected_router_receives_no_writes_during_complete_preparation(self):
         from tests.validate_responsive_layout import mocked_application
         from core.base_tool import SerialResponse

@@ -372,15 +372,26 @@ class TkMotionTests(unittest.TestCase):
                 self.assertEqual(_gdi32.GetPixel(wintypes.HDC(dc), 30, 30), 0x563412)
             finally:
                 _user32.ReleaseDC(wintypes.HWND(transition._client), wintypes.HDC(dc))
-            from app.transitions import _client_rect, _physical_pixels
+            from app.transitions import _client_rect, _physical_pixels, _frame_hwnd
             _user32.WindowFromPoint.argtypes = [wintypes.POINT]
             _user32.WindowFromPoint.restype = wintypes.HWND
             _user32.GetAncestor.restype = wintypes.HWND
             with _physical_pixels():
                 x, y, _w, _h = _client_rect(self.root)
                 hit = _user32.WindowFromPoint(wintypes.POINT(x+30, y+30))
-                self.assertEqual(_user32.GetAncestor(hit, 2), transition._frame,
-                                 "old-page cover must not send clicks to unseen new controls")
+                # Foreground eligibility is mocked by this fixture. A real
+                # external window may cover the desktop point; it cannot send
+                # that click into our unseen controls. When the point belongs
+                # to our owner, the cover must intercept it.
+                owner = _frame_hwnd(self.root)
+                if _user32.GetAncestor(hit, 3) == owner:
+                    self.assertEqual(_user32.GetAncestor(hit, 2), transition._frame,
+                                     "old-page cover must not send clicks to unseen new controls")
+                self.assertFalse(_user32.GetWindowLongW(wintypes.HWND(transition._frame), -20) & 0x20,
+                                 "the default cover must not be input-transparent")
+                bounds = wintypes.RECT()
+                self.assertTrue(_user32.GetWindowRect(wintypes.HWND(transition._frame), ctypes.byref(bounds)))
+                self.assertTrue(bounds.left <= x+30 < bounds.right and bounds.top <= y+30 < bounds.bottom)
             transition.reveal(anim.DUR_SNAP)
             pump(self.root, 0.25)
             self.assertFalse(transition.active)

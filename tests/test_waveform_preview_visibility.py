@@ -161,6 +161,47 @@ class WaveformPreviewVisibilityTests(unittest.TestCase):
             page._select_button_wave_tab("rom")
         self._check_page("awp1221", "button_mode", "1221", select=select)
 
+    def test_1221_button_preview_survives_tabs_and_mode_return(self):
+        app = self.open_app()
+        errors = []
+        app.root.report_callback_exception = lambda *args: errors.append(args)
+        app.navigation.show("awp1221")
+        host = app.navigation.pages["awp1221"]
+        host.show_mode("button_mode")
+        _flush(app.root, 8)
+        page = host.mode_pages["button_mode"]
+
+        def pump():
+            _flush(app.root, 5)
+
+        def assert_drawn():
+            pump()
+            canvas = page.rom_canvas
+            self.assertTrue(canvas.winfo_viewable())
+            self.assertGreater(canvas.winfo_width(), 50)
+            self.assertGreater(canvas.winfo_height(), 50)
+            curves = [canvas.coords(item) for item in canvas.find_all()
+                      if canvas.type(item) == "line" and len(canvas.coords(item)) > 4]
+            # Narrow SINC plots reserve space for segment captions. Check
+            # for a non-flat curve without requiring a ROM-sized amplitude.
+            self.assertTrue(any(max(c[::2]) - min(c[::2]) > 20
+                                and max(c[1::2]) - min(c[1::2]) > 1 for c in curves))
+
+        assert_drawn()
+        for tab in ("rom", "sinc", "sram", "sinc"):
+            with self.subTest(tab=tab):
+                page._select_button_wave_tab(tab)
+                pump()
+                if tab == "sram":
+                    self.assertFalse(page.rom_canvas.winfo_ismapped())
+                else:
+                    assert_drawn()
+        host.show_mode("full_mode")
+        pump()
+        host.show_mode("button_mode")
+        assert_drawn()
+        self.assertFalse(errors)
+
     def test_192x_button_ram_draws(self):
         def select(_page, wave):
             wave.select_source("ram")

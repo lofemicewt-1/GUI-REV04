@@ -62,12 +62,14 @@ class PresetToolbar(ttk.Frame):
         on_slot_selected: Callable[[int | str], Any] | None = None,
         hidden_capabilities: Collection[str] = (),
         auxiliary_actions: Collection[str] = (),
+        bordered: bool = True,
         **frame_options: Any,
     ) -> None:
         install_r2b_language()
         frame_options.setdefault("style", "App.TFrame")
         super().__init__(parent, **frame_options)
         self._translate = translate
+        self._bordered = bordered
         self.callbacks = dict(callbacks or {})
         self.capabilities = dict(capabilities or {})
         self.label_keys = {**DEFAULT_LABEL_KEYS, **dict(label_keys or {})}
@@ -173,6 +175,10 @@ class PresetToolbar(ttk.Frame):
         self._queue_layout(invalidate_measurements=True)
 
     @property
+    def layout_pending(self) -> bool:
+        return self._layout_job is not None or self._layout_running or self._language_dirty
+
+    @property
     def selected_slot(self) -> int | str | None:
         """Return the selected semantic slot value, not its display variable."""
         return self._slot_lookup.get(self.slot_var.get())
@@ -200,7 +206,6 @@ class PresetToolbar(ttk.Frame):
             self._finish_layout()
 
     def _reflow(self, available_width: int) -> str:
-        self.update_idletasks()
         self._measure_group_widths()
         width = max(0, int(available_width))
 
@@ -273,7 +278,9 @@ class PresetToolbar(ttk.Frame):
         board: bool = False,
     ) -> tuple[ttk.Frame, ttk.Frame, ttk.Label, ttk.Label]:
         group = ttk.Frame(
-            self, style="App.TFrame", padding=(6, 2), borderwidth=1, relief="solid"
+            self, style="App.TFrame", padding=(6, 2),
+            borderwidth=1 if self._bordered else 0,
+            relief="solid" if self._bordered else "flat",
         )
         group.columnconfigure(0, weight=1)
         title = ttk.Frame(group, style="App.TFrame")
@@ -478,7 +485,7 @@ class PresetToolbar(ttk.Frame):
             self._queue_layout()
 
     def _on_map(self, _event: tk.Event | None = None) -> None:
-        self._queue_layout(invalidate_measurements=True)
+        self._queue_layout()
 
     def _on_theme_changed(self, _event: tk.Event | None = None) -> None:
         self.refresh_theme()
@@ -489,8 +496,7 @@ class PresetToolbar(ttk.Frame):
         if invalidate_measurements:
             self._measurements_dirty = True
         if self._layout_running:
-            # update_idletasks() drains layout signals too. Do not let a new
-            # idle layout run until the current measurement/reflow has finished.
+            # Merge signals raised during reflow into the next geometry pass.
             self._layout_pending = True
             return
         if self._layout_job is not None:
@@ -514,6 +520,9 @@ class PresetToolbar(ttk.Frame):
                 self._refresh_texts()
                 self._language_dirty = False
                 self._measurements_dirty = True
+                # Let Tk propagate the new text sizes before measuring groups.
+                self._layout_pending = True
+                return
             try:
                 width = int(self.winfo_width())
                 if width <= 1:
@@ -554,7 +563,6 @@ class PresetToolbar(ttk.Frame):
         signature = self._current_measurement_signature()
         if not self._measurements_dirty and signature == self._measurement_signature:
             return
-        self.update_idletasks()
         self._measured_widths = {
             # Measure the unwrapped controls, independent of the current rows.
             "software": 14 + sum(
@@ -587,7 +595,7 @@ class PresetToolbar(ttk.Frame):
                 text = str(widget.cget("text")) if "text" in widget.keys() else ""
                 font = style.lookup(widget_style or widget.winfo_class(), "font")
                 padding = style.lookup(widget_style or widget.winfo_class(), "padding")
-                widget_signature.append((widget_style, text, str(font), str(padding)))
+                widget_signature.append((widget_style, text, str(font), str(padding), widget.winfo_reqwidth()))
             except tk.TclError:
                 widget_signature.append(("destroyed",))
         root = self.winfo_toplevel()

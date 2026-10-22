@@ -18,6 +18,12 @@ from tests.validate_responsive_layout import mocked_application, _widget_descend
 
 
 def click_advanced(trap, root):
+    # Native hit testing must see this test window rather than other desktop
+    # applications that may occupy the same screen coordinates.
+    root.attributes("-topmost", True)
+    root.lift()
+    root.focus_force()
+    pump(root, 0.02)
     button = trap.button
     x, y = button.winfo_width() // 2, button.winfo_height() // 2
     button.event_generate("<ButtonPress-1>", x=x, y=y)
@@ -67,8 +73,15 @@ class AdvancedToolsChipClickTests(unittest.TestCase):
                     self.assertTrue(trap.expanded)
                     self.assertTrue(trap._panel_outer.winfo_ismapped())
                     self.assertGreater(trap._panel_outer.winfo_height(), 20)
-                    self.assertTrue(exposed_controls(app.root, trap.actions))
-                    self.assertTrue(exposed_controls(app.root, trap.registers))
+                    self.assertTrue(exposed_controls(app.root, trap.actions),
+                                    f"actions obscured; transition={app.transitions.active}")
+                    self.assertTrue(exposed_controls(app.root, trap.registers),
+                                    f"registers obscured; transition={app.transitions.active}")
+                    strip = host._active_step_page.step_progress.canvas
+                    self.assertGreaterEqual(trap._panel_outer.winfo_rooty(),
+                                            strip.winfo_rooty() + strip.winfo_height())
+                    self.assertGreaterEqual(trap._panel_outer.winfo_rooty(),
+                                            trap.button.winfo_rooty() + trap.button.winfo_height())
 
                     click_advanced(trap, app.root)
                     self.assertFalse(trap.expanded)
@@ -84,9 +97,25 @@ class AdvancedToolsChipClickTests(unittest.TestCase):
                     self.assertFalse(trap._panel_outer.winfo_ismapped())
                     host.show_mode(mode)
                     pump(app.root, 0.08)
+                    app.root.lift()
+                    app.root.focus_force()
+                    pump(app.root, 0.02)
                     self.assertTrue(trap.expanded)
-                    self.assertTrue(exposed_controls(app.root, trap.registers))
+                    self.assertTrue(exposed_controls(app.root, trap.registers),
+                                    f"restored registers obscured; transition={app.transitions.active}")
+                    app.root.geometry("640x480+0+0")
+                    pump(app.root, 0.08)
+                    trap.set_expanded(True, persist=False)
+                    pump(app.root, 0.08)
+                    self.assertTrue(trap.expanded)
+                    self.assertGreaterEqual(strip.winfo_rooty(), trap._owning_area.winfo_rooty())
+                    self.assertGreaterEqual(trap._panel_outer.winfo_rooty(),
+                                            strip.winfo_rooty() + strip.winfo_height())
+                    self.assertGreaterEqual(trap._panel_outer.winfo_rooty(),
+                                            trap.button.winfo_rooty() + trap.button.winfo_height())
                     trap.set_expanded(False)
+                    app.root.geometry("1366x768+0+0")
+                    pump(app.root, 0.08)
 
 
 class AdvancedToolsViewportTests(unittest.TestCase):

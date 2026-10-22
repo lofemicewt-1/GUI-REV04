@@ -59,6 +59,22 @@ class ConnectorFallbackTests(unittest.TestCase):
 
 
 class AdcLegendRenderingTests(unittest.TestCase):
+    def test_rule_value_updates_reuse_cells_and_cached_measurements(self):
+        root = self.make_root()
+        legend = AdcLegend(root, self.translate, get_colors('light'))
+        legend.pack(fill='x')
+        stages = [dict(id='Stage0', condition='press', threshold=100, waveform='slice0', target='Stage1')]
+        legend.set_rules(stages, {'Stage0': []})
+        root.update()
+        cells = tuple(legend._table.winfo_children())
+        stages[0]['waveform'] = 'slice2'
+        legend.set_rules(stages, {'Stage0': []})
+        root.update()
+        self.assertEqual(tuple(legend._table.winfo_children()), cells)
+        self.assertEqual(legend._rule_rows[1][1].cget('text'), 'slice2')
+        with patch.object(tkfont.Font, 'measure', side_effect=AssertionError('remeasured stable text')):
+            legend._fit_rule_columns()
+
     def make_root(self):
         try:
             prepare_tk_test(self)
@@ -246,11 +262,13 @@ class RuleBindingTests(unittest.TestCase):
         stages, starts = page.adc_legend.set_rules.call_args.args
         preview = page.adc_legend.set_rules.call_args.kwargs["preview_stage"]
         self.assertEqual(stages[0]["threshold"], -128)
-        self.assertIn("adc_legend_precision_high", stages[0]["unit"])
+        self.assertEqual(stages[0]["unit"], "")
+        self.assertEqual(stages[0]["adc_precision"], "adc_legend_precision_high")
         self.assertEqual(stages[0]["waveform"], "adc_legend_wave_normal")
         self.assertEqual(stages[0]["target"], "Stage1")
         self.assertEqual(stages[1]["condition"], "unknown")
-        self.assertIn("adc_legend_precision_low", stages[1]["unit"])
+        self.assertEqual(stages[1]["unit"], "")
+        self.assertEqual(stages[1]["adc_precision"], "adc_legend_precision_low")
         self.assertEqual(starts, {"Stage0": []})
         self.assertEqual(preview, "Stage1")
 

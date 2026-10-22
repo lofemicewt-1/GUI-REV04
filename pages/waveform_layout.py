@@ -39,7 +39,9 @@ class WaveformWidthClamp:
             # helper only clamps width. Keep the content's height request alive.
             if self.requested_height is not None:
                 height = max(1, int(self.requested_height()))
-                if int(float(self.panel.cget("height"))) != height:
+                # ttk dimensions may be Tcl pixel objects, which float()
+                # cannot parse. Let Tk convert its own dimension values.
+                if self.panel.winfo_pixels(self.panel.cget("height")) != height:
                     self.panel.configure(height=height)
             available = int(self.container.winfo_width())
             if available <= 1:
@@ -48,7 +50,7 @@ class WaveformWidthClamp:
             scale = float(getattr(state, "ui_scale", 1.0) or 1.0)
             reserved = max(0, int(self.reserved_width()))
             width = clamped_waveform_width(scale, available, reserved)
-            if int(float(self.panel.cget("width"))) != width:
+            if self.panel.winfo_pixels(self.panel.cget("width")) != width:
                 self.panel.configure(width=width)
         except (tk.TclError, TypeError, ValueError):
             return

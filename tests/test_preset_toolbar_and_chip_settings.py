@@ -242,7 +242,20 @@ class PresetToolbarTests(unittest.TestCase):
         self.root.update_idletasks()
         self.assertEqual(toolbar._layout_run_count, initial_runs)
 
-    def test_nested_idletasks_coalesce_layout_without_reentry(self) -> None:
+    def test_layout_never_drains_idle_and_remap_reuses_measurements(self) -> None:
+        toolbar = self._make_toolbar()
+        self._settle()
+        signature = toolbar._measurement_signature
+        with patch.object(toolbar, "update_idletasks", side_effect=AssertionError("nested idle")):
+            toolbar.reflow(800)
+            toolbar._on_map()
+            self._settle()
+            self.assertEqual(toolbar._measurement_signature, signature)
+            toolbar.refresh_language()
+            self._settle()
+        self.assertIsNone(toolbar._layout_job)
+
+    def test_layout_requests_during_reflow_coalesce_without_reentry(self) -> None:
         toolbar = self._make_toolbar()
         self._settle()
         errors = []
@@ -254,9 +267,9 @@ class PresetToolbarTests(unittest.TestCase):
                 depth = 0
                 max_depth = 0
                 injected = False
-                update_idletasks = toolbar.update_idletasks
+                measure = toolbar._measure_group_widths
 
-                def nested_idletasks():
+                def nested_measure():
                     nonlocal depth, max_depth, injected
                     depth += 1
                     max_depth = max(max_depth, depth)
@@ -268,11 +281,11 @@ class PresetToolbarTests(unittest.TestCase):
                             # Exercise direct reflow as well as idle callbacks
                             # drained by the real Tk update_idletasks below.
                             toolbar.reflow(toolbar.winfo_width())
-                        update_idletasks()
+                        measure()
                     finally:
                         depth -= 1
 
-                with patch.object(toolbar, "update_idletasks", nested_idletasks):
+                with patch.object(toolbar, "_measure_group_widths", nested_measure):
                     toolbar._queue_layout(invalidate_measurements=True)
                     if entry == "direct":
                         # The already queued layout will be drained by reflow.

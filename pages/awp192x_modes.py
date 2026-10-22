@@ -15,6 +15,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
 
 from config.lang_r2_c import install as _install_r2c_language
+from styles.theme import waveform_choice_styles
 
 from core.awp192x_button_runtime import (
     AWP192X_BUTTON_MAX_WAVEFORMS,
@@ -644,6 +645,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         toolbar = PresetToolbar(
             parent,
             translate=lambda key: self.tr(key),
+            bordered=False,
             callbacks=callbacks,
             capabilities={action: True for action in (*self.PRESET_ACTION_KEYS, "slot_selection")},
             label_keys=label_keys,
@@ -1710,14 +1712,8 @@ class ButtonModePage(ButtonModeView, BasePage):
 
     def _refresh_waveform_choice_labels(self) -> None:
         unsupported: list[str] = []
-        style = ttk.Style(self)
-        normal_style = "R2cWaveform.TCombobox"
-        unsupported_style = "R2cUnsupportedWaveform.TCombobox"
         colors = getattr(self.ctx, "colors", {})
-        normal_color = colors.get("text", "#111827")
-        muted_color = colors.get("muted", "#64748B")
-        style.configure(normal_style, foreground=normal_color, fieldforeground=normal_color)
-        style.configure(unsupported_style, foreground=muted_color, fieldforeground=muted_color)
+        normal_style, unsupported_style = waveform_choice_styles(self, colors)
         for binding in tuple(getattr(self, "_waveform_choice_bindings", ())):
             combo = binding["combo"]
             try:
@@ -1949,10 +1945,12 @@ class ButtonModePage(ButtonModeView, BasePage):
             return
 
     def _has_pending_layout_work(self) -> bool:
-        if getattr(self, "_button_adc_diagram_job", None) is not None:
+        if any(getattr(self, name, None) is not None for name in
+               ("_button_adc_diagram_job", "_button_adc_split_job")):
             return True
         waveform_page = getattr(self, "waveform_page", None)
-        return getattr(waveform_page, "_preview_job", None) is not None
+        return any(getattr(waveform_page, name, None) is not None for name in
+                   ("_preview_job", "_button_layout_job"))
 
     def _cleanup_waveform_choice_work(self) -> None:
         for variable, trace_id in self._waveform_choice_trace_ids:
@@ -1961,12 +1959,14 @@ class ButtonModePage(ButtonModeView, BasePage):
             except (AttributeError, tk.TclError):
                 pass
         self._waveform_choice_trace_ids.clear()
-        diagram_job, self._button_adc_diagram_job = self._button_adc_diagram_job, None
-        if diagram_job is not None:
-            try:
-                self.after_cancel(diagram_job)
-            except tk.TclError:
-                pass
+        for name in ("_button_adc_diagram_job", "_button_adc_split_job"):
+            job = getattr(self, name, None)
+            setattr(self, name, None)
+            if job is not None:
+                try:
+                    self.after_cancel(job)
+                except tk.TclError:
+                    pass
         waveform_page = getattr(self, "waveform_page", None)
         cancel_preview = getattr(waveform_page, "_cancel_pending_preview", None)
         if callable(cancel_preview):
@@ -5223,6 +5223,7 @@ class FullModePage(ButtonModePage):
 
         row = self._add_section_title(left, row, "full_mode_sense_events")
         row = self._add_full_sense_event_table(left, row)
+        yield
 
         row = 0
         row = self._add_section_title(middle, row, "full_mode_basic")
@@ -5300,10 +5301,13 @@ class FullModePage(ButtonModePage):
         right_row = self._add_section_title(right_controls, right_row, "full_mode_system")
         yield
         right_row = self._add_full_system_controls(right_controls, right_row)
+        yield
         right_row = self._add_section_title(right_controls, right_row, "full_mode_interrupt")
         right_row = self._add_full_interrupt_controls(right_controls, right_row)
+        yield
         right_row = self._add_section_title(right_controls, right_row, "full_mode_global")
         right_row = self._add_full_global_controls(right_controls, right_row)
+        yield
         right_row = self._add_section_title(right_controls, right_row, "full_mode_memory")
         yield
         right_row = self._add_full_memory_controls(right_controls, right_row)
@@ -5354,10 +5358,12 @@ class FullModePage(ButtonModePage):
         yield
         for trigger_var in self.adc_trigger_vars.values():
             trigger_var.trace_add("write", lambda *_: self._on_adc_inpt_source_changed())
-
+        yield
         self.refresh_language()
+        yield
         self._refresh_full_adc_threshold_register_value_labels()
         self._on_endless_play_changed()
+        yield
         self._initialize_awp192x_settings_model()
         self._attach_shared_settings_traces()
 

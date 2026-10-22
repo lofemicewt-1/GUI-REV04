@@ -109,7 +109,7 @@ class NavigationRequestTests(unittest.TestCase):
             nav.buttons["awp1922"].invoke()
             nav._on_mode_clicked("full_mode")
             deadline = time.perf_counter()+4
-            while nav._preparation is not None and time.perf_counter() < deadline:
+            while (nav._preparation is not None or nav._pending_navigation is not None) and time.perf_counter() < deadline:
                 root.update()
                 time.sleep(.001)
             self.assertEqual(app.state.current_page, "awp1221")

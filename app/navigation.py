@@ -120,6 +120,7 @@ class Navigation:
         self._sync_after: str | None = None
         self._last_canvas_state: tuple[Any, ...] = (0, 0, 0, 0)
         self._initial_map_layout_synced = False
+        self._map_sync_job: str | None = None
         # The first idle geometry pass can run before the Tk toplevel is
         # mapped.  In that state the root grid gives this container 1x1 and
         # the sidebar canvas remains unmapped until a later resize.  A single
@@ -265,17 +266,34 @@ class Navigation:
         if self._initial_map_layout_synced:
             return
         self._initial_map_layout_synced = True
+        self._queue_map_sync()
+
+    def _queue_map_sync(self) -> None:
+        if self._map_sync_job is None:
+            self._repair_mapped_sidebar()
+
+    def _repair_mapped_sidebar(self) -> None:
+        self._map_sync_job = None
         try:
-            self.root.update_idletasks()
             # The inner canvas can receive its initial Configure while the
-            # shell is still being mapped.  Reassert its existing grid slot
-            # once the root is mapped so Tk performs the child Map pass too.
+            # shell is still being mapped. Reassert the slot, then allow Tk's
+            # normal Map/Configure pass to finish before measuring geometry.
+            if not self.root.winfo_ismapped():
+                return
             self.sidebar_canvas.grid()
-            self.root.update_idletasks()
+            self._map_sync_job = self.root.after(1, self._finish_map_sync)
         except tk.TclError:
             return
+
+    def _finish_map_sync(self) -> None:
+        self._map_sync_job = None
         self._sync_content_window()
         self._sync_sidebar_scroll_region()
+
+    def _cancel_map_sync(self) -> None:
+        if self._map_sync_job is not None:
+            self.root.after_cancel(self._map_sync_job)
+            self._map_sync_job = None
 
     def _on_root_unmap(self, event: tk.Event | None = None) -> None:
         if event is None or getattr(event, "widget", None) is self.root:
@@ -283,18 +301,12 @@ class Navigation:
             # next Map is a new layout boundary and must run the same one-shot
             # geometry repair as the initial startup.
             self._initial_map_layout_synced = False
+            self._cancel_map_sync()
 
     def _on_sidebar_shell_map(self, event: tk.Event | None = None) -> None:
         if event is not None and getattr(event, "widget", None) is not self.sidebar_shell:
             return
-        try:
-            # A shell can be remapped before Tk replays the Canvas child Map
-            # event.  Reasserting the existing slot at that boundary keeps
-            # the sidebar paintable on a withdraw/deiconify cycle as well.
-            self.sidebar_canvas.grid()
-            self.root.update_idletasks()
-        except tk.TclError:
-            pass
+        self._queue_map_sync()
 
     def _scaled(self, value: int | float) -> int:
         return max(1, int(round(value * self._scale())))
@@ -383,8 +395,10 @@ class Navigation:
         if transition is not None:
             transition.prime()
         self._preparation = pages.prepare(name)
+        self._preparation_pages = pages
         self._prepare_commit = commit
         self._last_preparation_steps_ms = []
+        self._last_preparation_phases_ms = []
         self._refresh_version_label()
         self._run_preparation()
 
@@ -399,23 +413,41 @@ class Navigation:
             # All Tk work remains on this thread; input runs between batches.
             while True:
                 step_start = time.perf_counter()
-                next(job)
-                self._last_preparation_steps_ms.append((time.perf_counter()-step_start)*1000)
+                try:
+                    next(job)
+                finally:
+                    # Include the final next() that raises StopIteration.
+                    self._last_preparation_steps_ms.append((time.perf_counter()-step_start)*1000)
                 if time.perf_counter()-started >= .006:
                     break
         except StopIteration:
             self._preparation = None
-            commit, self._prepare_commit = self._prepare_commit, None
-            try:
-                if commit is not None:
-                    commit()
-            finally:
-                self.cancel_pending_navigation()
+            self._last_preparation_phases_ms.extend(self._preparation_pages.preparation_timings_ms)
+            # Input/cancellation gets a turn between construction and commit.
+            self._pending_navigation = self.root.after(1, self._commit_prepared_navigation)
             return
         except BaseException:
             self.cancel_pending_navigation()
             raise
         self._pending_navigation = self.root.after(1, self._run_preparation)
+
+    def _commit_prepared_navigation(self) -> None:
+        self._pending_navigation = None
+        commit, self._prepare_commit = self._prepare_commit, None
+        started = time.perf_counter()
+        try:
+            if commit is not None:
+                commit()
+        finally:
+            self._last_preparation_phases_ms.append(("commit", (time.perf_counter()-started)*1000))
+            self.cancel_pending_navigation()
+
+    def _activate_page(self, page: Any) -> None:
+        started = time.perf_counter()
+        try:
+            page.on_show()
+        finally:
+            self._last_activation_ms = (time.perf_counter()-started)*1000
 
     def _cancel_navigation_jobs(self) -> None:
         if self._pending_navigation is not None:
@@ -449,6 +481,7 @@ class Navigation:
 
     def close(self) -> None:
         self.cancel_pending_navigation()
+        self._cancel_map_sync()
         if self._status_expire_after is not None:
             try:
                 self.root.after_cancel(self._status_expire_after)
@@ -481,7 +514,7 @@ class Navigation:
                     self._refresh_version_label()
                     page = dict.get(self.pages, name)
                     if page is not None and hasattr(page, 'on_show'):
-                        page.on_show()
+                        self._activate_page(page)
                 def restore():
                     self._transition_pending = False
                     self._refresh_version_label()
@@ -528,12 +561,14 @@ class Navigation:
         self._refresh_button_styles()
 
         if activate and hasattr(page, "on_show"):
-            page.on_show()
+            self._activate_page(page)
         self._sync_mode_buttons(page)
         self._sync_content_window()
         self.motion.refresh(animate=True)
 
     def _page_layout_ready(self) -> bool:
+        if self._map_sync_job is not None:
+            return False
         page = dict.get(self.pages, self.ctx.state.current_page)
         if page is None or not page.winfo_ismapped() or page.winfo_height() <= 1:
             return False
@@ -543,9 +578,18 @@ class Navigation:
         current_mode = getattr(page, "current_mode", None)
         active_mode = dict.get(mode_pages, current_mode) if isinstance(mode_pages, dict) and current_mode else None
         if active_mode is not None:
+            if not active_mode.winfo_ismapped() or active_mode.winfo_height() <= 1:
+                return False
+            toolbar = getattr(active_mode, "preset_toolbar", None)
+            if toolbar is not None and toolbar.winfo_ismapped() and toolbar.layout_pending:
+                return False
             has_pending_layout = getattr(active_mode, "_has_pending_layout_work", None)
             if callable(has_pending_layout) and has_pending_layout():
                 return False
+        if any(getattr(owner, "_header_layout_job", None) is not None for owner in (page, active_mode)):
+            return False
+        if getattr(getattr(page, "trapezoid", None), "_layout_job", None) is not None:
+            return False
         if getattr(page, "pin_window_footer", False) and (
             self.content.winfo_width() != self.content_canvas.winfo_width()
             or self.content.winfo_height() != self.content_canvas.winfo_height()

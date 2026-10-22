@@ -181,7 +181,9 @@ class AWP1018Page(BasePage):
         if not self._preparing:
             self._on_addr_changed()
         yield from self.mode_pages.prepare(self.current_mode)
+        yield
         self.show_mode(self.current_mode, update_chip=not self._preparing)
+        yield
         self._prepared_mode_pending = self._preparing
 
     def _install_mode_page(self, _name: str, page: ttk.Frame) -> None:
@@ -1740,7 +1742,8 @@ class AWP1018NormalModePage(BasePage):
         self._draft_restoring = True
         try:
             if isinstance(saved_settings, dict):
-                self.import_settings(saved_settings, apply_to_chip=False)
+                if saved_settings != self.export_settings():
+                    self.import_settings(saved_settings, apply_to_chip=False)
                 active_stage = str(model.shared.get("active_stage", "Stage0"))
                 if active_stage in self._stage_frames:
                     self._show_stage(active_stage)
@@ -1753,7 +1756,8 @@ class AWP1018NormalModePage(BasePage):
                         "active_stage": self._initial_button_stage,
                     }
                 )
-                self.import_settings(initial_settings, apply_to_chip=False)
+                if initial_settings != self.export_settings():
+                    self.import_settings(initial_settings, apply_to_chip=False)
             selected_slot = (
                 self._board_slot_provider(board_identity, model.slot_selection)
                 if callable(self._board_slot_provider)
@@ -2005,8 +2009,9 @@ class AWP1018NormalModePage(BasePage):
         yield
         self.rom_canvas.bind("<Configure>", self._on_rom_canvas_configure)
 
-        self.refresh_language()
+        yield from self._refresh_language_steps()
         self._show_stage("Stage0")
+        yield
         self._queue_rom_waveform_draw()
 
     def _build_stage_selector(self, parent: tk.Misc, row: int) -> None:
@@ -2016,7 +2021,7 @@ class AWP1018NormalModePage(BasePage):
     def _build_stage_selector_steps(self, parent: tk.Misc, row: int) -> Iterator[None]:
         yield
         frame = ttk.Frame(parent, style="Panel.TFrame")
-        frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, 6))
+        frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(0, 10))
         for index, stage in enumerate(("Stage0", "Stage1", "Stage2", "Stage3")):
             frame.columnconfigure(index, weight=1)
             btn = ttk.Button(
@@ -2090,7 +2095,7 @@ class AWP1018NormalModePage(BasePage):
         self._channel_card_grid = card_grid
         stage_values = [f"Stage{index}" for index in range(4)]
         for index, variable in enumerate(self.channel_vars):
-            card = ttk.LabelFrame(card_grid, padding=(8, 5))
+            card = ttk.Frame(card_grid, style="OpenModule.TFrame", padding=(10, 8))
             card.columnconfigure(0, weight=1)
             check = ttk.Checkbutton(
                 card,
@@ -2098,11 +2103,11 @@ class AWP1018NormalModePage(BasePage):
                 variable=variable,
                 command=self._on_channel_select_changed,
             )
-            check.grid(row=0, column=0, sticky="w", pady=(0, 3))
+            check.grid(row=0, column=0, sticky="w", pady=(0, 6))
             self._channel_checks[index] = check
 
-            mapping_label = ttk.Label(card, style="Panel.TLabel")
-            mapping_label.grid(row=1, column=0, sticky="w", pady=(2, 1))
+            mapping_label = ttk.Label(card, style="Muted.TLabel")
+            mapping_label.grid(row=0, column=1, sticky="e", padx=(8, 0), pady=(0, 6))
             self._channel_mapping_labels[index] = mapping_label
             start_combo = ttk.Combobox(
                 card,
@@ -2111,7 +2116,7 @@ class AWP1018NormalModePage(BasePage):
                 state="readonly",
                 width=9,
             )
-            start_combo.grid(row=2, column=0, sticky="ew")
+            start_combo.grid(row=1, column=0, columnspan=2, sticky="ew")
             start_combo.bind(
                 "<<ComboboxSelected>>",
                 lambda _event, channel=index: self._on_channel_start_stage_changed(channel),
@@ -2243,9 +2248,9 @@ class AWP1018NormalModePage(BasePage):
         legend.set_rules(stage_data, starts, preview_stage=str(self.active_stage.get()))
 
     def _build_button_adc_editor_steps(self, parent: tk.Misc) -> Iterator[None]:
-        for column in (0, 2, 4):
+        for column in (0, 2):
             parent.columnconfigure(column, weight=0, minsize=92)
-        for column in (1, 3, 5):
+        for column in (1, 3):
             parent.columnconfigure(column, weight=1, minsize=110)
         self.make_module_title_row(
             parent,
@@ -2254,13 +2259,13 @@ class AWP1018NormalModePage(BasePage):
             step_total=4,
             help_key="awp1018_help_button_detection",
             row=0,
-            columnspan=6,
+            columnspan=4,
             pady=(0, 6),
         )
         yield
         yield from self._build_stage_selector_steps(parent, 1)
         self.stage_container = ttk.Frame(parent, style="Panel.TFrame")
-        self.stage_container.grid(row=2, column=0, columnspan=6, sticky="ew", pady=(2, 7))
+        self.stage_container.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(2, 7))
         self.stage_container.columnconfigure(0, weight=1)
         for stage in ("Stage0", "Stage1", "Stage2", "Stage3"):
             yield from self._build_stage_frame_steps(stage)
@@ -2273,7 +2278,7 @@ class AWP1018NormalModePage(BasePage):
             variable=self.zps_enable_var,
             command=self._on_zps_enable_changed,
         )
-        zps_check.grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 4))
+        zps_check.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 4))
         self._checks["awp1018_zps_enable"] = zps_check
         yield
         interrupt_check = ttk.Checkbutton(
@@ -2281,7 +2286,7 @@ class AWP1018NormalModePage(BasePage):
             variable=self.interrupt_enable_var,
             command=self._on_interrupt_enable_changed,
         )
-        interrupt_check.grid(row=6, column=3, columnspan=3, sticky="w", pady=(8, 4))
+        interrupt_check.grid(row=6, column=2, columnspan=2, sticky="w", pady=(8, 4), padx=(12, 0))
         self._checks["awp1018_interrupt_enable"] = interrupt_check
 
     def _queue_adc_split_layout(self, _event: tk.Event | None = None) -> None:
@@ -2303,27 +2308,15 @@ class AWP1018NormalModePage(BasePage):
             width = int(split.winfo_width())
             if width <= 1:
                 return
-            # Fixed thresholds avoid measured-reqwidth feedback with AdcLegend redraws.
-            previous = getattr(self, "_adc_split_signature", None)
-            if previous is True:
-                side_by_side = width >= 980
-            elif previous is False:
-                side_by_side = width >= 1180
-            else:
-                side_by_side = width >= 1100
-            if side_by_side == previous:
+            # Four Stage cards and the rule table need the full page width.
+            # Keep the editable settings first, followed by their reference.
+            if getattr(self, "_adc_split_signature", None) == "stacked":
                 return
-            self._adc_split_signature = side_by_side
-            if side_by_side:
-                legend.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-                editor.grid(row=0, column=1, sticky="nsew")
-                split.columnconfigure(0, weight=0)
-                split.columnconfigure(1, weight=1)
-            else:
-                legend.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-                editor.grid(row=1, column=0, columnspan=2, sticky="ew")
-                split.columnconfigure(0, weight=1)
-                split.columnconfigure(1, weight=0)
+            self._adc_split_signature = "stacked"
+            editor.grid(row=0, column=0, sticky="ew", pady=(0, self._module_spacing()))
+            legend.grid(row=1, column=0, sticky="ew")
+            split.columnconfigure(0, weight=1)
+            split.columnconfigure(1, weight=0)
         except tk.TclError:
             return
 
@@ -2480,7 +2473,8 @@ class AWP1018NormalModePage(BasePage):
         frame.columnconfigure(2, weight=0, minsize=92)
         frame.columnconfigure(3, weight=1, minsize=120)
         yield
-        frame.columnconfigure(5, weight=2, minsize=220)
+        if self.page_name == "full_mode":
+            frame.columnconfigure(5, weight=2, minsize=220)
         frame.grid_remove()
 
         press_debounce_enabled_var = tk.BooleanVar(value=False)
@@ -2574,7 +2568,8 @@ class AWP1018NormalModePage(BasePage):
         yield
 
         jump_condition_frame = ttk.Frame(frame, style="Panel.TFrame")
-        jump_condition_frame.grid(row=2, column=3, columnspan=3, sticky="ew", pady=5)
+        jump_condition_frame.grid(row=2, column=3, columnspan=3 if self.page_name == "full_mode" else 1,
+                                  sticky="ew", pady=5)
         jump_condition_frame.columnconfigure(0, weight=1, minsize=100)
         jump_condition_frame.columnconfigure(1, weight=1, minsize=110)
         press_radio = ttk.Radiobutton(
@@ -2603,7 +2598,8 @@ class AWP1018NormalModePage(BasePage):
             variable=press_debounce_enabled_var,
             command=lambda s=stage: self._on_stage_debounce_enable_changed(s, "press"),
         )
-        press_debounce_check.grid(row=3, column=0, columnspan=3, sticky="w", pady=5, padx=(0, 8))
+        press_debounce_check.grid(row=3, column=0, columnspan=3 if self.page_name == "full_mode" else 2,
+                                  sticky="w", pady=5, padx=(0, 8))
         yield
         self._checks[f"{stage}_press_debounce_enable"] = press_debounce_check
 
@@ -2612,7 +2608,9 @@ class AWP1018NormalModePage(BasePage):
             variable=release_debounce_enabled_var,
             command=lambda s=stage: self._on_stage_debounce_enable_changed(s, "release"),
         )
-        release_debounce_check.grid(row=3, column=3, columnspan=3, sticky="w", pady=5, padx=(12, 0))
+        release_debounce_check.grid(row=3, column=3 if self.page_name == "full_mode" else 2,
+                                    columnspan=3 if self.page_name == "full_mode" else 2,
+                                    sticky="w", pady=5, padx=(12, 0))
         self._checks[f"{stage}_release_debounce_enable"] = release_debounce_check
         self._stage_debounce_checks[stage] = {"press": press_debounce_check, "release": release_debounce_check}
 
@@ -3373,10 +3371,11 @@ class AWP1018NormalModePage(BasePage):
             parent.columnconfigure(1, weight=0)
             parent.columnconfigure(2, weight=1)
             parent.rowconfigure(0, weight=1)
-            ttk.Frame(parent, style="Panel.TFrame").grid(row=0, column=2, sticky="nsew")
 
         controls = ttk.Frame(parent, style="Panel.TFrame")
         controls.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
+        if self.page_name != "full_mode":
+            self._button_waveform_controls = controls
         controls.columnconfigure(1, weight=1)
         yield
         controls.columnconfigure(2, weight=0)
@@ -3613,6 +3612,8 @@ class AWP1018NormalModePage(BasePage):
         yield
         infinite_check.grid(row=row, column=2, columnspan=2, sticky="w", pady=5, padx=(4, 0))
         self._checks["awp1018_rom_infinite_loop"] = infinite_check
+        if self.page_name != "full_mode":
+            self._selector_widgets["awp1018_rom_infinite_loop"] = [infinite_check]
         row += 1
         self._add_selector_combo(
             controls,
@@ -3645,19 +3646,6 @@ class AWP1018NormalModePage(BasePage):
         self.rom_hint_label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(10, 0))
 
         yield from self._build_rom_preview_steps(parent)
-        if self.page_name != "full_mode":
-            self._rom_selector_width_clamp = WaveformWidthClamp(
-                self,
-                parent,
-                self._rom_selector_preview,
-                requested_height=lambda: self.rom_canvas.winfo_reqheight()
-                + self.rom_metric_label.winfo_reqheight()
-                + self.rom_frequency_label.winfo_reqheight() + 12,
-                reserved_width=lambda: max(
-                    280 if self.diff_mode else 340,
-                    int(controls.winfo_reqwidth()),
-                ) + 12,
-            )
         self._refresh_rom_depth_options()
 
     def _build_rom_preview(self, parent: tk.Misc) -> None:
@@ -3683,9 +3671,83 @@ class AWP1018NormalModePage(BasePage):
             bg=self.colors["canvas_bg"],
             highlightthickness=1,
             highlightbackground=self.colors["border"],
-            height=600 if self.diff_mode else 520,
+            height=(600 if self.diff_mode else 520) if self.page_name == "full_mode" else 320,
         )
         self.rom_canvas.grid(row=2, column=0, sticky="nsew")
+        if self.page_name != "full_mode":
+            self._button_waveform_controls.grid_configure(sticky="ew", padx=0, pady=(0, 14))
+            parent.columnconfigure(0, weight=1, minsize=0)
+            parent.columnconfigure(1, weight=0, minsize=0)
+            parent.columnconfigure(2, weight=0, minsize=0)
+            parent.rowconfigure(0, weight=0)
+            preview.grid_configure(row=1, column=0, sticky="w")
+            self._rom_selector_width_clamp = WaveformWidthClamp(
+                self,
+                parent,
+                preview,
+                requested_height=lambda: self.rom_canvas.winfo_reqheight()
+                + self.rom_metric_label.winfo_reqheight()
+                + self.rom_frequency_label.winfo_reqheight() + 12,
+                reserved_width=lambda: self._button_waveform_controls.winfo_reqwidth() + 18
+                if getattr(self, "_button_waveform_side_by_side", False) else 0,
+            )
+            self._button_waveform_controls.bind(
+                "<Configure>", lambda _event: self._rom_selector_width_clamp.refresh(), add="+")
+            parent.bind("<Configure>", self._layout_button_waveform, add="+")
+            self._layout_button_waveform()
+
+    def _layout_button_waveform(self, _event: tk.Event | None = None) -> None:
+        """Arrange the currently visible fields in two pairs, or one on narrow pages."""
+        controls = getattr(self, "_button_waveform_controls", None)
+        if controls is None or not hasattr(self, "_rom_selector_preview"):
+            return
+        width = max(1, self._rom_selector_body.winfo_width())
+        keys = [key for key, widgets in self._selector_widgets.items()
+                if key != "awp1018_diff_auto_serial"
+                and widgets and all(widget.winfo_manager() for widget in widgets)]
+        pairs = 2 if width >= 760 else 1
+        side_by_side = width >= 1180
+        signature = (pairs, side_by_side, tuple(keys))
+        if getattr(self, "_button_waveform_layout_signature", None) == signature:
+            return
+        self._button_waveform_layout_signature = signature
+        self._button_waveform_side_by_side = side_by_side
+        self._rom_selector_body.columnconfigure(0, weight=0 if side_by_side else 1)
+        self._rom_selector_body.columnconfigure(1, weight=1 if side_by_side else 0)
+        controls.grid_configure(row=0, column=0, sticky="new",
+                                padx=(0, 18) if side_by_side else 0,
+                                pady=0 if side_by_side else (0, 14))
+        self._rom_selector_preview.grid_configure(
+            row=0 if side_by_side else 1, column=1 if side_by_side else 0, sticky="nw")
+        for column in range(4):
+            controls.columnconfigure(column, weight=1 if column < pairs * 2 and column % 2 else 0)
+        row = 0
+        auto = self._checks.get("awp1018_diff_auto_serial")
+        if auto is not None:
+            auto.grid_configure(row=0, column=0, columnspan=pairs * 2, pady=(0, 8))
+            row = 1
+        for index, key in enumerate(keys):
+            field_row = row + index // pairs
+            column = (index % pairs) * 2
+            widgets = self._selector_widgets[key]
+            if len(widgets) == 1:
+                widgets[0].grid_configure(row=field_row, column=column, columnspan=2,
+                                         padx=(20 if column else 0, 0), pady=5, sticky="w")
+            else:
+                widgets[0].grid_configure(row=field_row, column=column, columnspan=1,
+                                         padx=(20 if column else 0, 10), pady=5)
+                widgets[1].grid_configure(row=field_row, column=column + 1, columnspan=1,
+                                         padx=0, pady=5, sticky="ew")
+        row += (len(keys) + pairs - 1) // pairs
+        self._buttons["awp1018_write_rom_waveform"].grid_configure(
+            row=row, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        self.rom_hint_label.grid_configure(row=row + 1, column=0, columnspan=pairs * 2, pady=(8, 0))
+        hint_width = 440 if side_by_side else max(280, width - 24)
+        self.rom_hint_label.configure(wraplength=hint_width)
+        if self.diff_mode:
+            self.diff_play_hint_label.grid_configure(row=row + 2, column=0, columnspan=pairs * 2, pady=(4, 0))
+            self.diff_play_hint_label.configure(wraplength=hint_width)
+        self._rom_selector_width_clamp.refresh()
 
     def _add_selector_entry(
         self,
@@ -3830,6 +3892,8 @@ class AWP1018NormalModePage(BasePage):
                 combo.configure(values=values, state="readonly" if serial4_active else "disabled")
                 if variable.get() not in values:
                     variable.set(self._serial4_end_option())
+        if self.page_name != "full_mode":
+            self._layout_button_waveform()
 
     def _set_selector_row_visible(self, key: str, visible: bool) -> None:
         for widget in self._selector_widgets.get(key, []):
@@ -7047,9 +7111,14 @@ class AWP1018NormalModePage(BasePage):
         super().destroy()
 
     def refresh_language(self) -> None:
+        for _ in self._refresh_language_steps():
+            pass
+
+    def _refresh_language_steps(self) -> Iterator[None]:
         super().refresh_language()
         if self.preset_toolbar is not None:
             self.preset_toolbar.refresh_language()
+        yield
         for key, label in self._labels.items():
             if key.endswith("_high"):
                 label.configure(text=self.tr("awp1018_stage_high_threshold"))
@@ -7067,6 +7136,7 @@ class AWP1018NormalModePage(BasePage):
                 label.configure(text=self.tr("awp1018_group_start_selection"))
             else:
                 label.configure(text=self.tr(key))
+        yield
 
         for key, check in self._checks.items():
             if key.endswith("_press_debounce_enable"):
@@ -7085,6 +7155,7 @@ class AWP1018NormalModePage(BasePage):
                 check.configure(text=self.tr("enable"))
             else:
                 check.configure(text=self.tr(key))
+        yield
 
         for key, btn in self._buttons.items():
             btn.configure(text=self.tr(key))
@@ -7125,6 +7196,7 @@ class AWP1018NormalModePage(BasePage):
             self._refresh_diff_waveform_controls()
         self._update_rom_metrics()
         self._refresh_adc_legend_rules()
+        yield
         if self.adc_legend is not None:
             self.adc_legend.refresh_style(self.colors)
         if not self._awp1018_target_is_connected():
@@ -7220,7 +7292,7 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         right.rowconfigure(0, weight=3)
         right.rowconfigure(1, weight=2)
 
-        self._build_full_left_column(left)
+        yield from self._build_full_left_column_steps(left)
         self._build_full_middle_column(middle)
 
         register_panel = ttk.Frame(right, style="Panel.TFrame", padding=0)
@@ -7228,15 +7300,16 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         register_panel.grid(row=0, column=0, sticky="nsew")
         register_panel.rowconfigure(0, weight=1)
         register_panel.columnconfigure(0, weight=1)
-        self._build_full_function_tools(register_panel)
+        yield from self._build_full_function_tools_steps(register_panel)
 
         log_frame = self.make_serial_log(right, height=14, width=42, subscribe=True)
         log_frame.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
         yield
 
         self._bind_full_mode_traces()
-
+        yield
         self.refresh_language()
+        yield
         self._show_stage("Stage0")
         self._draw_rom_waveform()
 
@@ -7262,29 +7335,33 @@ class AWP1018FullModePage(AWP1018NormalModePage):
 
 
     def _build_full_left_column(self, left: tk.Misc) -> None:
+        for _ in self._build_full_left_column_steps(left):
+            pass
+
+    def _build_full_left_column_steps(self, left: tk.Misc) -> Iterator[None]:
         left.columnconfigure(1, weight=2, minsize=145)
         left.columnconfigure(3, weight=2, minsize=145)
 
         row = 0
         row = self._add_section_title(left, row, "awp1018_adc_threshold_detection")
-        self._build_stage_selector(left, row)
+        yield from self._build_stage_selector_steps(left, row)
         row += 1
 
         self.stage_container = ttk.Frame(left, style="Panel.TFrame")
         self.stage_container.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(4, 8))
         self.stage_container.columnconfigure(0, weight=1)
         for stage in ("Stage0", "Stage1", "Stage2", "Stage3"):
-            self._build_stage_frame(stage)
+            yield from self._build_stage_frame_steps(stage)
         row += 1
 
         row = self._add_section_title(left, row, "full_mode_adc")
-        self._build_adc_channel_selector(left, row)
+        yield from self._build_adc_channel_selector_steps(left, row)
         row += 1
-        self._build_adc_timing_row(left, row)
+        yield from self._build_adc_timing_row_steps(left, row)
         row += 1
-        self._build_zero_return_bit_row(left, row)
+        yield from self._build_zero_return_bit_row_steps(left, row)
         row += 1
-        self._build_arbitration_return_time_row(left, row)
+        yield from self._build_arbitration_return_time_row_steps(left, row)
         row += 1
 
         zps_check = ttk.Checkbutton(left, variable=self.zps_enable_var, command=self._on_zps_enable_changed)
@@ -7308,9 +7385,11 @@ class AWP1018FullModePage(AWP1018NormalModePage):
             pady=(10 if row else 0, 4),
         )
         row += 1
-        self._build_control_buttons(left, row)
+        yield from self._build_control_buttons_steps(left, row)
         row += 1
+        yield
         self._attach_gpio_controls(left, row)
+        yield
 
     def _build_full_middle_column(self, middle: tk.Misc) -> None:
         middle.columnconfigure(0, weight=1)
@@ -7453,6 +7532,10 @@ class AWP1018FullModePage(AWP1018NormalModePage):
                 delattr(self, attr)
 
     def _build_full_function_tools(self, parent: tk.Misc) -> None:
+        for _ in self._build_full_function_tools_steps(parent):
+            pass
+
+    def _build_full_function_tools_steps(self, parent: tk.Misc) -> Iterator[None]:
         scroll, content = self.make_vertical_scroll_area(parent)
         scroll.grid(row=0, column=0, sticky="nsew")
         content.configure(style="Panel.TFrame", padding=12)
@@ -7461,12 +7544,16 @@ class AWP1018FullModePage(AWP1018NormalModePage):
         row = 0
         row = self._add_section_title(content, row, "full_mode_system")
         row = self._add_full_system_summary(content, row)
+        yield
         row = self._add_section_title(content, row, "full_mode_memory")
         row = self._add_full_memory_tools(content, row)
+        yield
         row = self._add_section_title(content, row, "awp1018_full_adc_readback")
         row = self._add_full_adc_readback(content, row)
+        yield
         row = self._add_section_title(content, row, "full_mode_serial")
         row = self._add_full_serial4_tools(content, row)
+        yield
 
         status_label = ttk.Label(content, textvariable=self.full_action_status_var, style="Muted.TLabel", wraplength=340)
         status_label.grid(row=row, column=0, sticky="ew", pady=(8, 0))

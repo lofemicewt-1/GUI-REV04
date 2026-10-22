@@ -15,8 +15,6 @@ from pages.adc_legend import AdcLegend
 from pages.awp192x_realtime import AWP192xADCVoltageWindow
 from pages.waveform_generator import WaveformGeneratorPage, WAVEFORM_WRITE_POINT_OPTIONS
 from pages.waveform_preview import compact_preview, draw_omissions
-from pages.waveform_layout import WaveformWidthClamp
-from app.window_layout import scaled_waveform_max_width
 
 
 def draw_timed_waveform(canvas, colors, tr, segments, point_us):
@@ -139,8 +137,7 @@ class ButtonWaveformPage(WaveformGeneratorPage):
 
     def _build_ui(self):
         self.columnconfigure(0, weight=0, minsize=550)
-        self.columnconfigure(1, weight=0, minsize=380)
-        self.columnconfigure(2, weight=1, minsize=0)
+        self.columnconfigure(1, weight=1, minsize=380)
         self.rowconfigure(0, weight=1)
         self.controls = ttk.Frame(self, style="Panel.TFrame", padding=8)
         self.controls.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
@@ -215,8 +212,6 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         plot = ttk.Frame(self, style="Panel.TFrame", padding=8, width=380)
         self.plot_panel = plot
         plot.grid(row=0, column=1, sticky="nsew")
-        self._waveform_width_spacer = ttk.Frame(self, style="App.TFrame")
-        self._waveform_width_spacer.grid(row=0, column=2, sticky="nsew")
         plot.columnconfigure(0, weight=1)
         plot.rowconfigure(1, weight=1)
         self.plot_toolbar = ttk.Frame(plot, style="Panel.TFrame")
@@ -237,17 +232,6 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         self.read_slices_scrollbar.grid(row=2, column=1, sticky="ns")
         self.read_slices_text.configure(yscrollcommand=self.read_slices_scrollbar.set, state="disabled")
         self.read_slices_xscrollbar = None
-        self._waveform_width_clamp = WaveformWidthClamp(
-            self,
-            self,
-            plot,
-            reserved_width=lambda: max(550, int(self.controls.winfo_reqwidth())) + 10
-            if getattr(self, "_button_side_by_side", True)
-            else 0,
-            requested_height=lambda: self.canvas.winfo_reqheight()
-            + self.plot_toolbar.winfo_reqheight()
-            + self.read_slices_text.winfo_reqheight() + 21,
-        )
         for _, variable, _ in specs:
             variable.trace_add("write", lambda *_: self._on_param_changed())
             variable.trace_add("write", lambda *_: self.owner._on_button_progress_inputs_changed())
@@ -278,29 +262,25 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             available = int(self.winfo_width())
             if available <= 1:
                 return
-            scale = float(getattr(self.ctx.state, "ui_scale", 1.0) or 1.0)
             side_by_side = available >= max(
                 900,
                 max(550, int(self.controls.winfo_reqwidth()))
-                # The width clamp expands the stacked plot to fill the page.
-                # Using that request here would keep the layout stacked forever.
+                # Use the minimum preview width, independent of its last layout.
                 + 380
                 + 10,
             )
-            signature = (side_by_side, scaled_waveform_max_width(scale))
+            signature = (side_by_side,)
             if signature == self._button_layout_signature:
                 return
             self._button_layout_signature = signature
             if side_by_side:
                 self._button_side_by_side = True
                 self.columnconfigure(0, weight=0, minsize=550)
-                self.columnconfigure(1, weight=0, minsize=380)
-                self.columnconfigure(2, weight=1, minsize=0)
+                self.columnconfigure(1, weight=1, minsize=380)
                 self.rowconfigure(0, weight=1)
                 self.rowconfigure(1, weight=0)
                 self.controls.grid_configure(row=0, column=0, columnspan=1, sticky="nsew")
                 self.plot_panel.grid_configure(row=0, column=1, columnspan=1, sticky="nsew")
-                self._waveform_width_spacer.grid(row=0, column=2, sticky="nsew")
             else:
                 self._button_side_by_side = False
                 self.columnconfigure(0, weight=1, minsize=0)
@@ -311,9 +291,7 @@ class ButtonWaveformPage(WaveformGeneratorPage):
                 # Keep the preview in the first viewport even when the controls
                 # are too wide to share a row with it.
                 self.controls.grid_configure(row=1, column=0, columnspan=3, sticky="ew")
-                self.plot_panel.grid_configure(row=0, column=0, columnspan=1, sticky="nw")
-                self._waveform_width_spacer.grid_remove()
-            self._waveform_width_clamp.refresh()
+                self.plot_panel.grid_configure(row=0, column=0, columnspan=1, sticky="ew")
         except tk.TclError:
             return
 
@@ -321,9 +299,6 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         super().refresh_layout()
         self._button_layout_signature = None
         self._queue_button_layout()
-        clamp = getattr(self, "_waveform_width_clamp", None)
-        if clamp is not None:
-            clamp.refresh()
 
     def _on_param_changed(self) -> None:
         self._update_waveform_specific_fields()
@@ -366,6 +341,12 @@ class ButtonWaveformPage(WaveformGeneratorPage):
     def _on_waveform_destroy(self, event) -> None:
         if getattr(event, "widget", None) is self:
             self._cancel_pending_preview()
+            job, self._button_layout_job = self._button_layout_job, None
+            if job is not None:
+                try:
+                    self.after_cancel(job)
+                except tk.TclError:
+                    pass
 
     def _active_plot_signature(self):
         canvas = getattr(self, "canvas", None)
@@ -452,10 +433,36 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         for cell in self.cells.values():
             cell.grid_remove()
         visible = [key for key in self.cells if any(w.winfo_manager() for w in self._field_widgets[key])]
+        if self.source == "sinc":
+            for widget in self._field_widgets["points"]:
+                widget.grid()
+            visible.append("points")
+        self._field_widgets["points"][1].configure(state="readonly" if self.source == "sinc" else "normal")
         if self.source == "rom":
             visible = []
-        for i, key in enumerate(visible):
-            self.cells[key].grid(row=i//3, column=i%3, sticky="ew", padx=(0,8))
+        # An empty grid frame retains its last requested height in Tk.
+        if visible:
+            self.fields.grid()
+        else:
+            self.fields.grid_remove()
+        rows = (
+            ("waveform_type", "slice_index", "points"),
+            ("sinc_positive_voltage", "sinc_negative_voltage", None) if self.source == "sinc" else
+            ("start_phase", "end_phase", "offset"),
+            ("sinc_points1", "sinc_points2", "sinc_points3") if self.source == "sinc" else
+            ("voltage_amplitude", None, None),
+            ("start_addr", "end_addr", "write_points_per_batch"),
+        )
+        # Reserve the same parameter rows across SRAM sources and wave shapes.
+        field_height = max(
+            sum(widget.winfo_reqheight() for widget in self._field_widgets[key]) + 8
+            for key in self.cells
+        ) if self.waveform_type_var.get() != "serial" else 0
+        for row, keys in enumerate(rows):
+            self.fields.rowconfigure(row, minsize=field_height)
+            for col, key in enumerate(keys):
+                if key in visible:
+                    self.cells[key].grid(row=row, column=col, sticky="ew", padx=(0,8))
         for source, button in self.source_buttons.items():
             button.configure(style="Selected.TButton" if source == self.source else "Secondary.TButton")
         rom = self.source == "rom"
@@ -466,10 +473,10 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             self._field_widgets["fill_zero_tail"][0].grid_remove()
         self.source_hint.configure(text=(
             "ROM SIN：手动播放选用 0x1F；1024 点，使用上方电压和单点时长。" if rom else
-            "SINC 由软件生成后写入 SRAM；每段时长 = 该段点数 × 单点时长。" if self.source == "sinc" else ""
+            "波形由软件生成或导入后写入 SRAM；时长 = 点数 × 单点时长。"
         ) if self.language == "zh" else (
             "ROM SIN: manual playback selects 0x1F; 1024 samples, using voltage and point time above." if rom else
-            "SINC is generated into SRAM. Segment duration = sample count × point time." if self.source == "sinc" else ""))
+            "Generate or import a waveform, then write it to SRAM. Duration = sample count × point time."))
 
     def _refresh_write_button_text(self):
         button = self._buttons.get("write_waveform")
@@ -569,6 +576,7 @@ class ButtonModeView:
             column=0,
             sticky="ew",
             padding=8,
+            bordered=False,
             step=1,
             step_total=3,
             help_key="awp192x_help_button_waveform",
@@ -595,6 +603,7 @@ class ButtonModeView:
             sticky="nsew",
             padx=(0, 10),
             padding=8,
+            bordered=False,
             step=2,
             step_total=3,
             role="reference",
@@ -618,6 +627,7 @@ class ButtonModeView:
             column=1,
             sticky="nsew",
             padding=8,
+            bordered=False,
             step=2,
             step_total=3,
             help_key="awp192x_help_button_params",
@@ -643,11 +653,16 @@ class ButtonModeView:
         self._button_field(params, 1, 0, "adc_pol", self.button_adc_pol_var, ["OUT+", "OUT-"])
         yield
         self._button_field(params, 1, 1, "adc_gain", self.button_adc_gain_var, ["0-19V", "0-100V"])
+        repeat_row = ttk.Frame(params, style="Panel.TFrame")
+        repeat_row.grid(row=2, column=0, columnspan=4, sticky="ew")
+        for col in range(3):
+            repeat_row.columnconfigure(col, weight=1, uniform="repeat_fields")
         for i, (key, variable, wave) in enumerate((("press_repeat_count", self.press_repeat_count_var, self.press_waveform_var),
                 ("release_repeat_count", self.release_repeat_count_var, self.release_waveform_var),
                 ("play_repeat_count", self.play_repeat_count_var, self.play_waveform_var))):
-            cell = ttk.Frame(params, style="Panel.TFrame")
-            cell.grid(row=2, column=i, sticky="nw", padx=(0,8))
+            cell = ttk.Frame(repeat_row, style="Panel.TFrame")
+            cell.grid(row=0, column=i, sticky="ew", padx=(0,8))
+            cell.columnconfigure(1, weight=1)
             label = ttk.Label(cell, style="Panel.TLabel", wraplength=165)
             label.grid(row=0, column=0, columnspan=2, sticky="w")
             self._labels[key] = label
@@ -655,7 +670,7 @@ class ButtonModeView:
             entry.grid(row=1, column=0, sticky="w", pady=3)
             self._repeat_entries[key] = entry
             combo = ttk.Combobox(cell, values=self._slice_options(), state="readonly", width=18)
-            combo.grid(row=1, column=1, padx=(5,0), pady=3)
+            combo.grid(row=1, column=1, sticky="ew", padx=(5,0), pady=3)
             self._bind_waveform_choice(
                 combo,
                 wave,
@@ -693,6 +708,7 @@ class ButtonModeView:
             sticky="nsew",
             padx=(0, 10),
             padding=8,
+            bordered=False,
             step=2,
             step_total=3,
             role="verify",
@@ -736,6 +752,7 @@ class ButtonModeView:
             column=1,
             sticky="nsew",
             padding=8,
+            bordered=False,
             step=3,
             step_total=3,
             help_key="awp192x_help_button_switches",
@@ -754,6 +771,7 @@ class ButtonModeView:
         details = self.make_serial_log(
             body, subscribe=True, collapsed=True,
             toggle_command=self._toggle_button_log,
+            bordered=False,
         )
         details.grid(row=3, column=0, sticky="ew", pady=(10,0))
         yield

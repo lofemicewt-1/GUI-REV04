@@ -14,6 +14,7 @@ from typing import Callable, Hashable, Literal, Mapping, Sequence, Any
 
 from app.window_layout import is_compact_window
 from app.ui_state_store import UiStateStore
+from core import animation as anim
 from core.ui_dispatch import post_to_ui
 
 
@@ -99,7 +100,7 @@ def _rounded(canvas: tk.Canvas, box: tuple[float, float, float, float], radius: 
     )
 
 
-TRAPEZOID_BASE_HEIGHT = 24
+TRAPEZOID_BASE_HEIGHT = 20
 # Compact strip: hug step text, never stretch edge-to-edge.
 STRIP_MAX_WIDTH = 1100
 STRIP_MAX_FRACTION = 0.7
@@ -144,6 +145,10 @@ class Trapezoid:
         self._old_bottom_inset = getattr(self._owning_area, "bottom_inset", 0)
         self._hover = False
         self._pressed = False
+        self._reveal_height = 0
+        self._reveal_target = 0
+        self._panel_gap = 0
+        self._motion_key = ("advanced-tools", id(self))
         self._button_font = _step_font(host)
         self._button_label_font = _step_font(host)
 
@@ -153,8 +158,12 @@ class Trapezoid:
         self.progress_slot.grid(row=0, column=0, sticky="ew")
         self.progress_slot.columnconfigure(0, weight=1)
 
+        self.advanced_group = ttk.Frame(floating_group, style="Module.TFrame", padding=(3, 2))
+        self.advanced_group.grid(row=1, column=0, sticky="n", pady=(2, 0))
+        self.advanced_group.columnconfigure(0, weight=1)
+
         self.button = tk.Canvas(
-            floating_group,
+            self.advanced_group,
             width=450,
             height=_slim_px(TRAPEZOID_BASE_HEIGHT, _ui_scale(host)),
             highlightthickness=0,
@@ -162,7 +171,7 @@ class Trapezoid:
             takefocus=True,
             cursor="hand2",
         )
-        self.button.grid(row=1, column=0, sticky="n", pady=(0, 0))
+        self.button.grid(row=0, column=0, sticky="n")
         self.button.bind("<Configure>", self._draw_button, add="+")
         self.button.bind("<ButtonPress-1>", self._press_button, add="+")
         self.button.bind("<ButtonRelease-1>", self._release_button, add="+")
@@ -173,14 +182,14 @@ class Trapezoid:
         self._tooltip = SimpleTooltip(self.button, self._accessibility_text)
         self.button.bind("<Enter>", lambda _e: self._button_hover(True), add="+")
         self.button.bind("<Leave>", lambda _e: self._button_hover(False), add="+")
+        self.floating_group.bind("<Unmap>", self._hide_panel, add="+")
 
         # Controls are constructed once, even while collapsed.  The inner
         # frame is a canvas window so unusually tall advanced panels remain
         # reachable when the viewport constrains their height.
-        # The popup extends above the strip.  Parenting it to the strip clips
-        # everything outside that strip, even though Tk reports it as mapped.
-        # A sibling can still be placed relative to the strip without clipping.
-        self._panel_outer = ttk.Frame(floating_group.master, style="Panel.TFrame", padding=4)
+        # The framed drawer grows upward from its pinned bottom edge. Its
+        # header stays above the content throughout the reveal.
+        self._panel_outer = ttk.Frame(self.advanced_group, style="Panel.TFrame", padding=2)
         self._panel_outer.grid_propagate(False)
         self._panel_outer.columnconfigure(0, weight=1)
         self._panel_outer.rowconfigure(0, weight=1)
@@ -190,7 +199,7 @@ class Trapezoid:
             self._panel_outer, orient="vertical", command=self._panel_canvas.yview,
         )
         self._panel_canvas.configure(yscrollcommand=self._panel_scrollbar.set)
-        self.panel = ttk.Frame(self._panel_canvas, style="Panel.TFrame", padding=2)
+        self.panel = ttk.Frame(self._panel_canvas, style="Panel.TFrame")
         self.panel.columnconfigure(0, weight=1)
         self._panel_window = self._panel_canvas.create_window(
             (0, 0), window=self.panel, anchor="nw",
@@ -203,11 +212,13 @@ class Trapezoid:
         actions.columnconfigure(0, weight=1)
         self.actions = actions
         self.registers = WrappingGroupBar(self.panel)
-        self.registers.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        self.registers._gap = 4
+        self.registers.grid(row=1, column=0, sticky="ew", pady=(3, 0))
         build_state_actions(actions)
         build_register_bar(self.registers)
         if build_extra is not None:
             build_extra(self.panel)
+        self._compact_controls()
 
         self._on_viewport_configure()
         self._apply_expanded_state()
@@ -236,8 +247,12 @@ class Trapezoid:
             is_configure = event is not None and getattr(event, "type", None) == tk.EventType.Configure
             width = max(1, int(event.width) if is_configure else int(self.button.winfo_width()))
             height = max(1, int(event.height) if is_configure else int(self.button.winfo_height()))
+            if width <= 1 or height <= 1:
+                # A hidden constructor has no allocation to fit. Measuring all
+                # font sizes here warms unusable fonts and stalls cold opens.
+                return
             colors = getattr(self.host, "colors", {})
-            self.button.configure(bg=colors.get("bg", "#F7F8FA"))
+            self.button.configure(bg=colors.get("panel", "#FFFFFF"))
             self.button.delete("all")
             fill, outline, text = "#F1F5F9", "#CBD5E1", "#475569"
             if self.expanded:
@@ -267,9 +282,9 @@ class Trapezoid:
             self.button.create_text(x, height / 2, anchor="w", text=label,
                                     fill=text, font=self._button_label_font, tags="label")
             cx, cy = x + label_width + _slim_px(12, scale), height / 2
-            dy = (-1 if self.expanded else 1) * 2.25 * scale
+            dy = (1 if self.expanded else -1) * 2.25 * scale
             self.button.create_line(cx-4.5*scale, cy-dy, cx, cy+dy, cx+4.5*scale, cy-dy,
-                                    fill=text, width=stroke)
+                                    fill=text, width=stroke, tags="chevron")
         except tk.TclError:
             pass
 
@@ -298,6 +313,7 @@ class Trapezoid:
     def _on_viewport_configure(self, _event: tk.Event | None = None) -> None:
         try:
             width, height = int(self.canvas.winfo_width()), int(self.canvas.winfo_height())
+            height = self._available_viewport_height()
             root = self.host.winfo_toplevel()
             root_width, root_height = int(root.winfo_width()), int(root.winfo_height())
         except (tk.TclError, ValueError):
@@ -310,7 +326,7 @@ class Trapezoid:
             if responsive != self._responsive_collapsed:
                 self._responsive_collapsed = responsive
                 responsive_changed = True
-        group_height = max(1, int(self.floating_group.winfo_reqheight()))
+        group_height = self._base_group_height()
         forced = width < 560 or height < max(300, group_height + 110)
         # Below this size even the minimum scrollable popup cannot fit.  This
         # is a hard limit; the larger thresholds above are only auto defaults.
@@ -335,7 +351,7 @@ class Trapezoid:
             area._queue_scroll_layout()
             return
         try:
-            measured = max(int(self.floating_group.winfo_reqheight()), int(self.floating_group.winfo_height()))
+            measured = self._base_group_height() + self._reveal_height + self._panel_gap
         except tk.TclError:
             measured = 1
         scale = _ui_scale(self.host)
@@ -345,6 +361,72 @@ class Trapezoid:
         self._reserved_clearance = max(self._old_scroll_extra, clearance)
         area.scroll_region_extra = self._reserved_clearance
         area._queue_scroll_layout()
+
+    def _base_group_height(self) -> int:
+        padding = self.advanced_group.grid_info().get("pady", (0, 0))
+        if not isinstance(padding, (tuple, list)):
+            padding = (int(padding),) * 2
+        return (max(1, self.progress_slot.winfo_reqheight())
+                + self.button.winfo_reqheight() + 6 + sum(map(int, padding)))
+
+    def _compact_controls(self) -> None:
+        scale = _ui_scale(self.host)
+        style = ttk.Style(self.host)
+        style.configure("Advanced.TEntry", padding=(_slim_px(6, scale), _slim_px(2, scale)))
+        pending = list(self.panel.winfo_children())
+        while pending:
+            widget = pending.pop()
+            if isinstance(widget, ttk.Button):
+                widget.configure(padding=(0, 0))
+            elif isinstance(widget, ttk.Entry) and not isinstance(widget, ttk.Combobox):
+                widget.configure(style="Advanced.TEntry")
+            pending.extend(widget.winfo_children())
+
+    def _available_viewport_height(self) -> int:
+        area = self._owning_area
+        if area is None or area.winfo_height() <= 1:
+            return int(self.canvas.winfo_height())
+        scale = _ui_scale(self.host)
+        collapsed_band = max(self._old_bottom_inset, _slim_px(63, scale),
+                             self._base_group_height() + _slim_px(6, scale))
+        # The canvas can retain its minimum requested height when the reserved
+        # band grows. Use the owner's allocation to avoid a size feedback loop.
+        return max(1, area.winfo_height() - collapsed_band)
+
+    def _set_reveal_height(self, height: int) -> None:
+        changed = self._reveal_height != max(0, height)
+        self._reveal_height = max(0, height)
+        self._panel_gap = 2 if height else 0
+        if height:
+            self._panel_outer.configure(height=height)
+            self._panel_outer.grid(row=1, column=0, sticky="ew", pady=(self._panel_gap, 0))
+        else:
+            self._panel_outer.grid_remove()
+        if changed:
+            self._queue_layout()
+        self._reserve_scroll_clearance()
+
+    def _reveal_panel(self, target: int) -> None:
+        if target == self._reveal_target:
+            return
+        self._reveal_target = target
+        animator = anim.animator_for(self.host)
+        start = self._reveal_height
+        if animator is None or not self.floating_group.winfo_viewable():
+            self._set_reveal_height(target)
+        else:
+            animator.animate(
+                self._motion_key, anim.DUR_SHEET,
+                lambda p: self._set_reveal_height(round(start + (target - start) * p)),
+            )
+
+    def _hide_panel(self, _event: tk.Event | None = None) -> None:
+        animator = anim.animator_for(self.host)
+        if animator is not None:
+            animator.cancel(self._motion_key)
+        self._reveal_target = 0
+        self._last_layout_signature = None
+        self._set_reveal_height(0)
 
     def set_expanded(self, value: bool, *, persist: bool = True) -> None:
         value = bool(value)
@@ -367,11 +449,7 @@ class Trapezoid:
         self._last_layout_signature = None
         try:
             self._draw_button()
-            if actual:
-                self._panel_outer.place(in_=self.floating_group, relx=0.5, anchor="s")
-                self._queue_layout()
-            else:
-                self._panel_outer.place_forget()
+            self._queue_layout()
         except tk.TclError:
             pass
 
@@ -385,16 +463,15 @@ class Trapezoid:
     def _layout(self) -> None:
         self._layout_job = None
         if getattr(self.host, "current_mode", None) == "full_mode":
-            self._panel_outer.place_forget()
+            self._hide_panel()
             self.floating_group.place_forget()
             self._reserve_scroll_clearance()
             return
         try:
             width = max(1, int(self.canvas.winfo_width()))
-            height = max(1, int(self.canvas.winfo_height()))
+            height = max(1, self._available_viewport_height())
             # Pinned in the owning area's bottom band, outside its viewport.
-            natural_width = max(1, int(self.floating_group.winfo_reqwidth()))
-            group_height = max(1, int(self.floating_group.winfo_reqheight()))
+            group_height = self._base_group_height()
             panel_width_request = max(1, int(self.panel.winfo_reqwidth()))
             panel_height_request = max(1, int(self.panel.winfo_reqheight()))
             state = getattr(getattr(self.host, "ctx", None), "state", None)
@@ -402,8 +479,9 @@ class Trapezoid:
                     if bar is getattr(getattr(self.host, "_active_step_page", None), "step_progress", None)]
             content_hint = max((bar.preferred_width() for bar in bars), default=0)
             signature = (
-                width, height, natural_width, group_height, content_hint,
-                panel_width_request, panel_height_request, bool(self.expanded),
+                width, height,
+                group_height, content_hint,
+                panel_width_request, panel_height_request, bool(self.expanded), bool(self._reveal_height),
                 float(getattr(state, "ui_scale", 1.0) or 1.0),
                 self.host.tr("chip_tools_label"), tuple(id(bar) for bar in bars),
             )
@@ -424,49 +502,39 @@ class Trapezoid:
                                   height=_slim_px(TRAPEZOID_BASE_HEIGHT, scale))
             # The strip Canvas already includes its three shadow pixels.
             gap = _slim_px(6, scale) - _slim_px(3, scale) if bars else 0
-            self.button.grid_configure(pady=(gap, 0))
+            self.advanced_group.grid_configure(pady=(max(0, gap - 1), 0))
             for bar in bars:
                 bar.apply_width(group_width)
             self._reserve_scroll_clearance()
             if self.expanded:
-                panel_width = min(max(280, int(self.panel.winfo_reqwidth()) + 20), max(240, width - 24))
+                panel_width = min(max(280, int(self.panel.winfo_reqwidth()) + 12), max(240, width - 32))
                 max_panel_height = max(80, height - group_height - 24)
-                panel_height = min(max_panel_height, max(100, int(self.panel.winfo_reqheight()) + 18))
-                # The panel opens from the top edge of the combined floating
-                # chrome, so it stays above the progress cells while leaving
-                # the advanced pill attached below it.
-                panel_y = -6
-                self._panel_outer.place(
-                    in_=self.floating_group,
-                    relx=0.5,
-                    y=panel_y,
-                    anchor="s",
-                    width=panel_width,
-                    height=panel_height,
-                )
-                self._panel_outer.lift()
-                if int(self.panel.winfo_reqheight()) + 18 > panel_height:
+                panel_height = min(max_panel_height, max(60, int(self.panel.winfo_reqheight()) + 6))
+                self._panel_outer.configure(width=panel_width)
+                self.floating_group.place_configure(width=max(group_width, panel_width + 8))
+                if int(self.panel.winfo_reqheight()) + 6 > panel_height:
                     self._panel_scrollbar.grid(row=0, column=1, sticky="ns")
-                    content_width = max(1, panel_width - 42)
+                    content_width = max(1, panel_width - 26)
                 else:
                     self._panel_scrollbar.grid_remove()
-                    content_width = max(1, panel_width - 12)
+                    content_width = max(1, panel_width - 4)
                 self._panel_outer.columnconfigure(1, weight=0)
                 self._panel_canvas.configure(bg=getattr(self.host, "colors", {}).get("panel", "#FFFFFF"))
                 self._panel_canvas.itemconfigure(self._panel_window, width=content_width)
                 self._panel_canvas.configure(scrollregion=self._panel_canvas.bbox("all"))
-                self.registers.reflow(max(1, panel_width - 32))
+                # WrappingGroupBar measures its allocated width after Configure.
+                # A competing guessed width can alternate its rows indefinitely.
+                self._reveal_panel(panel_height)
             else:
-                self._panel_outer.place_forget()
+                if self._reveal_height:
+                    self.floating_group.place_configure(
+                        width=max(group_width, self._panel_outer.winfo_reqwidth() + 8))
+                self._reveal_panel(0)
         except tk.TclError:
             pass
 
     def _queue_panel_layout(self, _event: tk.Event | None = None) -> None:
-        if self._layout_job is None:
-            try:
-                self._layout_job = self.host.after_idle(self._layout)
-            except tk.TclError:
-                self._layout_job = None
+        self._queue_layout()
 
     def refresh_language(self) -> None:
         self._draw_button()
@@ -474,6 +542,7 @@ class Trapezoid:
         self._queue_layout()
 
     def refresh_theme(self) -> None:
+        self._compact_controls()
         self._button_font.configure(size=-round(18 * _ui_scale(self.host)))
         self._draw_button()
         self._last_layout_signature = None
@@ -486,6 +555,7 @@ class Trapezoid:
         self._queue_layout()
 
     def destroy(self) -> None:
+        self._hide_panel()
         if self._layout_job is not None:
             try:
                 self.host.after_cancel(self._layout_job)
@@ -573,6 +643,7 @@ class StepProgressBar(ttk.Frame):
         self.active_step_key: str | None = None  # Most recently navigated step.
         self._font = _step_font(page)
         self._bold_font = _step_font(page, bold=True)
+        self._text_widths: dict[str, int] = {}
         self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0,
                                 takefocus=True, cursor="hand2")
         self.canvas.grid(row=0, column=0)
@@ -914,7 +985,9 @@ class StepProgressBar(ttk.Frame):
         self.host.trapezoid._queue_layout()
 
     def _measure(self, text: str) -> int:
-        return max(self._font.measure(text), self._bold_font.measure(text))
+        if text not in self._text_widths:
+            self._text_widths[text] = max(self._font.measure(text), self._bold_font.measure(text))
+        return self._text_widths[text]
 
     def _geometry(self) -> tuple[int, int, int, int, int, int]:
         scale = _ui_scale(self.page)
@@ -1193,6 +1266,7 @@ class StepProgressBar(ttk.Frame):
         self._render()
 
     def refresh_theme(self) -> None:
+        self._text_widths.clear()
         size = -round(18 * _ui_scale(self.page))
         self._font.configure(size=size)
         self._bold_font.configure(size=size)

@@ -8,6 +8,22 @@ from tkinter import font as tkfont
 from tkinter import ttk
 
 
+def waveform_choice_styles(widget: tk.Misc, colors: dict[str, str]) -> tuple[str, str]:
+    """Set shared waveform colors only when the actual ttk style changes.
+
+    Even an identical style.configure broadcasts ThemeChanged to every ttk
+    widget, including all constructed hidden modes. Label refreshes must not
+    turn a local value update into a global theme/layout pass.
+    """
+    style = ttk.Style(widget)
+    names = ("R2cWaveform.TCombobox", "R2cUnsupportedWaveform.TCombobox")
+    for name, color in zip(names, (colors.get("text", "#111827"), colors.get("muted", "#64748B"))):
+        options = {"foreground": color, "fieldforeground": color}
+        if any(str(style.configure(name, key)) != value for key, value in options.items()):
+            style.configure(name, **options)
+    return names
+
+
 LIGHT_COLORS = {
     "bg": "#FFFFFF",
     "panel": "#FFFFFF",
@@ -886,6 +902,13 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
     style.configure(
         "ModuleTitleRow.TFrame",
         background=colors["panel"],
+    )
+
+    style.configure(
+        "OpenModule.TFrame",
+        background=colors["panel"],
+        relief="flat",
+        borderwidth=0,
     )
 
     style.configure(

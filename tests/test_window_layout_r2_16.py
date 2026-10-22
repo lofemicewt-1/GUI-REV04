@@ -38,12 +38,47 @@ class _GeometryWidget:
             raise KeyError(key)
         return getattr(self, key)
 
+    def winfo_pixels(self, value):
+        return int(value)
+
     def configure(self, **kwargs):
         for key, value in kwargs.items():
             setattr(self, key, value)
 
 
 class WindowLayoutTierTests(unittest.TestCase):
+    def test_waveform_clamp_sizes_real_ttk_panel_before_drawing(self) -> None:
+        import tkinter as tk
+        from tkinter import ttk
+        from tests.tk_cleanup import attach_tk_cleanup, prepare_tk_test
+
+        prepare_tk_test(self)
+        root = tk.Tk()
+        attach_tk_cleanup(self, root)
+        root.geometry("900x520")
+        container = ttk.Frame(root)
+        container.pack(fill="both", expand=True)
+        panel = ttk.Frame(container)
+        panel.grid(row=0, column=0)
+        canvas = tk.Canvas(panel, width=280, height=280)
+        canvas.grid(sticky="nsew")
+        panel.columnconfigure(0, weight=1)
+        panel.rowconfigure(0, weight=1)
+        owner = SimpleNamespace(ctx=SimpleNamespace(state=SimpleNamespace(ui_scale=1)))
+        clamp = WaveformWidthClamp(
+            owner, container, panel, reserved_width=lambda: 200,
+            requested_height=lambda: 320,
+        )
+        self.addCleanup(clamp.close)
+        root.update()
+        self.assertEqual(panel.winfo_height(), 320)
+        self.assertEqual(panel.winfo_width(), 700)
+        self.assertGreater(canvas.winfo_width(), 50)
+        self.assertGreater(canvas.winfo_height(), 50)
+        root.geometry("800x520")
+        root.update()
+        self.assertEqual(panel.winfo_width(), 600)
+
     def test_frozen_width_breakpoints_and_width_caps(self) -> None:
         self.assertEqual(ui_scale_for_width(1599), 1.0)
         self.assertEqual(ui_scale_for_width(1600), 1.1)

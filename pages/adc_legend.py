@@ -26,7 +26,7 @@ class AdcLegend(ttk.Frame):
     """Render configured ADC stages, their transitions, and the live event line.
 
     Stage records accept ``id``, ``condition`` (``press``/``release``),
-    ``comparator``, ``threshold``, ``unit``, ``waveform``/``wave_label``,
+    ``comparator``, ``threshold``, ``unit``, ``adc_precision``, ``waveform``/``wave_label``,
     ``target`` and ``unused``. ``start_markers`` maps a Stage ID to one or more
     already-localized channel/group labels. The widget only renders the
     supplied configuration; live P/R events never set a Stage as actual.
@@ -57,11 +57,17 @@ class AdcLegend(ttk.Frame):
         self._connector_cache = None
         self._connector_photo = None
         self._rule_rows = {}
+        self._rule_borders: dict[int, tk.Label] = {}
+        self._rule_headers: list[ttk.Label] = []
+        self._rule_stage_ids: tuple[str, ...] = ()
+        self._rule_fonts: dict[str, tkfont.Font] = {}
+        self._rule_text_widths: dict[tuple[str, str], int] = {}
         self._canvas_bind_id: str | None = None
 
         self.columnconfigure(0, weight=1)
         title = ttk.Label(self, text=self._tr("adc_legend_title"), style="Panel.TLabel")
         title.grid(row=0, column=0, sticky="w", pady=(0, 5))
+        self._title = title
 
         self._live_frame = tk.Frame(self, highlightthickness=2, bd=0)
         self._live_frame.grid(row=1, column=0, sticky="ew", pady=(0, 4))
@@ -92,7 +98,11 @@ class AdcLegend(ttk.Frame):
         self.canvas.tag_bind("stage_click", "<Enter>", self._on_canvas_stage_enter)
         self.canvas.tag_bind("stage_click", "<Leave>", self._on_canvas_stage_leave)
 
-        self._table = ttk.Frame(self, style="Panel.TFrame")
+        self._table = ttk.Frame(self, style="Panel.TFrame", width=1)
+        # Column minima follow the allocated width. Feeding that width back
+        # into the parent's request makes uniform ADC panels oscillate by a
+        # pixel. Keep the horizontal request independent; fit height below.
+        self._table.grid_propagate(False)
         self._table.grid(row=4, column=0, sticky="ew", pady=(5, 0))
         self._table.bind("<Configure>", self._queue_fit_rule_columns, add="+")
         # Parent allocation drives width; avoid inflating ADC split measurements.
@@ -174,6 +184,7 @@ class AdcLegend(ttk.Frame):
             "comparator": comparator,
             "threshold": threshold,
             "unit": str(raw.get("unit") or "").strip(),
+            "adc_precision": str(raw.get("adc_precision") or "").strip(),
             "waveform": str(waveform or "").strip(),
             "target": cls._stage_id(target) if target is not None else None,
             "unused": bool(raw.get("unused", False)),
@@ -203,10 +214,16 @@ class AdcLegend(ttk.Frame):
     def set_rules(self, stages: Iterable[Mapping[str, Any]], start_markers: Any, preview_stage: Any = None) -> None:
         if self._disposed:
             return
-        self._stages = [self._normalize_stage(stage, index) for index, stage in enumerate(stages)]
-        self._starts = self._normalize_starts(start_markers)
-        self._preview_stage = self._stage_id(preview_stage) if preview_stage is not None else None
-        self._render_locked_width = None
+        normalized = [self._normalize_stage(stage, index) for index, stage in enumerate(stages)]
+        starts = self._normalize_starts(start_markers)
+        preview = self._stage_id(preview_stage) if preview_stage is not None else None
+        if (normalized, starts, preview) == (self._stages, self._starts, self._preview_stage):
+            return
+        self._stages, self._starts, self._preview_stage = normalized, starts, preview
+        if any(stage["adc_precision"] for stage in normalized):
+            self._title.grid_remove()
+        else:
+            self._title.grid()
         self._diagram_signature = None
         self._refresh_rule_table()
         self._schedule_render()
@@ -220,7 +237,6 @@ class AdcLegend(ttk.Frame):
         if self._disposed or self._on_stage_activate is None:
             return
         self._preview_stage = self._stage_id(stage_id)
-        self._render_locked_width = None
         self._diagram_signature = None
         self._schedule_render()
         self._on_stage_activate(self._preview_stage)
@@ -333,15 +349,21 @@ class AdcLegend(ttk.Frame):
             return
         self._fitting_columns = True
         try:
-            self.update_idletasks()
-            cells = [cell for cell in self._table.winfo_children() if cell.grid_info()]
+            cells = [cell for cell in self._table.winfo_children()
+                     if cell.grid_info() and not getattr(cell, "_adc_row_border", False)]
             if not cells:
                 return
             natural = [0] * 4
             for cell in cells:
                 column = int(cell.grid_info()["column"])
-                font = tkfont.Font(root=self, font=cell.cget("font"))
-                natural[column] = max(natural[column], font.measure(str(cell.cget("text"))) + 16)
+                spec, text = str(cell.cget("font")), str(cell.cget("text"))
+                key = (spec, text)
+                if key not in self._rule_text_widths:
+                    font = self._rule_fonts.get(spec)
+                    if font is None:
+                        font = self._rule_fonts[spec] = tkfont.Font(root=self, font=spec)
+                    self._rule_text_widths[key] = max((font.measure(line) for line in text.splitlines()), default=0)
+                natural[column] = max(natural[column], self._rule_text_widths[key] + 18)
             available = max(1, int(self._table.winfo_width()))
             if available <= 40:
                 retries = getattr(self, "_fit_retries", 0)
@@ -353,39 +375,59 @@ class AdcLegend(ttk.Frame):
                         pass
                 return
             self._fit_retries = 0
-            target = max(48, min(natural[3] or 48, max(48, available // 8)))
+            target = min(natural[3] or 48, max(48, available // 4))
             budget = max(3, available - target)
             base = [max(1, natural[i] or 1) for i in range(3)]
             # Prefer one-line 「在等什么」; keep 「满足后」 tight; widen 「阶段」.
             stage_w = min(max(base[0], 96), max(96, int(budget * 0.30)))
-            wave_w = min(max(base[1], 72), max(72, int(budget * 0.18)))
+            wave_w = min(max(base[1], 96), max(96, int(budget * 0.23)))
             wait_w = max(120, budget - stage_w - wave_w)
             if base[2] > wait_w:
                 # Borrow from wave then stage to keep wait on one line when possible.
                 need = base[2] - wait_w
-                take = min(need, max(0, wave_w - 72))
+                take = min(need, max(0, wave_w - 96))
                 wave_w -= take; need -= take; wait_w += take
                 take = min(need, max(0, stage_w - 96))
                 stage_w -= take; wait_w += take
+            # Give unused condition-column space to the waveform column.
+            if wait_w > base[2]:
+                wave_w += wait_w - base[2]
+                wait_w = base[2]
             widths = [stage_w, wave_w, wait_w, target]
+            if sum(widths) > available:
+                budget = max(3, available - target)
+                stage_w = int(budget * 0.25)
+                wave_w = int(budget * 0.27)
+                widths = [stage_w, wave_w, budget - stage_w - wave_w, target]
             changed = getattr(self, "_column_widths", None) != widths
             self._column_widths = widths
             if changed:
                 for column, width in enumerate(widths):
-                    self._table.columnconfigure(column, weight=max(1, width), minsize=24)
-                self._table.update_idletasks()
+                    self._table.columnconfigure(column, weight=0, minsize=width)
             for cell in cells:
                 column = int(cell.grid_info()["column"])
-                # Grid distributes space using both requested sizes and weights.
-                # Wrap to the allocated cell, not the ideal column budget.
-                allocated = self._table.grid_bbox(column, int(cell.grid_info()["row"]))[2]
-                padding = 16 if isinstance(cell, tk.Label) else 0
-                want = max(1, allocated - padding)
+                want = max(1, widths[column] - 18)
                 try:
                     if int(cell.cget("wraplength") or 0) != want:
                         cell.configure(wraplength=want)
                 except (tk.TclError, TypeError, ValueError):
                     cell.configure(wraplength=want)
+            heights: dict[int, int] = {}
+            for child in self._table.winfo_children():
+                info = child.grid_info()
+                if not info:
+                    continue
+                raw_padding = info.get("pady", 0)
+                padding = (raw_padding if isinstance(raw_padding, (tuple, list))
+                           else self.tk.splitlist(str(raw_padding)))
+                vertical_padding = sum(int(str(value)) for value in padding)
+                if len(padding) == 1:
+                    vertical_padding *= 2
+                row = int(str(info["row"]))
+                heights[row] = max(heights.get(row, 0), child.winfo_reqheight() + vertical_padding)
+            height = max(1, sum(heights.values()))
+            if self._table.winfo_reqheight() != height:
+                self._table.configure(height=height)
         except (tk.TclError, TypeError, ValueError, AttributeError):
             return
         finally:
@@ -407,6 +449,8 @@ class AdcLegend(ttk.Frame):
             return
         if colors is not None:
             self.colors = dict(colors)
+        self._rule_text_widths.clear()
+        self._rule_fonts.clear()
         try:
             self.canvas.configure(highlightbackground=self.colors.get("border", "#D1D5DB"))
         except tk.TclError:
@@ -453,9 +497,8 @@ class AdcLegend(ttk.Frame):
             width = int(self.canvas.winfo_width())
         except (tk.TclError, TypeError, ValueError):
             width = 0
-        locked = getattr(self, "_render_locked_width", None)
-        if locked is not None and width > 1 and abs(width - locked) < 180:
-            return
+        if width > 1:
+            self._live_tip.configure(wraplength=max(1, width - 4))
         self._schedule_render()
 
     def _schedule_render(self) -> None:
@@ -472,7 +515,7 @@ class AdcLegend(ttk.Frame):
             return
         try:
             actual_width = max(1, self.canvas.winfo_width())
-            width = max(actual_width, self._minimum_width())
+            width = actual_width if actual_width > 1 else self._minimum_width()
             stages = self._stages[: self.stage_count]
             if not stages:
                 return
@@ -486,6 +529,7 @@ class AdcLegend(ttk.Frame):
                         stage.get("condition"),
                         stage.get("threshold"),
                         stage.get("unit"),
+                        stage.get("adc_precision"),
                         stage.get("waveform"),
                         stage.get("target"),
                         stage.get("unused"),
@@ -503,11 +547,14 @@ class AdcLegend(ttk.Frame):
             self.canvas.configure(bg=self.colors.get("canvas_bg", "#FFFFFF"))
             self.canvas.delete("all")
             count = len(stages)
-            margin = 18
-            gap = 26 if count > 2 else 36
+            compact = any(stage["adc_precision"] for stage in stages)
+            scale = self._ui_font()[1] / 10 if compact else 1.0
+            margin = round(18 * scale)
+            gap = round((26 if count > 2 else 36) * scale)
             slot_width = (width - 2 * margin) / count
-            card_width = min(260 if count <= 2 else 230, max(110, slot_width - gap))
-            card_top, card_height = 64, 78
+            card_width = min((260 if count <= 2 else 230) * scale, max(110, slot_width - gap))
+            card_top = round(32 * scale) if compact else 64
+            card_height = round(78 * scale)
             by_id = {stage["id"]: index for index, stage in enumerate(stages)}
             # Measure wrapped forward labels before placing the cards. Centered
             # labels at a fixed y can extend above the canvas with larger fonts.
@@ -519,7 +566,7 @@ class AdcLegend(ttk.Frame):
                     center, 8, anchor="n",
                     text=self._edge_text(stage, index + 1, back=False),
                     fill=self._condition_color(stage["condition"]),
-                    font=self._ui_font(1.35, True),
+                    font=self._ui_font(0.95, True),
                     width=max(90, slot_width - card_width - 3 + card_width * 0.65),
                     tags=("transition_label",),
                 )
@@ -548,10 +595,12 @@ class AdcLegend(ttk.Frame):
                     x0, y0, x1, y1, fill=fill, outline=border,
                     width=3 if preview else 2, tags=("stage_box", "stage_click", stage["id"]),
                 )
-                heading = stage["id"]
+                inline_start = bool(stage["adc_precision"] and stage["id"] in self._starts
+                                    and not self._starts[stage["id"]])
+                heading = stage["id"] + (f" · {self._tr('adc_legend_start')}" if inline_start else "")
                 heading_item = self.canvas.create_text(
                     (x0 + x1) / 2, y0 + 8, anchor="n", text=heading, fill=text,
-                    font=self._ui_font(1.55, True), width=card_width - 18,
+                    font=self._ui_font(1.15, True), width=card_width - 18,
                     tags=("stage_heading", "stage_click", stage["id"]),
                 )
                 text_top = self.canvas.bbox(heading_item)[3] + 2
@@ -560,10 +609,10 @@ class AdcLegend(ttk.Frame):
                     ([self._tr("adc_legend_start")] if stage["id"] in self._starts else []) + markers
                 )
                 # Do not annotate cards with 「示意 Stage」 / illustrative labels.
-                if marker_text:
+                if marker_text and not inline_start:
                     marker_item = self.canvas.create_text(
                         (x0 + x1) / 2, text_top, anchor="n", text=marker_text, fill=border,
-                        font=self._ui_font(1.4, True), width=card_width - 18,
+                        font=self._ui_font(0.95, True), width=card_width - 18,
                         tags=("stage_marker", "stage_click", stage["id"]),
                     )
                     text_top = self.canvas.bbox(marker_item)[3] + 2
@@ -575,7 +624,7 @@ class AdcLegend(ttk.Frame):
                     wave_text = stage["waveform"]
                 body_item = self.canvas.create_text(
                     (x0 + x1) / 2, text_top, anchor="n", text=body_text, fill=text,
-                    font=self._ui_font(1.45), width=card_width - 18,
+                    font=self._ui_font(), width=card_width - 18,
                     tags=("stage_wait", "stage_click", stage["id"]),
                 )
                 content_bottom = max(content_bottom, self.canvas.bbox(body_item)[3])
@@ -583,7 +632,7 @@ class AdcLegend(ttk.Frame):
                     wave_item = self.canvas.create_text(
                         (x0 + x1) / 2, self.canvas.bbox(body_item)[3] + 2, anchor="n",
                         text=f"{self._tr('adc_legend_play_wave')} {wave_text}", fill=self.colors.get("muted", "#6B7280"),
-                        font=self._ui_font(1.4), width=card_width - 18,
+                        font=self._ui_font(0.95), width=card_width - 18,
                         tags=("stage_waveform", "stage_click", stage["id"]),
                     )
                     content_bottom = max(content_bottom, self.canvas.bbox(wave_item)[3])
@@ -636,7 +685,7 @@ class AdcLegend(ttk.Frame):
                     label = self.canvas.create_text(
                         (start_x + end_x) / 2, lane_y + 3,
                         text=self._edge_text(stage, target_index, back=target_index <= index),
-                        fill=color, font=self._ui_font(1.35, True),
+                        fill=color, font=self._ui_font(0.95, True),
                         width=min(width - 24, label_width), anchor="n",
                         tags=("transition_label",),
                     )
@@ -647,7 +696,6 @@ class AdcLegend(ttk.Frame):
             if int(self.canvas.cget("height")) != needed_height:
                 self.canvas.configure(height=needed_height)
             self._render_connectors(width, needed_height, connectors)
-            self._render_locked_width = int(width)
             self._queue_fit_rule_columns()
         except tk.TclError:
             return
@@ -708,21 +756,23 @@ class AdcLegend(ttk.Frame):
     def _wait_text(self, stage: Mapping[str, Any]) -> str:
         condition = stage["condition"]
         if condition == "unknown":
-            return self._tr("adc_legend_unknown")
-        name = self._tr("adc_legend_wait_press" if condition == "press" else "adc_legend_wait_release")
-        value = f"{stage['comparator']} {stage['threshold']} {stage['unit']}".strip()
-        return f"{name} {value}".strip()
-
-    def _edge_text(self, stage: Mapping[str, Any], target_index: int, *, back: bool) -> str:
-        condition = stage["condition"]
-        if condition == "unknown":
-            condition_text = self._tr("adc_legend_unknown")
+            text = self._tr("adc_legend_unknown")
         else:
             name = self._tr("adc_legend_wait_press" if condition == "press" else "adc_legend_wait_release")
-            condition_text = f"{name} {stage['comparator']} {stage['threshold']} {stage['unit']}".strip()
+            value = f"{stage['comparator']} {stage['threshold']} {stage['unit']}".strip()
+            text = f"{name} {value}".strip()
+        if stage.get("adc_precision"):
+            text += f"\nADC · {stage['adc_precision']}"
+        return text
+
+    def _edge_text(self, stage: Mapping[str, Any], target_index: int, *, back: bool) -> str:
+        condition_text = self._wait_text(stage)
         target = self._stages[target_index]["id"]
         action_key = "adc_legend_self_loop" if target == stage["id"] else "adc_legend_return" if back else "adc_legend_enter"
         action = self._tr(action_key).format(stage=target)
+        if stage.get("adc_precision"):
+            # The card already shows the condition and ADC bit selection.
+            return action
         return f"{condition_text}\n{action}"
 
     def _condition_color(self, condition: str) -> str:
@@ -736,16 +786,26 @@ class AdcLegend(ttk.Frame):
         if not hasattr(self, "_table"):
             return
         try:
-            for child in self._table.winfo_children():
-                child.destroy()
-            self._rule_rows = {}
+            stage_ids = tuple(stage["id"] for stage in self._stages[:self.stage_count])
+            if stage_ids != self._rule_stage_ids:
+                for border in self._rule_borders.values():
+                    border.destroy()
+                self._rule_borders = {}
+                for cells in self._rule_rows.values():
+                    for child in cells:
+                        child.destroy()
+                self._rule_rows = {}
+                self._rule_stage_ids = stage_ids
             headers = (
                 "adc_legend_col_stage", "adc_legend_col_wave",
                 "adc_legend_col_wait", "adc_legend_col_target",
             )
             for column, key in enumerate(headers):
-                hdr = ttk.Label(self._table, text=self._tr(key), style="Muted.TLabel", font=self._ui_font(), width=1)
-                hdr.grid(row=0, column=column, sticky="ew", padx=0, ipadx=0, pady=(0, 2))
+                if column >= len(self._rule_headers):
+                    hdr = ttk.Label(self._table, style="Muted.TLabel", width=1)
+                    hdr.grid(row=0, column=column, sticky="ew", padx=0, ipadx=0, pady=(0, 2))
+                    self._rule_headers.append(hdr)
+                self._rule_headers[column].configure(text=self._tr(key), font=self._ui_font(0.9))
             for row, stage in enumerate(self._stages[: self.stage_count], start=1):
                 stage_id = stage["id"]
                 marks = []
@@ -766,12 +826,28 @@ class AdcLegend(ttk.Frame):
                     style = "Panel.TLabel"
                 panel_bg = self.colors.get("panel", "#FFFFFF")
                 text_fg = self.colors.get("muted", "#6B7280") if style == "Muted.TLabel" else self.colors.get("text", "#1F2937")
+                border_color = self.colors.get("border", "#D1D5DB")
+                if row not in self._rule_borders:
+                    border = tk.Label(self._table, text="", width=1, height=1, bd=0,
+                                      wraplength=1, highlightthickness=1)
+                    border._adc_row_border = True
+                    border.grid(row=row, column=0, columnspan=4, sticky="nsew")
+                    border.lower()
+                    self._rule_borders[row] = border
+                self._rule_borders[row].configure(background=panel_bg, highlightbackground=border_color,
+                                                  highlightcolor=border_color)
                 for column, value in enumerate((label, wave, wait, target)):
+                    existing = self._rule_rows.get(row, ())
+                    if column < len(existing):
+                        cell = existing[column]
+                        cell.configure(text=value, font=self._ui_font(0.9), background=panel_bg, foreground=text_fg)
+                        cell._adc_rule_bg = panel_bg
+                        continue
                     # tk.Label so row hover can tint backgrounds independently (ttk shares styles).
                     cell = tk.Label(
                         self._table,
                         text=value,
-                        font=self._ui_font(),
+                        font=self._ui_font(0.9),
                         anchor="w",
                         justify="left",
                         padx=8,
@@ -785,7 +861,8 @@ class AdcLegend(ttk.Frame):
                         width=1,
                         wraplength=160,
                     )
-                    cell.grid(row=row, column=column, sticky="nsew")
+                    cell.grid(row=row, column=column, sticky="nsew", pady=1,
+                              padx=(1 if column == 0 else 0, 1 if column == 3 else 0))
                     self._rule_rows.setdefault(row, []).append(cell)
                     cell._adc_rule_bg = panel_bg
                     cell.bind(
@@ -795,13 +872,7 @@ class AdcLegend(ttk.Frame):
                     cell.bind("<Enter>", self._on_rule_stage_enter)
                     cell.bind("<Leave>", self._on_rule_stage_leave)
             self._fit_retries = 0
-            self._fit_rule_columns()
-            # Table often has width=1 during first build; retry shortly after layout.
-            try:
-                self.after(30, self._queue_fit_rule_columns)
-                self.after(120, self._queue_fit_rule_columns)
-            except tk.TclError:
-                pass
+            self._queue_fit_rule_columns()
         except tk.TclError:
             return
 

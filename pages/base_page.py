@@ -662,7 +662,13 @@ class VerticalScrollArea(ttk.Frame):
                     height = min(height, canvas_height)
             region = (0, 0, width, height)
             if tuple(map(float, self.canvas.tk.splitlist(self.canvas.cget("scrollregion")))) != region:
+                first, last = self.canvas.yview()
+                keep_bottom = first > 0 and last >= 1.0
                 self.canvas.configure(scrollregion=region)
+                if keep_bottom:
+                    # Wrapping can finish after the user reaches the end.
+                    # Keep that endpoint when delayed geometry grows the body.
+                    self.canvas.tk.call(self.canvas._w, "yview", "moveto", 1.0)
             needs_scrollbar = height > canvas_height
             needs_horizontal_scrollbar = self.horizontal and not self.clamp_width and width > canvas_width
             if needs_scrollbar and not self._scrollbar_visible:
@@ -760,7 +766,9 @@ class WrappingGroupBar(ttk.Frame):
         self._signature: tuple[Any, ...] | None = None
         self._gap = 8
         self._in_reflow = False
+        self._reflow_job: str | None = None
         self.bind("<Configure>", self._on_configure, add="+")
+        self.bind("<Destroy>", self._on_destroy, add="+")
 
     def add_group(self) -> ttk.Frame:
         group = ttk.Frame(self, style="Panel.TFrame")
@@ -838,7 +846,17 @@ class WrappingGroupBar(ttk.Frame):
     def _on_configure(self, event: tk.Event) -> None:
         if event.widget is not self:
             return
-        self.reflow(int(event.width))
+        if self._reflow_job is None:
+            self._reflow_job = self.after(1, self._run_reflow)
+
+    def _run_reflow(self) -> None:
+        self._reflow_job = None
+        self.reflow(int(self.winfo_width()))
+
+    def _on_destroy(self, event: tk.Event) -> None:
+        if event.widget is self and self._reflow_job is not None:
+            self.after_cancel(self._reflow_job)
+            self._reflow_job = None
 
 
 class FooterSplit(ttk.Frame):
@@ -1666,7 +1684,10 @@ class BasePage(ttk.Frame):
 
         help_slot = ttk.Frame(title_row, style="ModuleTitleRow.TFrame", width=26, height=24)
         help_slot.grid(row=0, column=1, sticky="e", padx=(8, 0))
-        help_slot.grid_propagate(False)
+        # Let the slot follow the themed button's requested size (including
+        # font/DPI changes); a fixed 26x24 slot clips the question mark.
+        help_slot.columnconfigure(0, minsize=26)
+        help_slot.rowconfigure(0, minsize=24)
         title_row._module_help_slot = help_slot
         title_row._module_title_label = title
         if help_key:
@@ -1753,6 +1774,7 @@ class BasePage(ttk.Frame):
         *,
         padding: int | tuple[int, ...] = 10,
         title_gap: int = 6,
+        bordered: bool = True,
         register_spacing: bool = False,
         spacing_before: bool = False,
         spacing_after: bool = True,
@@ -1762,8 +1784,8 @@ class BasePage(ttk.Frame):
         help_key: str | None = None,
         **grid_options: Any,
     ) -> tuple[ttk.Frame, ttk.Frame]:
-        """Build a bordered module with an independent title row and content area."""
-        section = ttk.Frame(parent, style="Module.TFrame", padding=padding)
+        """Build a module with an independent title row and content area."""
+        section = ttk.Frame(parent, style="Module.TFrame" if bordered else "OpenModule.TFrame", padding=padding)
         section.grid(**grid_options)
         section.columnconfigure(0, weight=1)
         section.rowconfigure(1, weight=1)
@@ -2067,12 +2089,9 @@ class BasePage(ttk.Frame):
         self._active_step_page = page_or_none
         bar.grid()
         bar.activate()
-        try:
-            self.update_idletasks()
-        except tk.TclError:
-            pass
-        self.trapezoid._reserve_scroll_clearance()
-        self.trapezoid._on_viewport_configure()
+        # The bar's requested height propagates through normal Tk geometry.
+        # Trapezoid's coalesced layout reserves clearance after that pass.
+        self.trapezoid._queue_layout()
 
     def _forget_step_progress(self, bar: Any) -> None:
         try:
@@ -2692,13 +2711,14 @@ class BasePage(ttk.Frame):
         subscribe: bool = True,
         collapsed: bool = True,
         toggle_command: Callable[[], None] | None = None,
+        bordered: bool = True,
     ) -> ttk.Frame:
         from pages.full_mode_layout import build_full_mode_log, is_full_mode
 
         if is_full_mode(self):
             return build_full_mode_log(self, parent, height=height or 7, width=width, subscribe=subscribe)
 
-        frame = ttk.Frame(parent, style="Module.TFrame", padding=10)
+        frame = ttk.Frame(parent, style="Module.TFrame" if bordered else "OpenModule.TFrame", padding=10)
         frame.columnconfigure(0, weight=1)
 
         # Keep the title/help/toggle together at their natural width. Only the

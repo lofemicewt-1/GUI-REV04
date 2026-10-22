@@ -77,8 +77,13 @@ class FakeStyle:
     def __init__(self, *_args, **_kwargs):
         self.configured = {}
 
-    def configure(self, style, **kwargs):
-        self.configured[style] = kwargs
+    def configure(self, style, query_opt=None, **kwargs):
+        options = self.configured.setdefault(style, {})
+        if query_opt is not None:
+            return options.get(query_opt, "")
+        if not kwargs:
+            return dict(options)
+        options.update(kwargs)
 
 
 class FakeSerialTrace:

@@ -6,8 +6,9 @@ from tkinter import ttk
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+from core import animation as anim
 from core.ui_dispatch import UiDispatcher
 from pages.base_page import BasePage
 from pages.step_progress import ProgressContext, StepProgressBar, StepSpec, Trapezoid
@@ -21,8 +22,10 @@ class StepProgressSizingTests(unittest.TestCase):
                                           (1374, 1.25, 0.92), (1375, 1.25, 0.7),
                                           (2000, 1.0, 0.7)):
             with self.subTest(viewport=viewport, scale=scale):
-                trap = MagicMock(expanded=False, _last_layout_signature=None)
+                trap = MagicMock(expanded=False, _last_layout_signature=None, _reveal_height=0)
                 trap.canvas.winfo_width.return_value = viewport
+                trap._available_viewport_height.return_value = 800
+                trap._base_group_height.return_value = 57
                 trap.host.ctx.state.ui_scale = scale
                 trap._button_font.measure.return_value = 100
                 bar = MagicMock()
@@ -50,6 +53,18 @@ class StepProgressSizingTests(unittest.TestCase):
 
 
 class StepProgressTests(unittest.TestCase):
+    def test_unallocated_tools_button_does_not_measure_fonts(self):
+        from unittest.mock import patch
+        with patch.object(self.trapezoid._button_label_font, 'measure', side_effect=AssertionError('hidden font fit')):
+            self.trapezoid._draw_button(SimpleNamespace(type=tk.EventType.Configure, width=1, height=1))
+
+    def test_show_chrome_does_not_drain_idle(self):
+        from unittest.mock import patch
+        with patch.object(self.host, 'update_idletasks', side_effect=AssertionError('nested idle')):
+            self.host.show_step_chrome(self.page)
+        self.root.update()
+        self.assertTrue(self.bar.winfo_ismapped())
+
     def setUp(self) -> None:
         prepare_tk_test(self)
         self.root = tk.Tk()
@@ -302,14 +317,95 @@ class StepProgressTests(unittest.TestCase):
         top = outer.winfo_rooty()
         bottom = top + outer.winfo_height()
         view_top = canvas.winfo_rooty()
-        view_bottom = view_top + canvas.winfo_height()
+        view_bottom = self.area.winfo_rooty() + self.area.winfo_height()
         self.assertGreaterEqual(top, view_top)
         self.assertLessEqual(bottom, view_bottom)
-        self.assertLess(
-            bottom,
-            self.bar.canvas.winfo_rooty(),
-            "the expanded panel must open above the progress cells",
+        self.assertGreaterEqual(
+            top,
+            self.bar.canvas.winfo_rooty() + self.bar.canvas.winfo_height(),
+            "advanced controls must unfold below the progress cells",
         )
+        self.assertGreaterEqual(top, self.trapezoid.button.winfo_rooty() + self.trapezoid.button.winfo_height())
+        self.assertIs(outer.master, self.trapezoid.advanced_group)
+        self.assertEqual(self.trapezoid.advanced_group.cget("style"), "Module.TFrame")
+
+    def test_advanced_header_stays_above_content_while_drawer_reveals_upward(self) -> None:
+        self.page.pack_forget()
+        trap = self.trapezoid
+        trap.set_expanded(False, persist=False)
+        self.flush()
+        button_y = trap.button.winfo_rooty()
+        drawer_bottom = trap.advanced_group.winfo_rooty() + trap.advanced_group.winfo_height()
+        strip_y = self.bar.canvas.winfo_rooty()
+        animator = self.root._piezo_animator = anim.Animator(self.root)
+        self.addCleanup(animator.stop)
+        with patch.object(anim.time, "perf_counter", return_value=0.0) as clock:
+            trap.set_expanded(True, persist=False)
+            self.flush()
+            self.assertTrue(animator.is_running(trap._motion_key))
+            self.assertEqual(trap._reveal_height, 0)
+            clock.return_value = 0.05
+            animator._tick()
+            self.flush()
+            partial = trap._reveal_height
+            self.assertGreater(partial, 0)
+            self.assertLess(partial, trap._reveal_target)
+            self.assertLess(trap.button.winfo_rooty(), button_y)
+            self.assertEqual(trap.advanced_group.winfo_rooty() + trap.advanced_group.winfo_height(), drawer_bottom)
+            self.assertLess(self.bar.canvas.winfo_rooty(), strip_y)
+            self.assertGreaterEqual(trap._panel_outer.winfo_rooty(),
+                                    trap.button.winfo_rooty() + trap.button.winfo_height())
+            trap.set_expanded(False, persist=False)
+            self.flush()
+            self.assertEqual(trap._reveal_height, partial)
+            clock.return_value = 0.5
+            animator._tick()
+            self.flush()
+            self.assertFalse(trap._panel_outer.winfo_ismapped())
+            self.assertFalse(animator.is_running(trap._motion_key))
+            self.assertEqual(trap.button.winfo_rooty(), button_y)
+            self.assertEqual(self.bar.canvas.winfo_rooty(), strip_y)
+
+    def test_hiding_chrome_cancels_advanced_reveal_and_restores_on_return(self) -> None:
+        self.page.pack_forget()
+        clock_patch = patch.object(anim.time, "perf_counter", return_value=0.0)
+        clock_patch.start()
+        self.addCleanup(clock_patch.stop)
+        trap = self.trapezoid
+        trap.set_expanded(False, persist=False)
+        self.flush()
+        animator = self.root._piezo_animator = anim.Animator(self.root)
+        self.addCleanup(animator.stop)
+        trap.set_expanded(True, persist=False)
+        self.flush()
+        self.assertTrue(animator.is_running(trap._motion_key))
+        self.host.current_mode = "full_mode"
+        trap.refresh_layout()
+        self.flush()
+        self.assertFalse(animator.is_running(trap._motion_key))
+        self.assertFalse(trap._panel_outer.winfo_ismapped())
+        self.host.current_mode = "button_mode"
+        trap.refresh_layout()
+        self.flush()
+        animator.set_enabled(False)
+        self.flush()
+        self.assertTrue(trap._panel_outer.winfo_ismapped())
+        self.assertGreater(trap._reveal_height, 0)
+
+    def test_advanced_arrow_and_controls_are_compact(self) -> None:
+        trap = self.trapezoid
+        for expanded in (False, True):
+            trap.set_expanded(expanded, persist=False)
+            self.flush()
+            points = trap.button.coords("chevron")
+            self.assertEqual(len(points), 6)
+            if expanded:
+                self.assertGreater(points[3], points[1], "expanded header points down to its content")
+            else:
+                self.assertLess(points[3], points[1], "collapsed drawer points upward")
+        action = trap.actions.winfo_children()[0]
+        self.assertLess(action.winfo_height(), 40)
+        self.assertLess(trap._panel_outer.winfo_height(), 130)
 
     def test_slim_strip_single_line_with_color_chip(self) -> None:
         self.root.update()
@@ -323,7 +419,7 @@ class StepProgressTests(unittest.TestCase):
         self.assertGreaterEqual(self.area.bottom_inset, 63)
         self.assertGreaterEqual(self.bar.canvas.winfo_rooty(),
                                 self.area.canvas.winfo_rooty() + self.area.canvas.winfo_height())
-        self.assertEqual(self.trapezoid.button.winfo_height(), 24)
+        self.assertEqual(self.trapezoid.button.winfo_height(), 20)
         info = self.trapezoid.floating_group.place_info()
         self.assertEqual(int(info.get("y", 0)), -6)
         self.assertGreaterEqual(
@@ -412,7 +508,7 @@ class StepProgressTests(unittest.TestCase):
             self.assertEqual((group.winfo_rootx(), group.winfo_rooty()), position)
 
     def test_scale_tiers_keep_pixel_fonts_and_bottom_pill(self) -> None:
-        for scale, strip_height, button_height in ((1.0, 27, 24), (1.1, 30, 26), (1.25, 33, 30)):
+        for scale, strip_height, button_height in ((1.0, 27, 20), (1.1, 30, 22), (1.25, 33, 25)):
             with self.subTest(scale=scale):
                 self.context.state.ui_scale = scale
                 self.bar.refresh_theme()

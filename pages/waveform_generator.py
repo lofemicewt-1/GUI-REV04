@@ -26,7 +26,6 @@ from core.awp192x_button_runtime import (
 )
 from pages.base_page import BasePage
 from pages.waveform_preview import PreviewSegment, compact_preview, draw_omissions
-from pages.waveform_layout import WaveformWidthClamp
 
 
 ARDUINO_I2C_TRANSACTION_BYTES = 31
@@ -174,10 +173,8 @@ class WaveformGeneratorPage(BasePage):
         self._body_layout_frame = body
         body.grid(row=1 if not self.embedded else 0, column=0, sticky="nsew")
         body.columnconfigure(0, weight=0)
-        body.columnconfigure(1, weight=0)
-        body.columnconfigure(2, weight=1)
+        body.columnconfigure(1, weight=1)
         body.rowconfigure(0, weight=1)
-        ttk.Frame(body, style="App.TFrame").grid(row=0, column=2, sticky="nsew")
 
         controls = ttk.Frame(body, style="Panel.TFrame", padding=14)
         controls.grid(row=0, column=0, sticky="nsw", padx=(0, 12))
@@ -368,12 +365,6 @@ class WaveformGeneratorPage(BasePage):
         self._plot_drawn_size: tuple[int, int] | None = None
         self.canvas.bind("<Configure>", self._queue_plot_redraw)
         self.bind("<Destroy>", self._cancel_plot_redraw, add="+")
-        self._waveform_width_clamp = WaveformWidthClamp(
-            self,
-            body,
-            plot_panel,
-            reserved_width=lambda: int(controls.winfo_reqwidth()) + 12,
-        )
 
         self.refresh_language()
         self._update_waveform_specific_fields()

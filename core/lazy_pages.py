@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from typing import Any
+import time
 
 
 class LazyPages(dict):
@@ -13,6 +14,7 @@ class LazyPages(dict):
         self._building: set[str] = set()
         self._staged: set[str] = set()
         self._install = install
+        self.preparation_timings_ms: list[tuple[str, float]] = []
 
     def register(self, name: str, factory: Callable[..., Any], *, staged: bool = False) -> None:
         if name not in self._order:
@@ -35,11 +37,31 @@ class LazyPages(dict):
         factory = self._factories[name]
         self._building.add(name)
         page = None
+        self.preparation_timings_ms = []
         try:
+            started = time.perf_counter()
             page = factory(defer_build=True) if name in self._staged else factory()
+            self.preparation_timings_ms.append(("factory", (time.perf_counter()-started)*1000))
             yield
-            yield from getattr(page, '_build_steps', ())
+            steps = iter(getattr(page, '_build_steps', ()))
+            while True:
+                frame = steps
+                while getattr(frame, 'gi_yieldfrom', None) is not None:
+                    frame = frame.gi_yieldfrom
+                source = getattr(frame, 'gi_frame', None)
+                label = f"{source.f_code.co_name}:{source.f_lineno}" if source else "build"
+                started = time.perf_counter()
+                try:
+                    next(steps)
+                except StopIteration:
+                    self.preparation_timings_ms.append(("finalize:"+label, (time.perf_counter()-started)*1000))
+                    break
+                self.preparation_timings_ms.append((label, (time.perf_counter()-started)*1000))
+                yield
+            yield
+            started = time.perf_counter()
             self._install(name, page)
+            self.preparation_timings_ms.append(("install", (time.perf_counter()-started)*1000))
             dict.__setitem__(self, name, page)
             self._factories.pop(name)
             return page
