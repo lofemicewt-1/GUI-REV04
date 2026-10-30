@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 ZH = {
-    "r2c_1221_normal_vibration": "正常震感",
-    "r2c_1221_strong_vibration": "强震感",
+    "r2c_1221_waveform_name": "波形名称",
+    "r2c_1221_normal_vibration": "正常振感",
+    "r2c_1221_strong_vibration": "强振感",
+    "r2c_1221_sinc_hint": "SINC 参数变化只刷新预览；写入成功后才允许播放。正常振感写入三段 SINC；强振感写入首段完整 SIN 和后三段 SINC。",
     "r2c_custom_waveform": "自定义波形",
     "r2c_rom_sine": "ROM 正弦",
     "r2c_auto_serial_required": "需勾选自动串联才能用此效果",
@@ -13,8 +15,10 @@ ZH = {
 }
 
 EN = {
+    "r2c_1221_waveform_name": "Waveform name",
     "r2c_1221_normal_vibration": "Normal vibration",
     "r2c_1221_strong_vibration": "Strong vibration",
+    "r2c_1221_sinc_hint": "SINC parameter changes only refresh the preview; playback requires a successful write. Normal vibration writes three SINC segments; strong vibration writes one complete SIN followed by three SINC segments.",
     "r2c_custom_waveform": "Custom waveform",
     "r2c_rom_sine": "ROM sine",
     "r2c_auto_serial_required": "Enable auto serial to use this effect.",
@@ -29,7 +33,7 @@ EN = {
 EXISTING_KEY_OVERRIDES = (
     (
         "glossary_serial",
-        "串联播放：将多个波形片段按顺序连续播放；serial1 为正常震感（slice18–20），serial3 为强震感（slice24–27）。",
+        "串联播放：将多个波形片段按顺序连续播放；serial1 为正常振感（slice18–20），serial3 为强振感（slice24–27）。",
         "Play waveform segments in sequence; serial1 is normal vibration (slice18–20), and serial3 is strong vibration (slice24–27).",
     ),
 )

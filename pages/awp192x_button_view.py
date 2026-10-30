@@ -9,6 +9,9 @@ from core.ui_dispatch import post_to_ui
 from core.base_tool import parse_gpio_read_response
 import tkinter as tk
 from tkinter import ttk
+from tkinter import messagebox
+
+from core.awp192x_sine import plan_sine
 
 from pages.base_page import fit_toplevel_to_screen
 from pages.adc_legend import AdcLegend
@@ -17,7 +20,7 @@ from pages.waveform_generator import WaveformGeneratorPage, WAVEFORM_WRITE_POINT
 from pages.waveform_preview import compact_preview, draw_omissions
 
 
-def draw_timed_waveform(canvas, colors, tr, segments, point_us):
+def draw_timed_waveform(canvas, colors, tr, segments, point_us, *, end_value=None):
     """Plot first/last repeat cycles while keeping the true time annotations."""
     layout = compact_preview(segments)
     segments = layout.segments
@@ -25,7 +28,7 @@ def draw_timed_waveform(canvas, colors, tr, segments, point_us):
     canvas.configure(bg=colors["canvas_bg"], highlightbackground=colors["border"])
     width, height = max(300, canvas.winfo_width()), max(220, canvas.winfo_height())
     left, right, top = 16, width - 16, 28
-    columns = 2 if width < 720 else 3
+    columns = 3
     columns = min(columns, max(1, len(segments)))
     rows = (len(segments) + columns - 1) // columns
     ends = layout.segment_ends
@@ -74,7 +77,8 @@ def draw_timed_waveform(canvas, colors, tr, segments, point_us):
         for index, value in enumerate(part.samples):
             x = left + (right-left) * (part.start + (part.end-part.start)*index/len(part.samples)) / layout.display_total
             coords.extend((x, y_of(value)))
-        coords.extend((left + (right-left)*part.end/layout.display_total, y_of(part.samples[-1])))
+        final = end_value if end_value is not None and part is visible[-1] else part.samples[-1]
+        coords.extend((left + (right-left)*part.end/layout.display_total, y_of(final)))
         if len(coords) >= 4:
             canvas.create_line(*coords, fill=colors["primary"], width=2, tags="wave_curve")
     draw_omissions(canvas, layout, left, right-left, y_zero, colors)
@@ -129,6 +133,12 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         self._button_import_fingerprint = None
         self._preview_job = None
         self._button_plot_drawn = None
+        self._sine_syncing = False
+        self._sine_plan = None
+        self._sine_plan_key = None
+        self._sine_error = ""
+        self._sine_active = False
+        self._manual_output = (owner.max_voltage_var.get(), owner.duration_var.get())
         super().__init__(parent, ctx, embedded=True, storage=storage)
         self.set_write_observer(
             lambda: owner._begin_button_progress_step("waveform"),
@@ -136,6 +146,8 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         )
 
     def _build_ui(self):
+        point_us = max(1, int(self.owner.duration_var.get()))
+        self.sine_frequency_var = tk.StringVar(self, value=f"{1_000_000 / (256 * point_us):.12g}")
         self.columnconfigure(0, weight=0, minsize=550)
         self.columnconfigure(1, weight=1, minsize=380)
         self.rowconfigure(0, weight=1)
@@ -147,15 +159,18 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         global_fields.grid(row=0, column=0, columnspan=3, sticky="ew")
         self.owner._add_combo(global_fields, 0, "max_output_voltage", self.owner.max_voltage_var, [x[0] for x in self.owner.amp_options])
         self.owner._add_entry(global_fields, 1, "single_point_duration", self.owner.duration_var, "us")
+        self._output_voltage_widget = global_fields.grid_slaves(row=0, column=1)[0]
+        self._point_time_widget = global_fields.grid_slaves(row=1, column=1)[0]
         ttk.Label(global_fields, textvariable=self.owner.period_hint_var, style="Muted.TLabel").grid(row=0, column=4, rowspan=2, padx=20, sticky="w")
         tabs = ttk.Frame(self.controls, style="Panel.TFrame")
         tabs.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 8))
         self.source_buttons = {}
-        for i, (source, text) in enumerate((("sinc", "SINC / SRAM"), ("rom", "ROM SIN"), ("ram", "RAM"))):
+        for i, (source, text) in enumerate((("sinc", "SINC / SRAM"), ("ram", "ROM / RAM"))):
             tabs.columnconfigure(i, weight=1, uniform="wave_tabs")
             button = ttk.Button(tabs, text=text, command=lambda key=source: self.select_source(key))
             button.grid(row=0, column=i, sticky="ew", padx=(0, 4))
             self.source_buttons[source] = button
+        self._source_selection_motion = self.make_segmented_selection(tuple(self.source_buttons.values()))
         self.fields = ttk.Frame(self.controls, style="Panel.TFrame")
         self.fields.grid(row=2, column=0, columnspan=3, sticky="ew")
         for col in range(3):
@@ -167,6 +182,7 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             ("points", self.points_var, None), ("start_phase", self.start_phase_var, None),
             ("end_phase", self.end_phase_var, None), ("offset", self.offset_var, None),
             ("voltage_amplitude", self.voltage_amplitude_var, None),
+            ("frequency", self.sine_frequency_var, None),
             ("sinc_positive_voltage", self.sinc_positive_voltage_var, None),
             ("sinc_negative_voltage", self.sinc_negative_voltage_var, None),
             ("sinc_points1", self.sinc_points1_var, None), ("sinc_points2", self.sinc_points2_var, None),
@@ -224,6 +240,8 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             self._buttons[key] = btn
         self.canvas = tk.Canvas(plot, height=420, width=380, highlightthickness=1)
         self.canvas.grid(row=1, column=0, sticky="nsew")
+        self.canvas.bind("<Map>", self._queue_plot_redraw, add="+")
+        self.canvas.bind("<Unmap>", lambda _event: self._cancel_pending_preview(), add="+")
         self.read_slices_text = tk.Text(plot, height=2, width=8, wrap="none",
                                         bg=self.colors["panel"], fg=self.colors["text"],
                                         insertbackground=self.colors["text"])
@@ -232,14 +250,15 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         self.read_slices_scrollbar.grid(row=2, column=1, sticky="ns")
         self.read_slices_text.configure(yscrollcommand=self.read_slices_scrollbar.set, state="disabled")
         self.read_slices_xscrollbar = None
-        for _, variable, _ in specs:
-            variable.trace_add("write", lambda *_: self._on_param_changed())
+        for key, variable, _ in specs:
+            variable.trace_add("write", lambda *_, field=key: self._on_param_changed(field))
             variable.trace_add("write", lambda *_: self.owner._on_button_progress_inputs_changed())
         self.fill_zero_tail_var.trace_add("write", lambda *_: self._on_param_changed())
         self.fill_zero_tail_var.trace_add("write", lambda *_: self.owner._on_button_progress_inputs_changed())
         for variable in [*self.serial_slice_vars, *self.serial_repeat_vars]:
             variable.trace_add("write", lambda *_: self._on_serial_param_changed())
             variable.trace_add("write", lambda *_: self.owner._on_button_progress_inputs_changed())
+        self._point_time_trace = self.owner.duration_var.trace_add("write", self._on_point_time_changed)
         self.canvas.bind("<Configure>", self._queue_plot_redraw, add="+")
         self._button_layout_job: str | None = None
         self._button_layout_signature: tuple[Any, ...] | None = None
@@ -300,12 +319,162 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         self._button_layout_signature = None
         self._queue_button_layout()
 
-    def _on_param_changed(self) -> None:
+    def _on_param_changed(self, field=None) -> None:
+        if self._sine_syncing or getattr(self, "_selecting_source", False):
+            return
+        if field == "points" and self.waveform_type_var.get() == "sine":
+            self._sync_sine_frequency_from_timing()
         self._update_waveform_specific_fields()
         self._update_end_addr()
         self._notify_metrics_changed()
         if self._plot_mode == "current" and self.waveform_type_var.get() != "serial":
             self._queue_plot_redraw()
+
+    def _reading_sine_state(self):
+        return bool(getattr(self.owner, "_reading_current_settings", False)
+                    or getattr(self.owner, "_syncing_chip_settings", False))
+
+    def _sync_sine_frequency_from_timing(self):
+        try:
+            frequency = 1_000_000 / (int(self.points_var.get()) * int(self.owner.duration_var.get()))
+        except (ValueError, ZeroDivisionError):
+            return
+        self._sine_syncing = True
+        try:
+            self.sine_frequency_var.set(f"{frequency:.12g}")
+        finally:
+            self._sine_syncing = False
+
+    def _on_point_time_changed(self, *_):
+        if self._sine_syncing or self.waveform_type_var.get() != "sine":
+            return
+        self._sync_sine_frequency_from_timing()
+        if not self._reading_sine_state():
+            self._on_param_changed()
+
+    def get_sine_plan(self):
+        if self.waveform_type_var.get() != "sine" or self._preview_imported_waveform:
+            return None
+        key = tuple(variable.get() for variable in (
+            self.voltage_amplitude_var, self.sine_frequency_var, self.start_phase_var,
+            self.end_phase_var, self.offset_var, self.start_addr_var, self.fill_zero_tail_var))
+        if key != self._sine_plan_key or self._sine_plan is None:
+            start_addr = int(self.start_addr_var.get(), 0)
+            if not 0 <= start_addr <= self.storage.SRAM_MAX:
+                raise ValueError("Start address must be within 0x0000-0x03FF")
+            plan = plan_sine(float(self.voltage_amplitude_var.get()), float(self.sine_frequency_var.get()),
+                max_points=self.storage.SRAM_MAX + 1 - start_addr,
+                start_phase=float(self.start_phase_var.get()), end_phase=float(self.end_phase_var.get()),
+                offset=float(self.offset_var.get()), fill_zero_tail=self.fill_zero_tail_var.get())
+            self._sine_plan, self._sine_plan_key = plan, key
+        plan = self._sine_plan
+        self._sine_error = ""
+        self.source = plan.source
+        return plan
+
+    def _apply_sine_plan(self, plan):
+        if self._sine_syncing:
+            return
+        self._sine_syncing = True
+        try:
+            if self.points_var.get() != str(plan.points):
+                self.points_var.set(str(plan.points))
+            if self.owner.duration_var.get() != str(plan.point_us):
+                self.owner.duration_var.set(str(plan.point_us))
+            label = next(label for label, _, reg in self.owner.amp_options if (reg & 0x7C) == (plan.reg14 & 0x7C))
+            if self.owner.max_voltage_var.get() != label:
+                self.owner.max_voltage_var.set(label)
+            self.ctx.state.current_max_output_reg_value = plan.reg14
+            self.ctx.state.single_point_duration_us = plan.point_us
+            current = self.owner.play_waveform_var.get()
+            if current in (f"slice{self.slice_var.get()}", "0x1F"):
+                target = "0x1F" if plan.source == "rom" else f"slice{self.slice_var.get()}"
+                if current != target:
+                    self.owner.play_waveform_var.set(target)
+        finally:
+            self._sine_syncing = False
+        return plan
+
+    def adopt_sine_registers(self, reg14, reg15, *, rom_selected=False):
+        """Restore a read/imported ROM shape without rewriting any hardware."""
+        if not rom_selected and self.waveform_type_var.get() != "sine":
+            return
+        self._sine_syncing = True
+        try:
+            if rom_selected:
+                depth = 1024 >> ((reg14 >> 7) & 7)
+                points = depth // (2 if reg14 & 0x0800 else 1)
+                phase = 180 if reg14 & 0x0400 else 0
+                self.waveform_type_var.set("sine")
+                self.voltage_amplitude_var.set(f"{2.97 * (1 + ((reg14 >> 2) & 31)):.2f}")
+                self.offset_var.set("0")
+                self.start_phase_var.set(str(phase))
+                self.end_phase_var.set(str(phase + (180 if reg14 & 0x0800 else 360)))
+                self.fill_zero_tail_var.set(False)
+                self.points_var.set(str(points))
+            self.owner.duration_var.set(str(reg15 + 1))
+            self.sine_frequency_var.set(f"{1_000_000 / (int(self.points_var.get()) * (reg15 + 1)):.12g}")
+        finally:
+            self._sine_syncing = False
+        self._sine_plan_key = None
+        self._on_param_changed()
+
+    def _generate_current(self, *, use_imported=True):
+        if self.waveform_type_var.get() == "sine" and not self._reading_sine_state():
+            plan = self.get_sine_plan()
+            self._apply_sine_plan(plan)
+            if plan.source == "rom":
+                start, end = float(self.start_phase_var.get()), float(self.end_phase_var.get())
+                peak = float(self.voltage_amplitude_var.get())
+                volts = [peak * math.sin(math.radians(start + (end-start)*i/plan.points)) for i in range(plan.points)]
+                values = [self.engine.map_voltage_to_dac(v) for v in volts]
+                address = int(self.start_addr_var.get(), 0)
+                return values, volts, int(self.slice_var.get()), address, address + plan.points, "sine"
+        return super()._generate_current(use_imported=use_imported)
+
+    def write_waveform(self):
+        try:
+            plan = self.get_sine_plan()
+        except (ValueError, TypeError) as exc:
+            messagebox.showerror(self.tr("error"), f"{self.tr('invalid_input')}\n{exc}")
+            return
+        if plan is None or plan.source != "rom":
+            super().write_waveform()
+            return
+        if self._waveform_write_busy:
+            return
+        if not self.ctx.serial.is_connected:
+            messagebox.showwarning(self.tr("error"), self.tr("not_connected"))
+            return
+        dev = self.ctx.state.awp192x_device_addr
+        self._set_waveform_write_busy(True)
+
+        def worker():
+            error = ""
+            try:
+                for reg, value in ((0x14, plan.reg14), (0x15, plan.reg15)):
+                    response = self.ctx.serial.write_register_value(dev, reg, value, bits=16)
+                    if not response.ok:
+                        error = response.error
+                        break
+            except Exception as exc:
+                error = str(exc)
+            post_to_ui(self, finish, error)
+
+        def finish(error):
+            if not self.winfo_exists():
+                return
+            self._set_waveform_write_busy(False)
+            if error:
+                messagebox.showerror(self.tr("error"), error)
+            else:
+                messagebox.showinfo(self.tr("info"), self.tr("write_success"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _set_waveform_write_busy(self, busy):
+        super()._set_waveform_write_busy(busy)
+        self._update_waveform_specific_fields()
 
     def _on_serial_param_changed(self) -> None:
         self._notify_metrics_changed()
@@ -320,13 +489,17 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         def redraw():
             self._preview_job = None
             try:
-                if self.winfo_exists():
+                if self.winfo_exists() and self.canvas.winfo_ismapped():
                     self._redraw_active_plot()
             except tk.TclError:
                 pass
 
-        try:
+        def after_geometry():
+            # Give geometry jobs queued by the trace batch one idle pass.
             self._preview_job = self.after_idle(redraw)
+
+        try:
+            self._preview_job = self.after_idle(after_geometry)
         except tk.TclError:
             self._preview_job = None
 
@@ -341,6 +514,7 @@ class ButtonWaveformPage(WaveformGeneratorPage):
     def _on_waveform_destroy(self, event) -> None:
         if getattr(event, "widget", None) is self:
             self._cancel_pending_preview()
+            self.owner.duration_var.trace_remove("write", self._point_time_trace)
             job, self._button_layout_job = self._button_layout_job, None
             if job is not None:
                 try:
@@ -354,6 +528,8 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             return None
         try:
             size = (canvas.winfo_width(), canvas.winfo_height())
+            if not canvas.winfo_ismapped() or min(size) <= 1:
+                return None
         except tk.TclError:
             return None
         variable_names = (
@@ -361,6 +537,7 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             "offset_var", "voltage_amplitude_var", "sinc_positive_voltage_var", "sinc_negative_voltage_var",
             "sinc_points1_var", "sinc_points2_var", "sinc_points3_var", "start_addr_var", "end_addr_var",
             "write_points_per_batch_var", "fill_zero_tail_var",
+            "sine_frequency_var",
         )
         values = tuple(str(getattr(self, name).get()) for name in variable_names)
         serial = tuple(str(variable.get()) for variable in (*self.serial_slice_vars, *self.serial_repeat_vars))
@@ -377,21 +554,45 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         )
 
     def select_source(self, source):
+        was_batching = getattr(self.owner, "_batching_button_inputs", False)
+        self._selecting_source = True
+        self.owner._batching_button_inputs = True
+        try:
+            self._select_source_values(source)
+        finally:
+            self._selecting_source = False
+            self.owner._batching_button_inputs = was_batching
+        self._notify_metrics_changed()
+        self.owner._on_shared_settings_changed()
+        self.owner._on_button_progress_inputs_changed()
+        self.owner._reconcile_rom_waveform_progress()
+
+    def _select_source_values(self, source):
         self._plot_mode = "current"
-        self.source = source
+        self._preview_imported_waveform = False
+        if source == "sinc" and self._sine_active:
+            self._sine_syncing = True
+            try:
+                self.owner.max_voltage_var.set(self._manual_output[0])
+                self.owner.duration_var.set(self._manual_output[1])
+            finally:
+                self._sine_syncing = False
         if source == "rom":
-            self.owner.play_waveform_var.set("0x1F")
-            self.waveform_type_var.set("rom")
+            # Accept older callers while presenting one ROM/RAM editor.
+            self._sine_syncing = True
+            try:
+                peak = next(v for label, v, _ in self.owner.amp_options if label == self.owner.max_voltage_var.get())
+                self.voltage_amplitude_var.set(f"{peak:g}")
+                self.sine_frequency_var.set(f"{1_000_000 / (1024 * int(self.owner.duration_var.get())):.12g}")
+                self.waveform_type_var.set("sine")
+            finally:
+                self._sine_syncing = False
         else:
-            if self.owner.play_waveform_var.get() == "0x1F":
+            if source == "sinc" and self.owner.play_waveform_var.get() == "0x1F":
                 self.owner.play_waveform_var.set(f"slice{self.slice_var.get()}")
-            self._preview_imported_waveform = False
             self.waveform_type_var.set("sinc" if source == "sinc" else "sine")
         self._update_waveform_specific_fields()
         self._queue_plot_redraw()
-        self._notify_metrics_changed()
-        self.owner._sync_button_step_progress_params()
-        self.owner._reconcile_rom_waveform_progress()
 
     def progress_input_fingerprint(self):
         """Return editable waveform inputs without using preview revision signals."""
@@ -403,6 +604,7 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             self.end_phase_var,
             self.offset_var,
             self.voltage_amplitude_var,
+            self.sine_frequency_var,
             self.sinc_positive_voltage_var,
             self.sinc_negative_voltage_var,
             self.sinc_points1_var,
@@ -428,29 +630,51 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         self.owner._on_button_progress_inputs_changed()
 
     def _update_waveform_specific_fields(self):
+        if self._sine_syncing:
+            return
         super()._update_waveform_specific_fields()
         self.source = {"sinc": "sinc", "rom": "rom"}.get(self.waveform_type_var.get(), "ram")
-        for cell in self.cells.values():
-            cell.grid_remove()
-        visible = [key for key in self.cells if any(w.winfo_manager() for w in self._field_widgets[key])]
+        sine = self.waveform_type_var.get() == "sine" and not self._preview_imported_waveform
+        if sine and not self._sine_active:
+            self._manual_output = (self.owner.max_voltage_var.get(), self.owner.duration_var.get())
+        if self._sine_active and not sine and not self._reading_sine_state():
+            self._sine_syncing = True
+            try:
+                self.owner.max_voltage_var.set(self._manual_output[0])
+                self.ctx.state.current_max_output_reg_value = next(
+                    reg for label, _, reg in self.owner.amp_options if label == self._manual_output[0])
+            finally:
+                self._sine_syncing = False
+        self._sine_active = sine
+        if sine and not self._reading_sine_state():
+            try:
+                self._apply_sine_plan(self.get_sine_plan())
+            except (ValueError, TypeError) as exc:
+                self._sine_error = str(exc)
+                self._sine_plan = None
+                self.source = "ram"
+        visible = [key for key in self.cells if key != "frequency" and any(w.winfo_manager() for w in self._field_widgets[key])]
+        if sine:
+            visible.append("frequency")
         if self.source == "sinc":
             for widget in self._field_widgets["points"]:
                 widget.grid()
             visible.append("points")
-        self._field_widgets["points"][1].configure(state="readonly" if self.source == "sinc" else "normal")
-        if self.source == "rom":
-            visible = []
+        for key, cell in self.cells.items():
+            if key not in visible and cell.winfo_manager() == "grid":
+                cell.grid_remove()
+        self._field_widgets["points"][1].configure(state="readonly" if sine or self.source == "sinc" else "normal")
         # An empty grid frame retains its last requested height in Tk.
-        if visible:
+        if visible and self.fields.winfo_manager() != "grid":
             self.fields.grid()
-        else:
+        elif not visible and self.fields.winfo_manager() == "grid":
             self.fields.grid_remove()
         rows = (
             ("waveform_type", "slice_index", "points"),
             ("sinc_positive_voltage", "sinc_negative_voltage", None) if self.source == "sinc" else
-            ("start_phase", "end_phase", "offset"),
+            (("voltage_amplitude", "frequency", "offset") if sine else ("start_phase", "end_phase", "offset")),
             ("sinc_points1", "sinc_points2", "sinc_points3") if self.source == "sinc" else
-            ("voltage_amplitude", None, None),
+            (("start_phase", "end_phase", None) if sine else ("voltage_amplitude", None, None)),
             ("start_addr", "end_addr", "write_points_per_batch"),
         )
         # Reserve the same parameter rows across SRAM sources and wave shapes.
@@ -462,21 +686,36 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             self.fields.rowconfigure(row, minsize=field_height)
             for col, key in enumerate(keys):
                 if key in visible:
-                    self.cells[key].grid(row=row, column=col, sticky="ew", padx=(0,8))
+                    cell = self.cells[key]
+                    info = cell.grid_info()
+                    if not info or int(info["row"]) != row or int(info["column"]) != col:
+                        cell.grid(row=row, column=col, sticky="ew", padx=(0,8))
         for source, button in self.source_buttons.items():
-            button.configure(style="Selected.TButton" if source == self.source else "Secondary.TButton")
+            button.configure(style="Selected.TButton" if source == ("sinc" if self.source == "sinc" else "ram") else "Secondary.TButton")
+        self._source_selection_motion.select(self.source_buttons["sinc" if self.source == "sinc" else "ram"])
         rom = self.source == "rom"
-        for widget in self._buttons.values():
-            widget.state(["disabled"] if rom else ["!disabled"])
-        if rom:
-            self.serial_editor.grid_remove()
-            self._field_widgets["fill_zero_tail"][0].grid_remove()
-        self.source_hint.configure(text=(
-            "ROM SIN：手动播放选用 0x1F；1024 点，使用上方电压和单点时长。" if rom else
+        for key, widget in self._buttons.items():
+            disabled = self._waveform_write_busy or (rom and key in {"write_imported_waveform", "verify_written_waveform"})
+            disabled |= sine and bool(self._sine_error) and key == "write_waveform"
+            widget.state(["disabled"] if disabled else ["!disabled"])
+        self._output_voltage_widget.configure(state="disabled" if sine else "readonly")
+        self._point_time_widget.configure(state="readonly" if sine else "normal")
+        for key in ("slice_index", "start_addr", "end_addr", "write_points_per_batch"):
+            self._field_widgets[key][1].configure(state="disabled" if rom else "readonly" if key != "start_addr" else "normal")
+        hint = (
             "波形由软件生成或导入后写入 SRAM；时长 = 点数 × 单点时长。"
-        ) if self.language == "zh" else (
-            "ROM SIN: manual playback selects 0x1F; 1024 samples, using voltage and point time above." if rom else
-            "Generate or import a waveform, then write it to SRAM. Duration = sample count × point time."))
+            if self.language == "zh" else
+            "Generate or import a waveform, then write it to SRAM. Duration = samples × point time.")
+        if sine:
+            if self._sine_error:
+                hint = self._sine_error
+            elif self._sine_plan is not None:
+                plan = self._sine_plan
+                hint = (f"自动选择 {plan.source.upper()} · {plan.points} 点 · {plan.point_us} us/点\n"
+                        f"实际频率 {plan.actual_frequency:.8g} Hz" if self.language == "zh" else
+                        f"Auto: {plan.source.upper()} · {plan.points} samples · {plan.point_us} us/sample\n"
+                        f"Actual frequency: {plan.actual_frequency:.8g} Hz")
+        self.source_hint.configure(text=hint)
 
     def _refresh_write_button_text(self):
         button = self._buttons.get("write_waveform")
@@ -488,11 +727,15 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         super().refresh_language()
         for i in range(1, 4):
             self._labels[f"sinc_points{i}"].configure(text=self.tr(f"awp192x_sinc_points{i}"))
+        self._labels["voltage_amplitude"].configure(text=f"{self.tr('voltage_amplitude')} (V)")
+        self._labels["frequency"].configure(text=f"{self.tr('frequency')} (Hz)")
         if hasattr(self, "cells"):
             self._update_waveform_specific_fields()
 
     def effective_points(self):
-        return 1024 if self.source == "rom" else super().effective_points()
+        if self.waveform_type_var.get() == "sine" and not self._reading_sine_state():
+            return self.get_sine_plan().total_points
+        return super().effective_points()
 
     def _redraw_active_plot(self):
         if not hasattr(self, "canvas"):
@@ -518,8 +761,10 @@ class ButtonWaveformPage(WaveformGeneratorPage):
             return
         self._button_plot_drawn = signature
         if self.source == "rom":
-            peak = next(v for label, v, _ in self.owner.amp_options if label == self.owner.max_voltage_var.get())
-            data = [peak * math.sin(2*math.pi*i/1024) for i in range(1024)]
+            plan = self.get_sine_plan()
+            peak = float(self.voltage_amplitude_var.get())
+            start, end = float(self.start_phase_var.get()), float(self.end_phase_var.get())
+            data = [peak * math.sin(math.radians(start + (end-start)*i/plan.points)) for i in range(plan.points)]
             segments = [("ROM SIN", data)]
         elif self.waveform_type_var.get() == "serial":
             self._preview_serial_waveform()
@@ -546,9 +791,12 @@ class ButtonWaveformPage(WaveformGeneratorPage):
         except ValueError:
             self.canvas.delete("all")
             return
-        draw_timed_waveform(self.canvas, self.colors, self.tr, segments, point_us)
+        draw_timed_waveform(self.canvas, self.colors, self.tr, segments, point_us,
+            end_value=data[0] if self.source == "rom" else None)
 
     def _draw_serial_plot(self, segments):
+        if not self.canvas.winfo_ismapped():
+            return
         try:
             point_us = int(self.owner.duration_var.get())
             if not 1 <= point_us <= 65535:
@@ -772,6 +1020,7 @@ class ButtonModeView:
             body, subscribe=True, collapsed=True,
             toggle_command=self._toggle_button_log,
             bordered=False,
+            motion_settled=self._sync_button_log,
         )
         details.grid(row=3, column=0, sticky="ew", pady=(10,0))
         yield
@@ -809,6 +1058,7 @@ class ButtonModeView:
             except tk.TclError:
                 return
         self._active_adc_stage_id = stage
+        self._refresh_button_adc_legend_rules()
         try:
             field.focus_set()
         except tk.TclError:
@@ -913,16 +1163,17 @@ class ButtonModeView:
 
     def _toggle_button_log(self):
         self._toggle_serial_log()
-        self.after_idle(self._sync_button_log)
 
     def _sync_button_log(self):
+        if not self.winfo_viewable() or self._serial_log_motion.busy:
+            return
         owner = self.master
         while owner is not None and not hasattr(owner, "mode_scroll"):
             owner = getattr(owner, "master", None)
         if owner is not None:
             owner.mode_scroll._sync_scroll_region()
             if self._button_log.winfo_manager():
-                self.after_idle(lambda: owner.mode_scroll.canvas.yview_moveto(1))
+                owner.mode_scroll.canvas.yview_moveto(1)
 
     def _refresh_button_view(self):
         if self.page_name != "button_mode":

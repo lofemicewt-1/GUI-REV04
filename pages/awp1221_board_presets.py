@@ -58,6 +58,9 @@ class AWP1221BoardPresetMixin:
             awp1221_format_threshold_signed, awp1221_parse_threshold_text,
             awp1221_sinc_serial_group,
         )
+        solve = getattr(self, "_solve_rom_targets", None)
+        if callable(solve):
+            solve(raise_error=True)
         self._remember_board_rom()
         active = getattr(self, "_sinc_active_group", None)
         if active:

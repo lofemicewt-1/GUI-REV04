@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import MappingProxyType
+import math
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
@@ -90,13 +91,17 @@ def _step_font(widget: Any, *, bold: bool = False) -> tkfont.Font:
 
 def _rounded(canvas: tk.Canvas, box: tuple[float, float, float, float], radius: float, **kw: Any) -> int:
     """One rounded Canvas item, so stable layouts can update it in place."""
+    return canvas.create_polygon(*_rounded_points(box, radius), smooth=True, splinesteps=24, **kw)
+
+
+def _rounded_points(box: tuple[float, float, float, float], radius: float) -> tuple[float, ...]:
     x1, y1, x2, y2 = box
     r = min(radius, (x2 - x1) / 2, (y2 - y1) / 2)
-    return canvas.create_polygon(
+    return (
         x1+r, y1, x1+r, y1, x2-r, y1, x2-r, y1, x2, y1, x2, y1+r,
         x2, y1+r, x2, y2-r, x2, y2-r, x2, y2, x2-r, y2, x2-r, y2,
         x1+r, y2, x1+r, y2, x1, y2, x1, y2-r, x1, y2-r,
-        x1, y1+r, x1, y1+r, x1, y1, smooth=True, splinesteps=24, **kw,
+        x1, y1+r, x1, y1+r, x1, y1,
     )
 
 
@@ -149,17 +154,23 @@ class Trapezoid:
         self._reveal_target = 0
         self._panel_gap = 0
         self._motion_key = ("advanced-tools", id(self))
+        self._reveal_generation = 0
         self._button_font = _step_font(host)
         self._button_label_font = _step_font(host)
+        self._button_draw_signature = None
+        self._button_fit_key = None
+        self._button_natural_key = None
+        self._button_label_size = -round(18 * _ui_scale(host))
+        self._button_natural_size = self._button_label_size
 
         self.floating_group.columnconfigure(0, weight=1)
-        self.floating_group.rowconfigure(0, weight=1)
+        self.floating_group.rowconfigure(0, weight=0)
         self.progress_slot = ttk.Frame(floating_group, style="App.TFrame")
         self.progress_slot.grid(row=0, column=0, sticky="ew")
         self.progress_slot.columnconfigure(0, weight=1)
 
         self.advanced_group = ttk.Frame(floating_group, style="Module.TFrame", padding=(3, 2))
-        self.advanced_group.grid(row=1, column=0, sticky="n", pady=(2, 0))
+        self.advanced_group.grid(row=1, column=0, sticky="ew", pady=(2, 0))
         self.advanced_group.columnconfigure(0, weight=1)
 
         self.button = tk.Canvas(
@@ -252,6 +263,14 @@ class Trapezoid:
                 # font sizes here warms unusable fonts and stalls cold opens.
                 return
             colors = getattr(self.host, "colors", {})
+            scale = _ui_scale(self.host)
+            label = self.host.tr("chip_tools_label")
+            focused = self.button.tk.call("focus") == str(self.button)
+            signature = (width, height, scale, label, self.expanded,
+                         self._hover, self._pressed, focused, colors.get("panel", "#FFFFFF"))
+            if signature == self._button_draw_signature:
+                return
+            self._button_draw_signature = signature
             self.button.configure(bg=colors.get("panel", "#FFFFFF"))
             self.button.delete("all")
             fill, outline, text = "#F1F5F9", "#CBD5E1", "#475569"
@@ -261,23 +280,31 @@ class Trapezoid:
                 fill = "#E2E8F0"
             if self._pressed:
                 fill = "#CBD5E1"
-            if self.button.focus_get() is self.button:
+            if focused:
                 outline = "#93C5FD"
-            scale = _ui_scale(self.host)
             stroke = 1.5 * scale
             inset = stroke / 2
             _rounded(self.button, (inset, inset, width - inset, height - inset), height / 2,
                      fill=fill, outline=outline, width=stroke)
-            label = self.host.tr("chip_tools_label")
             icon_space = _slim_px(18, scale)
             # Keep the full translated label even when the width cap applies.
-            size = round(18 * scale)
-            self._button_label_font.configure(size=-size)
             room = max(1, width - _slim_px(ADV_BUTTON_PAD, scale))
-            while size > 1 and self._button_label_font.measure(label) > room:
-                size -= 1
-                self._button_label_font.configure(size=-size)
-            label_width = self._button_label_font.measure(label)
+            text_height = max(1, height - math.ceil(2*stroke))
+            fit_key = (label, scale, room, text_height)
+            if fit_key != self._button_fit_key:
+                size = round(18 * scale)
+                if self._button_label_size != -size:
+                    self._button_label_font.configure(size=-size)
+                    self._button_label_size = -size
+                label_width = self._button_label_font.measure(label)
+                while size > 1 and (label_width > room or self._button_label_font.metrics("linespace") > text_height):
+                    size -= 1
+                    self._button_label_font.configure(size=-size)
+                    self._button_label_size = -size
+                    label_width = self._button_label_font.measure(label)
+                self._button_fit_key = fit_key
+                self._button_fitted_width = label_width
+            label_width = self._button_fitted_width
             x = (width - label_width - icon_space) / 2
             self.button.create_text(x, height / 2, anchor="w", text=label,
                                     fill=text, font=self._button_label_font, tags="label")
@@ -394,9 +421,23 @@ class Trapezoid:
         return max(1, area.winfo_height() - collapsed_band)
 
     def _set_reveal_height(self, height: int) -> None:
+        presenter = getattr(self.host._root(), "_piezo_viewport_presentation", None)
+        if presenter is not None and height != self._reveal_height:
+            generation = self._reveal_generation
+            def apply():
+                if generation == self._reveal_generation:
+                    self._apply_reveal_height(height)
+            return presenter.present_layout(self._owning_area or self.canvas, self.floating_group,
+                                            self._motion_key, apply)
+        self._apply_reveal_height(height)
+
+    def _apply_reveal_height(self, height: int) -> None:
         changed = self._reveal_height != max(0, height)
         self._reveal_height = max(0, height)
         self._panel_gap = 2 if height else 0
+        if self.floating_group.winfo_manager() == "place":
+            self.floating_group.place_configure(
+                height=self._base_group_height()+self._reveal_height+self._panel_gap)
         if height:
             self._panel_outer.configure(height=height)
             self._panel_outer.grid(row=1, column=0, sticky="ew", pady=(self._panel_gap, 0))
@@ -409,6 +450,7 @@ class Trapezoid:
     def _reveal_panel(self, target: int) -> None:
         if target == self._reveal_target:
             return
+        self._reveal_generation += 1
         self._reveal_target = target
         animator = anim.animator_for(self.host)
         start = self._reveal_height
@@ -421,12 +463,16 @@ class Trapezoid:
             )
 
     def _hide_panel(self, _event: tk.Event | None = None) -> None:
+        self._reveal_generation += 1
+        presenter = getattr(self.host._root(), "_piezo_viewport_presentation", None)
+        if presenter is not None:
+            presenter.cancel_layout(self.floating_group)
         animator = anim.animator_for(self.host)
         if animator is not None:
             animator.cancel(self._motion_key)
         self._reveal_target = 0
         self._last_layout_signature = None
-        self._set_reveal_height(0)
+        self._apply_reveal_height(0)
 
     def set_expanded(self, value: bool, *, persist: bool = True) -> None:
         value = bool(value)
@@ -489,15 +535,29 @@ class Trapezoid:
                 return
             self._last_layout_signature = signature
             scale = float(getattr(state, "ui_scale", 1.0) or 1.0)
-            self._button_font.configure(size=-round(18 * scale))
-            label_w = self._button_font.measure(self.host.tr("chip_tools_label"))
+            natural_key = (self.host.tr("chip_tools_label"), scale)
+            if natural_key != self._button_natural_key:
+                size = -round(18 * scale)
+                if self._button_natural_size != size:
+                    self._button_font.configure(size=size)
+                    self._button_natural_size = size
+                self._button_natural_width = self._button_font.measure(natural_key[0])
+                self._button_natural_key = natural_key
+            label_w = self._button_natural_width
             adv_need = min(_slim_px(ADV_BUTTON_MAX_WIDTH, scale), label_w + _slim_px(ADV_BUTTON_PAD, scale))
             fraction = (STRIP_NARROW_FRACTION if width < STRIP_MAX_WIDTH * scale
                         else STRIP_MAX_FRACTION)
             cap = max(1, min(round(width * fraction),
                              _slim_px(STRIP_MAX_WIDTH, scale), width - _slim_px(24, scale)))
             group_width = min(max(content_hint, adv_need), cap)
-            self.floating_group.place(relx=0.5, rely=1.0, anchor="s", y=-_slim_px(6, scale), width=group_width)
+            panel_width = min(max(280, panel_width_request + 12), max(240, width - 32))
+            # Keep the native clipping parent the same width throughout a
+            # disclosure. Shrinking it before grid recentres its children can
+            # cut the strip/header text for a Windows paint frame.
+            surface_width = max(group_width, panel_width+8)
+            self.floating_group.place(relx=0.5, rely=1.0, anchor="s", y=-_slim_px(6, scale),
+                                      width=surface_width,
+                                      height=group_height+self._reveal_height+self._panel_gap)
             self.button.configure(width=min(adv_need, group_width),
                                   height=_slim_px(TRAPEZOID_BASE_HEIGHT, scale))
             # The strip Canvas already includes its three shadow pixels.
@@ -507,11 +567,9 @@ class Trapezoid:
                 bar.apply_width(group_width)
             self._reserve_scroll_clearance()
             if self.expanded:
-                panel_width = min(max(280, int(self.panel.winfo_reqwidth()) + 12), max(240, width - 32))
                 max_panel_height = max(80, height - group_height - 24)
                 panel_height = min(max_panel_height, max(60, int(self.panel.winfo_reqheight()) + 6))
                 self._panel_outer.configure(width=panel_width)
-                self.floating_group.place_configure(width=max(group_width, panel_width + 8))
                 if int(self.panel.winfo_reqheight()) + 6 > panel_height:
                     self._panel_scrollbar.grid(row=0, column=1, sticky="ns")
                     content_width = max(1, panel_width - 26)
@@ -526,9 +584,6 @@ class Trapezoid:
                 # A competing guessed width can alternate its rows indefinitely.
                 self._reveal_panel(panel_height)
             else:
-                if self._reveal_height:
-                    self.floating_group.place_configure(
-                        width=max(group_width, self._panel_outer.winfo_reqwidth() + 8))
                 self._reveal_panel(0)
         except tk.TclError:
             pass
@@ -543,7 +598,9 @@ class Trapezoid:
 
     def refresh_theme(self) -> None:
         self._compact_controls()
-        self._button_font.configure(size=-round(18 * _ui_scale(self.host)))
+        self._button_fit_key = None
+        self._button_natural_key = None
+        self._button_draw_signature = None
         self._draw_button()
         self._last_layout_signature = None
         self._queue_layout()
@@ -637,17 +694,24 @@ class StepProgressBar(ttk.Frame):
         self._items: dict[str, dict[str, int]] = {}
         self._strip_width: int | None = None
         self._drawing_signature: tuple[Any, ...] | None = None
+        self._cell_layout_signature: tuple[Any, ...] | None = None
         self._hover_key: str | None = None
         self._pressed_key: str | None = None
         self._focus_key = self.steps[0].key
-        self.active_step_key: str | None = None  # Most recently navigated step.
+        self.active_step_key: str | None = self.steps[0].key
+        self._expansion = {step.key: float(index == 0) for index, step in enumerate(self.steps)}
+        self._expansion_target = self.active_step_key
+        self._motion_key = ("step-icons", id(self))
         self._font = _step_font(page)
         self._bold_font = _step_font(page, bold=True)
+        self._font_line_height = None
         self._text_widths: dict[str, int] = {}
         self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0,
                                 takefocus=True, cursor="hand2")
         self.canvas.grid(row=0, column=0)
         self._tooltip = SimpleTooltip(self.canvas, self._hit_tooltip)
+        # Resolve the Canvas cell before SimpleTooltip asks for its text.
+        self.canvas.bind("<Enter>", self._motion)
         self.canvas.bind("<Motion>", self._motion, add="+")
         self.canvas.bind("<Leave>", self._leave, add="+")
         self.canvas.bind("<ButtonPress-1>", self._press, add="+")
@@ -661,6 +725,7 @@ class StepProgressBar(ttk.Frame):
         if bus is not None:
             self._status_unsubscribe = bus.subscribe(self._on_status_update)
         self.bind("<Destroy>", self._on_destroy, add="+")
+        self.bind("<Unmap>", self._settle_expansion, add="+")
 
     @staticmethod
     def _module_targets(page: Any) -> dict[int, dict[str, Any]]:
@@ -989,21 +1054,28 @@ class StepProgressBar(ttk.Frame):
             self._text_widths[text] = max(self._font.measure(text), self._bold_font.measure(text))
         return self._text_widths[text]
 
-    def _geometry(self) -> tuple[int, int, int, int, int, int]:
+    def _geometry(self, *, compact: bool = False) -> tuple[int, int, int, int, int, int]:
         scale = _ui_scale(self.page)
         px = lambda value: _slim_px(value, scale)
-        return (px(10.5), 2*px(6) + px(15) + px(6), 2*px(4.5) + px(9), px(42), px(9), px(21))
+        if compact:
+            return (px(4), px(24), px(2), 0, 0, 0)
+        return (px(10.5), 2*px(6) + px(15) + px(6), px(6), px(42), px(9), px(21))
+
+    def _compact_icons(self, width: int) -> bool:
+        pad, cell_fixed, gap, badge, tail_gap, collapse = self._geometry()
+        return not self._collapsed and width < (2*pad + len(self.steps)*cell_fixed
+            + (len(self.steps)-1)*gap + tail_gap + badge + collapse + _slim_px(36, _ui_scale(self.page)))
 
     def preferred_width(self) -> int:
         pad, cell_fixed, connector, badge, gap, collapse = self._geometry()
         if self._collapsed:
             return 2 * pad + badge
-        return (2 * pad + sum(cell_fixed + self._measure(self._titles.get(step.key, step.key))
-                              for step in self.steps)
+        return (2 * pad + cell_fixed * len(self.steps)
+                + max(self._measure(self._titles.get(step.key, step.key)) for step in self.steps)
                 + (len(self.steps) - 1) * connector + gap + badge + collapse)
 
     def apply_width(self, width: int) -> None:
-        """Fit cells to content, shortening the longest titles first."""
+        """Keep room for every icon and the currently expanded title."""
         self._strip_width = max(1, int(width))
         self._draw_strip()
 
@@ -1036,20 +1108,26 @@ class StepProgressBar(ttk.Frame):
         px = lambda value: _slim_px(value, scale)
         # Enlarge the original rounded 18/20/22 px tiers to 27/30/33 px.
         # Grow further only when glyphs would clip.
-        line = max(self._font.metrics("linespace"), self._bold_font.metrics("linespace"))
+        if self._font_line_height is None:
+            self._font_line_height = max(self._font.metrics("linespace"), self._bold_font.metrics("linespace"))
+        line = self._font_line_height
         designed = round(1.5 * px(18))
         height = designed if line <= designed else line + px(6)
         width = self._strip_width or self.preferred_width()
-        compact = self.host.trapezoid.canvas.winfo_width() < STRIP_MAX_WIDTH * scale
+        compact = self._compact_icons(width)
         colors = getattr(self.page, "colors", {}) or {}
         background = colors.get("bg", "#FFFFFF")
         dark = getattr(getattr(self.page.ctx, "state", None), "theme", "light") == "dark"
-        signature = (width, height, scale, compact, self._collapsed, tuple(self._titles.items()),
-                     str(self._font.actual()), background, dark)
+        self._sync_expansion()
+        signature = (width, height, scale, self._collapsed, tuple(self._titles.items()),
+                     background, dark)
         if signature == self._drawing_signature:
+            self._layout_step_cells()
             self._paint()
             return
         self._drawing_signature = signature
+        self._cell_layout_signature = None
+        self._paint_signature = None
         c = self.canvas
         c.configure(width=width, height=height + px(3), bg=background)
         c.delete("all")
@@ -1063,31 +1141,18 @@ class StepProgressBar(ttk.Frame):
             _rounded(c, (inset, inset + offset, width - inset, height - inset + offset), height / 2,
                      fill=color, outline="#3A4658" if offset == 0 else color, width=stroke,
                      tags="strip" if offset == 0 else "shadow")
-        pad, cell_fixed, connector, badge, gap, collapse = self._geometry()
+        pad, cell_fixed, connector, badge, gap, collapse = self._geometry(compact=compact)
         x, cy = ((width - badge) / 2 if self._collapsed else pad), height / 2
         if not self._collapsed:
-            measured = [self._measure(self._titles[step.key]) for step in self.steps]
-            room = max(0, width - 2*pad - cell_fixed*len(self.steps)
-                       - connector*(len(self.steps)-1) - gap - badge - collapse)
-            lo, hi = 0, max(measured)
-            while lo < hi:
-                mid = (lo + hi + 1) // 2
-                if sum(min(value, mid) for value in measured) <= room:
-                    lo = mid
-                else:
-                    hi = mid - 1
             for index, step in enumerate(self.steps):
                 key = step.key
-                text_room = min(measured[index], lo)
-                text = self._elide(self._titles[key], text_room, compact=compact)
-                self._display_titles[key] = text
-                cell_width = cell_fixed + text_room
+                cell_width = cell_fixed
                 box = (x, stroke, x + cell_width, height - stroke)
                 self._hit_rects[key] = box
                 items = self._items[key] = {}
                 items["background"] = _rounded(c, box, (height-2*stroke)/2,
                                                 fill="#202B3C", outline="", width=stroke)
-                nx, r = x + px(6) + px(7.5), px(15)/2
+                nx, r = x + (px(12) if compact else px(6) + px(7.5)), px(15)/2
                 node = (nx-r, cy-r, nx+r, cy+r)
                 items["node"] = c.create_oval(*node, width=stroke)
                 items["inner"] = c.create_oval(nx-r+px(3), cy-r+px(3), nx+r-px(3), cy+r-px(3), width=stroke)
@@ -1098,18 +1163,22 @@ class StepProgressBar(ttk.Frame):
                 dot_r = .9 * scale
                 items["bang_dot"] = c.create_oval(nx-dot_r, cy+r*.4-dot_r, nx+dot_r, cy+r*.4+dot_r,
                                                     fill="white", outline="")
-                items["text"] = c.create_text(x + px(6) + px(15) + px(6), cy, anchor="w", text=text,
+                self._draw_step_icon(key, nx, cy, scale)
+                items["text"] = c.create_text(x + (cell_fixed if compact else cell_fixed-px(6)), cy, anchor="w", text="",
                                                fill="#F1F5F9", font=self._font)
                 x += cell_width
                 if index < len(self.steps)-1:
-                    items["connector"] = c.create_line(x+px(4.5), cy, x+px(4.5)+px(9), cy, width=stroke)
                     x += connector
+            # The trailing controls stay still while width transfers between steps.
+            x = width - pad - gap - badge - collapse
             x += gap
-        self._badge_box = (x, (height-px(21))/2, x+badge, (height+px(21))/2)
-        self._badge_item = _rounded(c, self._badge_box, px(10.5), fill="#354258", outline="", width=stroke)
-        self.badge_text_item = c.create_text(x+badge/2, cy, fill="#E2E8F0", font=self._font)
-        self._hit_rects["__badge"] = self._badge_box
-        if not self._collapsed:
+        self._badge_item = None
+        if not compact:
+            self._badge_box = (x, (height-px(21))/2, x+badge, (height+px(21))/2)
+            self._badge_item = _rounded(c, self._badge_box, px(10.5), fill="#354258", outline="", width=stroke)
+            self.badge_text_item = c.create_text(x+badge/2, cy, fill="#E2E8F0", font=self._font)
+            self._hit_rects["__badge"] = self._badge_box
+        if not self._collapsed and not compact:
             x += badge
             self._hit_rects["__collapse"] = (x, stroke, x+collapse, height-stroke)
             self._collapse_outline = _rounded(c, self._hit_rects["__collapse"], px(10.5),
@@ -1120,14 +1189,118 @@ class StepProgressBar(ttk.Frame):
             self._focus_key = next(iter(self._hit_rects))
         if self._hover_key not in self._hit_rects:
             self._hover_key = None
+        self._layout_step_cells()
         self._paint()
+
+    def _draw_step_icon(self, key: str, x: float, y: float, scale: float) -> None:
+        c = self.canvas
+        tag = f"glyph:{key}"
+        options = {"fill": "#CBD5E1", "width": 1.5 * scale, "tags": tag}
+
+        def line(*points: float) -> None:
+            c.create_line(*(value * scale + (x if index % 2 == 0 else y)
+                            for index, value in enumerate(points)), **options)
+
+        if key in {"waveform", "output"}:
+            line(-5, 0, -3, -4, -1, -4, 1, 4, 3, 4, 5, 0)
+        elif key == "adc":
+            line(-5, 4, -5, 1, -2, 1, -2, -2, 1, -2, 1, -4, 5, -4)
+        elif key == "detection":
+            c.create_oval(x-5*scale, y-5*scale, x+2*scale, y+2*scale,
+                          outline="#CBD5E1", width=1.5*scale, tags=tag)
+            line(1, 1, 5, 5)
+        elif key in {"en", "start"}:
+            c.create_arc(x-5*scale, y-5*scale, x+5*scale, y+5*scale,
+                         start=135, extent=270, style="arc", outline="#CBD5E1",
+                         width=1.5*scale, tags=tag)
+            line(0, -6, 0, 0)
+        elif key in {"channels", "config"}:
+            for dx, dy in ((-4, -2), (0, 2), (4, -1)):
+                line(dx, -5, dx, 5)
+                line(dx-2, dy, dx+2, dy)
+        else:
+            c.create_text(x, y, text=str(self._data[key].spec.ordinal),
+                          font=self._font, fill="#CBD5E1", tags=tag)
+
+    def _sync_expansion(self) -> None:
+        target = self.active_step_key or self.steps[0].key
+        if target == self._expansion_target:
+            return
+        self._expansion_target = target
+        start = dict(self._expansion)
+
+        def step(p: float) -> None:
+            self._expansion = {key: value + (float(key == target) - value) * p
+                               for key, value in start.items()}
+            self._layout_step_cells()
+
+        animator = anim.animator_for(self)
+        if animator is None or self._collapsed or not self.winfo_viewable():
+            step(1.0)
+        else:
+            animator.animate(self._motion_key, anim.DUR_SHEET, step, ease=anim.SPRING_CARD)
+
+    def _settle_expansion(self, _event: tk.Event | None = None) -> None:
+        animator = anim.animator_for(self)
+        if animator is not None:
+            animator.cancel(self._motion_key)
+        target = self.active_step_key or self.steps[0].key
+        self._expansion = {step.key: float(step.key == target) for step in self.steps}
+        self._expansion_target = target
+        self._layout_step_cells()
+
+    def _layout_step_cells(self) -> None:
+        if self._collapsed or not self._items:
+            return
+        scale = _ui_scale(self.page)
+        px = lambda value: _slim_px(value, scale)
+        width = self._strip_width or self.preferred_width()
+        signature = (width, scale, tuple(self._titles.items()), tuple(self._expansion.items()))
+        if signature == self._cell_layout_signature:
+            return
+        self._cell_layout_signature = signature
+        compact = self._compact_icons(width)
+        pad, cell_fixed, gap, badge, tail_gap, collapse = self._geometry(compact=compact)
+        room = max(0, width - 2*pad - len(self.steps)*cell_fixed
+                   - (len(self.steps)-1)*gap - tail_gap - badge - collapse)
+        widths = {key: max(cell_fixed-px(2 if compact else 6), cell_fixed + room*value)
+                  for key, value in self._expansion.items()}
+        # Bound the spring's undershoot without moving the trailing controls.
+        largest = max(widths, key=widths.get)
+        widths[largest] -= sum(widths.values()) - (len(self.steps)*cell_fixed + room)
+        x = pad
+        for key, items in self._items.items():
+            previous = self._hit_rects[key]
+            dx = x - previous[0]
+            if dx:
+                for item in items.values():
+                    self.canvas.move(item, dx, 0)
+                self.canvas.move(f"glyph:{key}", dx, 0)
+            box = (x, previous[1], x+widths[key], previous[3])
+            self._hit_rects[key] = box
+            if box != previous:
+                self.canvas.coords(items["background"], *_rounded_points(box, (box[3]-box[1])/2))
+            title = self._titles[key].partition(" · ")[2] if compact else self._titles[key]
+            text = self._elide(title or self._titles[key], max(0, int(widths[key] - cell_fixed)))
+            if text != self._display_titles.get(key, ""):
+                self.canvas.itemconfigure(items["text"], text=text)
+            self._display_titles[key] = text
+            x += widths[key] + gap
 
     def _paint(self) -> None:
         c = self.canvas
-        focused = c.focus_get() is c
+        # Native combobox popdowns own focus without a Python widget wrapper.
+        focused = c.tk.call("focus") == str(c)
+        badge = self.page.tr("step_count", **self._count_args())
+        signature = (focused, self._focus_key, self._hover_key, self._pressed_key,
+                     self.active_step_key, self._collapsed, badge,
+                     tuple((key, self._data[key].state) for key in self._items))
+        if signature == getattr(self, "_paint_signature", None):
+            return
+        self._paint_signature = signature
         for key, items in self._items.items():
             state = self._data[key].state
-            active = key == self.active_step_key
+            active = key == (self.active_step_key or self.steps[0].key)
             fill = "#354258" if active or key == self._hover_key else "#202B3C"
             if key == self._pressed_key:
                 fill = "#46556B"
@@ -1137,16 +1310,16 @@ class StepProgressBar(ttk.Frame):
             c.itemconfigure(items["node"], fill=_STATE_COLORS[state] if state in {"done", "error"} else fill,
                             outline=_STATE_COLORS[state])
             c.itemconfigure(items["inner"], outline="#CBD5E1" if state == "idle" else "#D99A00",
-                            state="normal" if state in {"idle", "running"} else "hidden")
+                            state="normal" if state == "running" else "hidden")
+            c.itemconfigure(f"glyph:{key}", state="normal" if state == "idle" else "hidden")
             c.itemconfigure(items["dot"], fill="#D99A00", state="normal" if state == "running" else "hidden")
             for name, visible in (("check", state == "done"), ("bang", state == "error"),
                                   ("bang_dot", state == "error")):
                 c.itemconfigure(items[name], state="normal" if visible else "hidden")
-            if "connector" in items:
-                c.itemconfigure(items["connector"], fill="#93B4F5" if state == "done" else "#526075")
-        c.itemconfigure(self.badge_text_item, text=self.page.tr("step_count", **self._count_args()))
-        c.itemconfigure(self._badge_item, outline="#93C5FD" if focused and self._focus_key == "__badge" else "")
-        if not self._collapsed:
+        if self._badge_item is not None:
+            c.itemconfigure(self.badge_text_item, text=badge)
+            c.itemconfigure(self._badge_item, outline="#93C5FD" if focused and self._focus_key == "__badge" else "")
+        if "__collapse" in self._hit_rects:
             c.itemconfigure(self._collapse_outline,
                             outline="#93C5FD" if focused and self._focus_key == "__collapse" else "",
                             fill="#46556B" if self._pressed_key == "__collapse" else "#354258" if self._hover_key == "__collapse" else "#202B3C")
@@ -1156,7 +1329,7 @@ class StepProgressBar(ttk.Frame):
                      if x1 <= x <= x2 and y1 <= y <= y2), None)
 
     def _hit_tooltip(self) -> str:
-        key = self._hover_key or (self._focus_key if self.canvas.focus_get() is self.canvas else None)
+        key = self._hover_key or (self._focus_key if self.canvas.tk.call("focus") == str(self.canvas) else None)
         if key in self._data:
             return self._titles[key] + "\n\n" + self.tooltip_text(key)
         if key == "__collapse":
@@ -1167,10 +1340,14 @@ class StepProgressBar(ttk.Frame):
         key = self._hit(event.x, event.y)
         if key != self._hover_key:
             self._hover_key = key
-            self._tooltip._show(event)
+            if key is None:
+                self._tooltip._hide()
+            else:
+                self._tooltip._show(event)
             self._paint()
 
     def _leave(self, _event: tk.Event) -> None:
+        self._tooltip._hide()
         self._hover_key = None
         self._pressed_key = None
         self._paint()
@@ -1222,6 +1399,7 @@ class StepProgressBar(ttk.Frame):
         return "break"
 
     def collapse(self) -> None:
+        self._settle_expansion()
         self._collapsed = True
         self._render()
 
@@ -1231,6 +1409,7 @@ class StepProgressBar(ttk.Frame):
 
     def scroll_to_step(self, step_key: str) -> None:
         self.active_step_key = step_key
+        self._sync_expansion()
         self._paint()
         self._metadata = self._module_targets(self.page)
         metadata = self._metadata.get(self._data[step_key].spec.ordinal)
@@ -1267,6 +1446,7 @@ class StepProgressBar(ttk.Frame):
 
     def refresh_theme(self) -> None:
         self._text_widths.clear()
+        self._font_line_height = None
         size = -round(18 * _ui_scale(self.page))
         self._font.configure(size=size)
         self._bold_font.configure(size=size)
@@ -1275,12 +1455,18 @@ class StepProgressBar(ttk.Frame):
 
     def _on_destroy(self, event: tk.Event) -> None:
         if event.widget is self:
+            animator = anim.animator_for(self)
+            if animator is not None:
+                animator.cancel(self._motion_key)
             self._cancel_context_check()
             if self._status_unsubscribe is not None:
                 self._status_unsubscribe()
                 self._status_unsubscribe = None
 
     def destroy(self) -> None:
+        animator = anim.animator_for(self)
+        if animator is not None:
+            animator.cancel(self._motion_key)
         self._cancel_context_check()
         if self._status_unsubscribe is not None:
             self._status_unsubscribe()

@@ -4,6 +4,7 @@ import tkinter as tk
 from tests.tk_cleanup import attach_tk_cleanup, cancel_after_jobs, prepare_tk_test
 from tkinter import ttk
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
@@ -165,6 +166,45 @@ class StepProgressTests(unittest.TestCase):
     def flush(self) -> None:
         self.root.update()
 
+    def settle_pointer_geometry(self):
+        deadline = time.perf_counter()+2
+        stable, previous = 0, None
+        def poll():
+            nonlocal stable, previous
+            canvas = self.bar.canvas
+            geometry = (canvas.winfo_rootx(), canvas.winfo_rooty(), canvas.winfo_width(),
+                        canvas.winfo_height(), canvas.winfo_ismapped())
+            ready = self.trapezoid._layout_job is None and geometry[-1]
+            stable = stable+1 if ready and geometry == previous else 0
+            previous = geometry
+            if stable >= 3 or time.perf_counter() >= deadline:
+                self.root.quit()
+            else:
+                self.root.after(16, poll)
+        self.root.after(16, poll)
+        self.root.mainloop()
+        self.assertGreaterEqual(stable, 3, 'progress strip did not finish native placement')
+
+    def scripted_pointer(self):
+        # These component scenarios generate their own pointer path. A real
+        # Windows Leave (including DPI-virtualized warp feedback) must not
+        # contradict that path while a tooltip is being mapped.
+        canvas = self.bar.canvas
+        tags = canvas.bindtags()
+        tag = f'ScriptedPointer{id(canvas)}'
+        canvas.bindtags((tag, *tags))
+        for sequence in ('<Enter>', '<Motion>', '<Leave>'):
+            self.root.bind_class(tag, sequence,
+                lambda event: None if event.send_event else 'break')
+        def cleanup():
+            try:
+                canvas.bindtags(tags)
+            except tk.TclError:
+                pass
+            for sequence in ('<Enter>', '<Motion>', '<Leave>'):
+                self.root.unbind_class(tag, sequence)
+        self.addCleanup(cleanup)
+
     def test_aggregate_receipts_invalidation_retention_and_badge(self) -> None:
         self.bar.update_params("adc", {"settings": 1, "stage0": 10})
         self.bar.update_params("detection", {"start": 1})
@@ -285,6 +325,54 @@ class StepProgressTests(unittest.TestCase):
         tooltip = self.bar.tooltip_text("waveform")
         self.assertIn("完成条件：", tooltip)
         self.assertIn("失败", tooltip)
+
+    def test_entering_icon_shows_full_translated_title_without_selecting_it(self) -> None:
+        self.scripted_pointer()
+        self.bar.apply_width(152)
+        current = self.bar.active_step_key
+        for language in ("zh", "en"):
+            self.context.state.language = language
+            self.page.refresh_language()
+            self.flush()
+            self.bar.canvas.event_generate("<Leave>", sendevent=True)
+            self.root.focus_force()
+            self.settle_pointer_geometry()
+            left, top, right, bottom = self.bar._hit_rects["adc"]
+            self.bar.canvas.event_generate("<Enter>", sendevent=True,
+                                           x=int((left+right)/2), y=int((top+bottom)/2))
+            self.flush()
+            tip = self.bar._tooltip.tip
+            self.assertIsNotNone(tip)
+            self.assertTrue(tip.winfo_ismapped())
+            text = tip.winfo_children()[0].cget("text")
+            self.assertTrue(text.startswith(self.bar._titles["adc"]))
+            self.assertEqual(self.bar._display_titles["adc"], "")
+            self.assertEqual(self.bar.active_step_key, current)
+            self.assertTrue(all(item["state"] == "idle" for item in self.bar.snapshot().values()))
+
+    def test_hover_updates_between_icons_and_hides_in_gaps_or_on_leave(self) -> None:
+        self.scripted_pointer()
+        self.bar.canvas.focus_force()
+        self.settle_pointer_geometry()
+        for key in ("adc", "detection"):
+            left, top, right, bottom = self.bar._hit_rects[key]
+            self.bar.canvas.event_generate("<Motion>", sendevent=True,
+                                           x=int((left+right)/2), y=int((top+bottom)/2))
+            self.flush()
+            tip = self.bar._tooltip.tip
+            self.assertIsNotNone(tip)
+            self.assertTrue(tip.winfo_children()[0].cget("text").startswith(self.bar._titles[key]))
+        self.bar.canvas.event_generate("<Motion>", sendevent=True, x=0, y=0)
+        self.flush()
+        self.assertIsNone(self.bar._tooltip.tip)
+        left, top, right, bottom = self.bar._hit_rects["adc"]
+        self.bar.canvas.event_generate("<Motion>", sendevent=True,
+                                       x=int((left+right)/2), y=int((top+bottom)/2))
+        self.flush()
+        self.assertIsNotNone(self.bar._tooltip.tip)
+        self.bar.canvas.event_generate("<Leave>", sendevent=True)
+        self.flush()
+        self.assertIsNone(self.bar._tooltip.tip)
 
     def test_worker_result_is_delivered_through_the_ui_dispatcher(self) -> None:
         dispatcher = UiDispatcher(self.root, interval_ms=10000).start()
@@ -439,23 +527,101 @@ class StepProgressTests(unittest.TestCase):
     def test_narrow_cells_elide_instead_of_wrapping(self) -> None:
         self.root.update()
         self.bar._titles["waveform"] = "2 · " + "很长的步骤标题" * 6
-        self.bar.apply_width(390)
+        self.bar.apply_width(220)
         text = self.bar._display_titles["waveform"]
         self.assertTrue(text.endswith("…"))
         self.assertNotIn("\n", text)
 
-    def test_short_titles_survive_budget_and_navigation_does_not_resize(self) -> None:
+    def test_only_current_title_expands_and_group_width_stays_fixed(self) -> None:
         self.bar._titles = {"waveform": "1 · " + "Long waveform title " * 8,
                             "adc": "2 · ADC", "detection": "3 · EN"}
         self.bar.apply_width(480)
-        self.assertEqual(self.bar._display_titles["adc"], "2 · ADC")
-        self.assertEqual(self.bar._display_titles["detection"], "3 · EN")
+        self.assertEqual(self.bar._display_titles["adc"], "")
+        self.assertEqual(self.bar._display_titles["detection"], "")
         self.assertTrue(self.bar._display_titles["waveform"].endswith("…"))
         rectangles = dict(self.bar._hit_rects)
         width = self.bar.preferred_width()
         self.bar.scroll_to_step("adc")
-        self.assertEqual(self.bar._hit_rects, rectangles)
+        self.assertNotEqual(self.bar._hit_rects["adc"], rectangles["adc"])
+        self.assertEqual(self.bar._hit_rects["__badge"], rectangles["__badge"])
+        self.assertEqual(self.bar._display_titles["adc"], "2 · ADC")
+        self.assertEqual(self.bar._display_titles["waveform"], "")
+        self.assertEqual(self.bar._display_titles["detection"], "")
         self.assertEqual(self.bar.preferred_width(), width)
+
+    def test_tiny_strip_keeps_current_title_and_disjoint_icon_hit_areas(self) -> None:
+        self.bar.apply_width(152)
+        for step in self.bar.steps:
+            self.bar.scroll_to_step(step.key)
+            self.assertTrue(self.bar._display_titles[step.key])
+            self.assertNotIn("__badge", self.bar._hit_rects)
+            self.assertNotIn("__collapse", self.bar._hit_rects)
+            previous_end = 0
+            for other in self.bar.steps:
+                left, top, right, bottom = self.bar._hit_rects[other.key]
+                self.assertGreaterEqual(left, previous_end)
+                self.assertLessEqual(right, 152)
+                self.assertEqual(self.bar._hit((left+right)/2, (top+bottom)/2), other.key)
+                previous_end = right
+        self.bar.apply_width(480)
+        self.assertIn("__badge", self.bar._hit_rects)
+        self.assertIn("__collapse", self.bar._hit_rects)
+
+    def test_spring_retargets_from_visible_width_and_keeps_hit_areas_inside_strip(self) -> None:
+        animator = self.root._piezo_animator = anim.Animator(self.root)
+        self.addCleanup(animator.stop)
+        self.flush()
+        items = self.bar.canvas.find_all()
+        initial = dict(self.bar._hit_rects)
+        with patch.object(anim.time, "perf_counter", return_value=0.0) as clock:
+            self.bar.scroll_to_step("adc")
+            self.assertTrue(animator.is_running(self.bar._motion_key))
+            clock.return_value = 0.03
+            animator._tick()
+            partial = dict(self.bar._hit_rects)
+            self.assertNotEqual(partial["adc"], initial["adc"])
+            self.bar.scroll_to_step("detection")
+            self.assertEqual(self.bar._hit_rects, partial)
+            for instant in (0.06, 0.12, 0.18, 0.24, 0.4):
+                clock.return_value = instant
+                animator._tick()
+                previous_end = 0
+                for step in self.bar.steps:
+                    left, top, right, bottom = self.bar._hit_rects[step.key]
+                    self.assertGreaterEqual(left, previous_end)
+                    self.assertGreater(right-left, 20)
+                    self.assertEqual(self.bar._hit((left+right)/2, (top+bottom)/2), step.key)
+                    previous_end = right
+                self.assertLess(previous_end, self.bar._hit_rects["__badge"][0])
+                self.assertEqual(self.bar._hit_rects["__badge"], initial["__badge"])
+            self.assertFalse(animator.is_running(self.bar._motion_key))
+        self.assertEqual(self.bar.canvas.find_all(), items)
+        self.assertTrue(self.bar._display_titles["detection"])
+        self.assertEqual(self.bar._display_titles["adc"], "")
+        self.assertTrue(all(data["state"] == "idle" for data in self.bar.snapshot().values()))
+
+    def test_hiding_and_disabling_motion_settle_current_icon(self) -> None:
+        animator = self.root._piezo_animator = anim.Animator(self.root)
+        self.addCleanup(animator.stop)
+        self.flush()
+        self.bar.scroll_to_step("adc")
+        self.assertTrue(animator.is_running(self.bar._motion_key))
+        animator.set_enabled(False)
+        self.assertFalse(animator.is_running(self.bar._motion_key))
+        self.assertTrue(self.bar._display_titles["adc"])
+        self.assertEqual(self.bar._display_titles["waveform"], "")
+        animator.set_enabled(True)
+        self.bar.scroll_to_step("detection")
+        self.bar.grid_remove()
+        self.flush()
+        self.assertFalse(animator.is_running(self.bar._motion_key))
+        self.assertTrue(self.bar._display_titles["detection"])
+        self.bar.grid()
+        self.flush()
+        self.bar.scroll_to_step("waveform")
+        key = self.bar._motion_key
+        self.bar.destroy()
+        self.assertFalse(animator.is_running(key))
 
     def test_state_updates_reuse_canvas_items_and_draw_geometry_symbols(self) -> None:
         self.flush()

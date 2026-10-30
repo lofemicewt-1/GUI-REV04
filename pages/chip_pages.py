@@ -446,13 +446,13 @@ class AWP1921AWP1923Page(BasePage):
 
     def _sync_detail_fields_scrollregion(self, _event: tk.Event | None = None) -> None:
         canvas = self.detail_fields_canvas
-        if canvas is None:
+        if canvas is None or not canvas.winfo_exists():
             return
         canvas.configure(scrollregion=canvas.bbox("all"))
 
     def _sync_detail_fields_canvas_width(self, event: tk.Event) -> None:
         canvas = self.detail_fields_canvas
-        if canvas is None or self._detail_fields_window_id is None:
+        if canvas is None or self._detail_fields_window_id is None or not canvas.winfo_exists():
             return
         canvas.itemconfigure(
             self._detail_fields_window_id,

@@ -2032,6 +2032,7 @@ class AWP1018NormalModePage(BasePage):
             )
             btn.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 4, 0))
             self._stage_buttons[stage] = btn
+        self._stage_selection_motion = self.make_segmented_selection(tuple(self._stage_buttons.values()))
 
     def _build_adc_channel_selector(self, parent: tk.Misc, row: int) -> None:
         for _ in self._build_adc_channel_selector_steps(parent, row):
@@ -2877,6 +2878,9 @@ class AWP1018NormalModePage(BasePage):
             self._stage_frames[stage].grid()
         for name, button in self._stage_buttons.items():
             button.configure(style="Selected.TButton" if name == stage else "Secondary.TButton")
+        motion = getattr(self, "_stage_selection_motion", None)
+        if motion is not None:
+            motion.select(self._stage_buttons[stage])
         self._queue_adc_legend_rules()
 
     def _activate_stage_from_legend(self, stage_id: str) -> None:

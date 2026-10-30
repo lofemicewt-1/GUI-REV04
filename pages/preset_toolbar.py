@@ -57,7 +57,7 @@ class PresetToolbar(ttk.Frame):
         capabilities: Mapping[str, bool] | None = None,
         label_keys: Mapping[str, str] | None = None,
         tooltip_keys: Mapping[str, str | None] | None = None,
-        slot_values: Sequence[int | str] = (0, 1, 2, 3),
+        slot_values: Sequence[int | str] = (0, 1, 2),
         selected_slot: int | str | None = None,
         on_slot_selected: Callable[[int | str], Any] | None = None,
         hidden_capabilities: Collection[str] = (),

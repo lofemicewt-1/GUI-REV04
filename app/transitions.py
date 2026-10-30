@@ -115,8 +115,9 @@ def _delete_bitmap(bmp: int) -> None:
     except Exception:
         pass
 
-def _grab_bitmap(hwnd: int, w: int, h: int, *, source_x: int = 0, source_y: int = 0) -> int | None:
-    """Capture only this application's window DC; release every GDI handle."""
+def _grab_bitmap(hwnd: int, w: int, h: int, *, source_x: int = 0, source_y: int = 0,
+                 include_layered: bool = False) -> int | None:
+    """Capture a bounded DC frame; release every GDI handle."""
     from ctypes import wintypes
     user32, gdi32 = _user32, _gdi32
     user32.GetWindowDC.restype = wintypes.HDC
@@ -135,7 +136,8 @@ def _grab_bitmap(hwnd: int, w: int, h: int, *, source_x: int = 0, source_y: int 
             return None
         old = gdi32.SelectObject(wintypes.HDC(mem), wintypes.HGDIOBJ(bmp))
         success = bool(gdi32.BitBlt(wintypes.HDC(mem), 0, 0, w, h,
-                                  wintypes.HDC(dc), source_x, source_y, 0x00CC0020))
+                                  wintypes.HDC(dc), source_x, source_y,
+                                  0x00CC0020 | (0x40000000 if include_layered else 0)))
         return int(bmp) if success else None
     finally:
         if old and mem:
@@ -156,13 +158,18 @@ def _frame_hwnd(widget: tk.Misc) -> int:
     user32.GetAncestor.restype = wintypes.HWND
     return int(user32.GetAncestor(wintypes.HWND(int(widget.winfo_id())), 2) or 0)
 
-def _move_window(hwnd: int, x: int, y: int, w: int, h: int, show: bool) -> None:
+def _move_window(hwnd: int, x: int, y: int, w: int, h: int, show: bool,
+                 *, topmost: bool | None = None) -> None:
     import ctypes
     from ctypes import wintypes
 
-    # HWND_TOP; SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_NOREDRAW (+SHOWWINDOW)
+    # SWP_NOACTIVATE|SWP_NOOWNERZORDER|SWP_NOREDRAW (+SHOWWINDOW)
     flags = 0x0010 | 0x0200 | 0x0008 | (0x0040 if show else 0)
-    _user32.SetWindowPos(wintypes.HWND(hwnd), wintypes.HWND(0), x, y, w, h, flags)
+    if topmost is False:
+        _user32.SetWindowPos(wintypes.HWND(hwnd), wintypes.HWND(-2),
+                             0, 0, 0, 0, 0x0010 | 0x0200 | 0x0001 | 0x0002)
+    insert_after = -1 if topmost else 0
+    _user32.SetWindowPos(wintypes.HWND(hwnd), wintypes.HWND(insert_after), x, y, w, h, flags)
 
 def _cloak(hwnd: int, on: bool) -> bool:
     """DWMWA_CLOAK: window stays mapped and keeps rendering into its DWM
@@ -273,6 +280,15 @@ def _request_native_paint(area: tk.Misc) -> None:
         _user32.RedrawWindow(wintypes.HWND(int(area.winfo_id())), None, None, 0x180)
 
 
+def _invalidate_native_area(area: tk.Misc) -> None:
+    """Erase stale scroll/resize pixels while a complete old frame covers them."""
+    if sys.platform == "win32":
+        from ctypes import wintypes
+        # RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW.
+        # Expose events finish in the ordinary Tk loop before the cover opens.
+        _user32.RedrawWindow(wintypes.HWND(int(area.winfo_id())), None, None, 0x185)
+
+
 class SnapshotTransition:
     def __init__(self, root: tk.Misc, animator: anim.Animator) -> None:
         self.root = root
@@ -381,6 +397,13 @@ class SnapshotTransition:
 
     def _ensure_overlay(self) -> bool:
         if self._overlay is not None:
+            # Tk recreates the transient's native wrapper when its owner is
+            # maximized/restored. The Tk widget survives; its old HWND does not.
+            self._client = int(self._overlay.winfo_id())
+            frame = _frame_hwnd(self._overlay)
+            if frame != self._frame or not self._capable:
+                self._frame = frame
+                self._capable = bool(frame) and _make_layered(frame)
             return self._capable
         overlay = tk.Toplevel(self.root, bd=0, highlightthickness=0, background="", cursor="watch")
         overlay.bind("<ButtonPress>", lambda _event: "break")
@@ -400,7 +423,7 @@ class SnapshotTransition:
         return self._capable
 
     def cover(self, area: tk.Misc, *, force: bool = False, sync_present: bool = True,
-              pass_input: bool = False) -> bool:
+              pass_input: bool = False, composited: bool = False) -> bool:
         if not self._owner_is_foreground():
             self.finish()
             return False
@@ -423,8 +446,18 @@ class SnapshotTransition:
                 source = _client_rect(area)
                 if rect is None or source is None or min(rect[2:]) <= 1:
                     return False
-                self._bitmap = _grab_bitmap(int(area.winfo_id()), *rect[2:],
-                                            source_x=rect[0]-source[0], source_y=rect[1]-source[1]) or 0
+                if composited:
+                    _dwm_flush()
+                    if not self._owner_is_foreground():
+                        return False
+                    # The child window DC can contain unfinished native scroll
+                    # copies even while DWM displays the preceding complete
+                    # frame. Preserve the displayed, owner-bounded pixels.
+                    self._bitmap = _grab_bitmap(0, *rect[2:], source_x=rect[0], source_y=rect[1],
+                                                include_layered=True) or 0
+                else:
+                    self._bitmap = _grab_bitmap(int(area.winfo_id()), *rect[2:],
+                                                source_x=rect[0]-source[0], source_y=rect[1]-source[1]) or 0
                 self._bitmap_size = rect[2:]
             if not self._bitmap or not self._ensure_overlay():
                 self.finish()
@@ -437,7 +470,11 @@ class SnapshotTransition:
             with _physical_pixels():
                 _cloak(self._frame, True)
                 _set_alpha(self._frame, 255)
-                _move_window(self._frame, *rect, show=True)
+                # HWND_TOP alone leaves a normal cover behind a topmost owner.
+                # Match the owner instead of making every cover always-on-top.
+                owner_ex = _user32.GetWindowLongW(wintypes.HWND(_frame_hwnd(self.root)), -20)
+                # Also raise an already-normal reused cover above its owner.
+                _move_window(self._frame, *rect, show=True, topmost=bool(owner_ex & 0x8))
                 _blit_bitmap(self._client, self._bitmap, *rect[2:])
                 if sync_present:
                     _dwm_flush()
@@ -456,6 +493,7 @@ class SnapshotTransition:
 
     def reveal(self, duration_ms: int, ready: Callable[[], bool] | None = None, *,
                wait_s: float | None = None, on_ready: Callable[[], None] | None = None,
+               on_timeout: Callable[[], None] | None = None,
                quiet_ms: int | None = None, stable_frames: int = 2) -> None:
         if not self.active:
             return
@@ -491,6 +529,16 @@ class SnapshotTransition:
                 if (not self.root.winfo_viewable()
                         or elapsed > wait_budget + 1.0
                         or (elapsed > wait_budget and not (layout_ready and quiet))):
+                    # A caller can retain an already committed view when only
+                    # its paint budget expires. Explicit cancellation still
+                    # uses the rollback callback owned by finish().
+                    if self.root.winfo_viewable() and on_timeout is not None:
+                        try:
+                            on_timeout()
+                        except BaseException:
+                            self.finish()
+                            raise
+                        self._abort = None
                     self.finish()
                     return
                 self._job = self.root.after(anim.FRAME_MS, painted)
@@ -517,6 +565,7 @@ class SnapshotTransition:
     def change(self, area: tk.Misc, duration_ms: int, action: Callable[[], None],
                *, ready: Callable[[], bool] | None = None, wait_s: float | None = None,
                on_ready: Callable[[], None] | None = None,
+               on_timeout: Callable[[], None] | None = None,
                on_cancel: Callable[[], None] | None = None) -> None:
         covered = self.cover(area)
         self._abort = on_cancel if covered else None
@@ -526,7 +575,7 @@ class SnapshotTransition:
             self.finish()
             raise
         if covered:
-            self.reveal(duration_ms, ready, wait_s=wait_s, on_ready=on_ready)
+            self.reveal(duration_ms, ready, wait_s=wait_s, on_ready=on_ready, on_timeout=on_timeout)
         elif on_ready is not None:
             on_ready()
 

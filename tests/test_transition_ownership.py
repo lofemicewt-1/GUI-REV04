@@ -37,6 +37,33 @@ class TransitionOwnershipTests(unittest.TestCase):
         self.assertEqual(self.transition._frame, 0)
         self.assertEqual(self.transition._bitmap, 0)
 
+    def test_cover_tracks_owners_topmost_band_when_reusing_primed_overlay(self):
+        from ctypes import wintypes
+
+        with patch.object(self.transition, "_owner_is_foreground", return_value=True):
+            self.transition.prime()
+            for topmost in (True, False, True, False):
+                with self.subTest(topmost=topmost):
+                    self.transition.finish()
+                    self.root.attributes("-topmost", topmost)
+                    self.root.lift()
+                    self.root.focus_force()
+                    pump(self.root, .03)
+                    owner = tr._frame_hwnd(self.root)
+                    owner_band = tr._user32.GetWindowLongW(wintypes.HWND(owner), -20) & 0x8
+                    self.assertEqual(bool(owner_band), topmost)
+                    self.assertTrue(self.transition.cover(self.root, force=True))
+                    cover_band = tr._user32.GetWindowLongW(wintypes.HWND(self.transition._frame), -20) & 0x8
+                    self.assertEqual(cover_band, owner_band,
+                                     "opaque cover is behind its topmost owner")
+                    tr._user32.WindowFromPoint.argtypes = [wintypes.POINT]
+                    tr._user32.WindowFromPoint.restype = wintypes.HWND
+                    with tr._physical_pixels():
+                        x, y, width, height = tr._client_rect(self.root)
+                        hit = tr._user32.WindowFromPoint(wintypes.POINT(x + width//2, y + height//2))
+                    self.assertEqual(tr._user32.GetAncestor(hit, 2), self.transition._frame,
+                                     "reused cover must remain above the live owner")
+
     def test_focus_loss_releases_cover_and_pending_reveal(self):
         with patch.object(self.transition, "_owner_is_foreground", return_value=True):
             self.assertTrue(self.transition.cover(self.root))
@@ -47,6 +74,23 @@ class TransitionOwnershipTests(unittest.TestCase):
         self.assertFalse(self.transition.active)
         self.assertEqual(self.transition._bitmap, 0)
         self.assertIsNone(self.transition._job)
+
+    def test_cover_refreshes_native_wrapper_after_owner_window_state_changes(self):
+        from ctypes import wintypes
+
+        with patch.object(self.transition, "_owner_is_foreground", return_value=True):
+            self.transition.prime()
+            for state in ("zoomed", "normal"):
+                with self.subTest(state=state):
+                    self.transition.finish()
+                    self.root.state(state)
+                    pump(self.root, .05)
+                    frame = tr._frame_hwnd(self.transition._overlay)
+                    self.assertTrue(tr._user32.IsWindow(wintypes.HWND(frame)))
+                    self.assertTrue(self.transition.cover(self.root, force=True))
+                    self.assertEqual(self.transition._frame, frame,
+                                     "cover reused a destroyed native wrapper")
+                    self.assertTrue(tr._user32.IsWindow(wintypes.HWND(self.transition._frame)))
 
     def test_resize_cannot_raise_cover_above_foreign_foreground_window(self):
         with patch.object(self.transition, "_owner_is_foreground", return_value=True):

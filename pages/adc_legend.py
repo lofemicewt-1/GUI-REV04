@@ -48,6 +48,7 @@ class AdcLegend(ttk.Frame):
         self._stages: list[dict[str, Any]] = []
         self._starts: dict[str, list[str]] = {}
         self._preview_stage: str | None = None
+        self._hovered_canvas_stage: str | None = None
         self._live_state = "idle"
         self._live_detail = ""
         self._channel_states: dict[Any, Any] = {}
@@ -97,6 +98,8 @@ class AdcLegend(ttk.Frame):
         self.canvas.tag_bind("stage_click", "<Button-1>", self._on_canvas_stage_click)
         self.canvas.tag_bind("stage_click", "<Enter>", self._on_canvas_stage_enter)
         self.canvas.tag_bind("stage_click", "<Leave>", self._on_canvas_stage_leave)
+        self.canvas.bind("<Leave>", self._on_canvas_stage_leave, add="+")
+        self.canvas.bind("<Unmap>", self._on_canvas_stage_leave, add="+")
 
         self._table = ttk.Frame(self, style="Panel.TFrame", width=1)
         # Column minima follow the allocated width. Feeding that width back
@@ -105,6 +108,9 @@ class AdcLegend(ttk.Frame):
         self._table.grid_propagate(False)
         self._table.grid(row=4, column=0, sticky="ew", pady=(5, 0))
         self._table.bind("<Configure>", self._queue_fit_rule_columns, add="+")
+        self._table.bind("<Map>", self._queue_fit_rule_columns, add="+")
+        self._table.bind("<Unmap>", self._clear_rule_hover, add="+")
+        self.canvas.bind("<Map>", self._on_canvas_configure, add="+")
         # Parent allocation drives width; avoid inflating ADC split measurements.
         self.columnconfigure(0, weight=1, minsize=0)
         self._fit_job = None
@@ -238,6 +244,7 @@ class AdcLegend(ttk.Frame):
             return
         self._preview_stage = self._stage_id(stage_id)
         self._diagram_signature = None
+        self._refresh_rule_table()
         self._schedule_render()
         self._on_stage_activate(self._preview_stage)
 
@@ -264,7 +271,9 @@ class AdcLegend(ttk.Frame):
         if self._disposed or self._on_stage_activate is None or self._current_canvas_stage() is None:
             return
         try:
+            self._hovered_canvas_stage = self._current_canvas_stage()
             self.canvas.configure(cursor="hand2")
+            self._refresh_stage_card_chrome()
         except tk.TclError:
             pass
 
@@ -272,12 +281,38 @@ class AdcLegend(ttk.Frame):
         if self._disposed:
             return
         try:
+            self._hovered_canvas_stage = None
             self.canvas.configure(cursor="")
+            self._refresh_stage_card_chrome()
         except tk.TclError:
             pass
 
     def _on_rule_stage_click(self, stage_id: str, _event: tk.Event | None = None) -> None:
         self.activate_stage(stage_id)
+
+    def _stage_card_chrome(self, stage):
+        border = self.colors.get("border", "#D1D5DB")
+        text = self.colors.get("text", "#1F2937")
+        fill = self.colors.get("panel", "#FFFFFF")
+        selected = stage["id"] == self._preview_stage
+        if stage["unused"] and stage["target"] == stage["id"]:
+            border = text = self.colors.get("muted", "#9CA3AF")
+            fill = self._tint(border, fill, .08)
+        elif selected:
+            border = self.colors.get("primary", "#2563EB")
+            fill = self._tint(border, fill, .10)
+        elif stage["id"] == self._hovered_canvas_stage:
+            border = self.colors.get("primary", "#2563EB")
+            fill = self._tint(border, fill, .06)
+        return fill, border, text, 3 if selected else 2
+
+    def _refresh_stage_card_chrome(self):
+        stages = {stage["id"]: stage for stage in self._stages[:self.stage_count]}
+        for item in self.canvas.find_withtag("stage_box"):
+            stage_id = next((tag for tag in self.canvas.gettags(item) if tag in stages), None)
+            if stage_id is not None:
+                fill, border, _text, width = self._stage_card_chrome(stages[stage_id])
+                self.canvas.itemconfigure(item, fill=fill, outline=border, width=width)
 
     def _on_rule_stage_enter(self, event: tk.Event) -> None:
         if self._disposed or self._on_stage_activate is None:
@@ -287,9 +322,18 @@ class AdcLegend(ttk.Frame):
     def _on_rule_stage_leave(self, event: tk.Event) -> None:
         self._highlight_rule_row(event.widget, False)
 
+    def _clear_rule_hover(self, _event=None):
+        if self._disposed:
+            return
+        row = getattr(self, "_hovered_rule_row", None)
+        self._hovered_rule_row = None
+        if row is not None:
+            panel = self.colors.get("panel", "#FFFFFF")
+            self._apply_rule_row_chrome(row, False, panel, panel)
+
     def _highlight_rule_row(self, widget: tk.Misc, hovered: bool) -> None:
         panel = self.colors.get("panel", "#FFFFFF")
-        hover_bg = self._tint(self.colors.get("primary", "#2563EB"), panel, 0.08)
+        hover_bg = self._tint(self.colors.get("muted", "#6B7280"), panel, 0.08)
         try:
             row = int(widget.grid_info()["row"])
         except (tk.TclError, AttributeError, KeyError, TypeError, ValueError):
@@ -306,10 +350,17 @@ class AdcLegend(ttk.Frame):
         self._apply_rule_row_chrome(row, False, panel, hover_bg)
 
     def _apply_rule_row_chrome(self, row: int, hovered: bool, panel: str, hover_bg: str) -> None:
-        for cell in self._rule_rows.get(row, ()):
+        selected = 0 < row <= len(self._rule_stage_ids) and self._rule_stage_ids[row-1] == self._preview_stage
+        primary = self.colors.get("primary", "#2563EB")
+        background = self._tint(primary, panel, .16) if selected else hover_bg if hovered else panel
+        border = self._rule_borders.get(row)
+        if border is not None:
+            edge = primary if selected else self.colors.get("border", "#D1D5DB")
+            border.configure(background=background, highlightbackground=edge, highlightcolor=edge)
+        for column, cell in enumerate(self._rule_rows.get(row, ())):
             try:
-                base = getattr(cell, "_adc_rule_bg", panel)
-                cell.configure(cursor="hand2" if hovered else "", background=hover_bg if hovered else base)
+                foreground = primary if selected and column == 0 else getattr(cell, "_adc_rule_fg", self.colors.get("text", "#1F2937"))
+                cell.configure(cursor="hand2" if hovered else "", background=background, foreground=foreground)
             except (tk.TclError, AttributeError):
                 pass
 
@@ -342,8 +393,11 @@ class AdcLegend(ttk.Frame):
 
     def _fit_rule_columns(self, _event=None) -> None:
         self._fit_job = None
-        self._fit_retries = 0
         if self._disposed or not hasattr(self, "_table"):
+            return
+        # Allocation/Map will reschedule. Polling a hidden 1px table both
+        # measures unusable fonts and keeps the transition pending forever.
+        if not self._table.winfo_ismapped() or self._table.winfo_width() <= 40:
             return
         if not self._table.winfo_children() or getattr(self, "_fitting_columns", False):
             return
@@ -365,16 +419,6 @@ class AdcLegend(ttk.Frame):
                     self._rule_text_widths[key] = max((font.measure(line) for line in text.splitlines()), default=0)
                 natural[column] = max(natural[column], self._rule_text_widths[key] + 18)
             available = max(1, int(self._table.winfo_width()))
-            if available <= 40:
-                retries = getattr(self, "_fit_retries", 0)
-                if retries < 6:
-                    self._fit_retries = retries + 1
-                    try:
-                        self.after(40, self._queue_fit_rule_columns)
-                    except tk.TclError:
-                        pass
-                return
-            self._fit_retries = 0
             target = min(natural[3] or 48, max(48, available // 4))
             budget = max(3, available - target)
             base = [max(1, natural[i] or 1) for i in range(3)]
@@ -514,8 +558,9 @@ class AdcLegend(ttk.Frame):
         if self._disposed:
             return
         try:
-            actual_width = max(1, self.canvas.winfo_width())
-            width = actual_width if actual_width > 1 else self._minimum_width()
+            if not self.canvas.winfo_ismapped() or self.canvas.winfo_width() <= 1:
+                return
+            width = self.canvas.winfo_width()
             stages = self._stages[: self.stage_count]
             if not stages:
                 return
@@ -580,20 +625,10 @@ class AdcLegend(ttk.Frame):
                 y0, y1 = card_top, card_bottom
                 boxes.append((x0, y0, x1, y1))
                 unused = bool(stage["unused"] and stage["target"] == stage["id"])
-                preview = stage["id"] == self._preview_stage
-                border = self.colors.get("border", "#D1D5DB")
-                text = self.colors.get("text", "#1F2937")
-                fill = self.colors.get("panel", "#FFFFFF")
-                if unused:
-                    border = self.colors.get("muted", "#9CA3AF")
-                    text = self.colors.get("muted", "#9CA3AF")
-                    fill = self._tint(border, fill, 0.08)
-                elif preview:
-                    border = self.colors.get("primary", "#2563EB")
-                    fill = self._tint(border, fill, 0.10)
+                fill, border, text, border_width = self._stage_card_chrome(stage)
                 self.canvas.create_rectangle(
                     x0, y0, x1, y1, fill=fill, outline=border,
-                    width=3 if preview else 2, tags=("stage_box", "stage_click", stage["id"]),
+                    width=border_width, tags=("stage_box", "stage_click", stage["id"]),
                 )
                 inline_start = bool(stage["adc_precision"] and stage["id"] in self._starts
                                     and not self._starts[stage["id"]])
@@ -796,6 +831,7 @@ class AdcLegend(ttk.Frame):
                         child.destroy()
                 self._rule_rows = {}
                 self._rule_stage_ids = stage_ids
+                self._hovered_rule_row = None
             headers = (
                 "adc_legend_col_stage", "adc_legend_col_wave",
                 "adc_legend_col_wait", "adc_legend_col_target",
@@ -814,6 +850,7 @@ class AdcLegend(ttk.Frame):
                     marks.extend(self._starts[stage_id])
                 # Skip adc_legend_preview (「示意 Stage」) in the rule table.
                 label = stage_id + (f" · {' / '.join(marks)}" if marks else "")
+                label = ("✓ " if stage_id == self._preview_stage else "  ") + label
                 if stage["unused"] and stage["target"] == stage_id:
                     wave = self._tr("adc_legend_unused")
                     wait = self._tr("adc_legend_unused_self")
@@ -842,6 +879,7 @@ class AdcLegend(ttk.Frame):
                         cell = existing[column]
                         cell.configure(text=value, font=self._ui_font(0.9), background=panel_bg, foreground=text_fg)
                         cell._adc_rule_bg = panel_bg
+                        cell._adc_rule_fg = text_fg
                         continue
                     # tk.Label so row hover can tint backgrounds independently (ttk shares styles).
                     cell = tk.Label(
@@ -865,12 +903,15 @@ class AdcLegend(ttk.Frame):
                               padx=(1 if column == 0 else 0, 1 if column == 3 else 0))
                     self._rule_rows.setdefault(row, []).append(cell)
                     cell._adc_rule_bg = panel_bg
+                    cell._adc_rule_fg = text_fg
                     cell.bind(
                         "<Button-1>",
                         lambda event, selected=stage_id: self._on_rule_stage_click(selected, event),
                     )
                     cell.bind("<Enter>", self._on_rule_stage_enter)
                     cell.bind("<Leave>", self._on_rule_stage_leave)
+                self._apply_rule_row_chrome(row, row == getattr(self, "_hovered_rule_row", None),
+                                            panel_bg, self._tint(self.colors.get("muted", "#6B7280"), panel_bg, .08))
             self._fit_retries = 0
             self._queue_fit_rule_columns()
         except tk.TclError:

@@ -271,6 +271,10 @@ class RuleBindingTests(unittest.TestCase):
         self.assertEqual(stages[1]["adc_precision"], "adc_legend_precision_low")
         self.assertEqual(starts, {"Stage0": []})
         self.assertEqual(preview, "Stage1")
+        for raw in ("serial1", "serial1 slice18-20", "slice18"):
+            self.assertEqual(page._button_legend_wave_label(raw), "adc_legend_wave_normal")
+        for raw in ("serial3", "serial3 slice24-27", "slice24"):
+            self.assertEqual(page._button_legend_wave_label(raw), "adc_legend_wave_strong")
 
     def test_192x_binding_keeps_voltage_and_restored_waveform_identifier(self):
         page = object.__new__(ButtonModePage)

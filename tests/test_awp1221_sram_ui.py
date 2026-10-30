@@ -139,16 +139,13 @@ class Awp1221ButtonModeSramSwapTests(unittest.TestCase):
         attach_tk_cleanup(self, self.root, self.page)
         self.page.update_idletasks()
 
-    def test_en_module_is_above_waveform_module(self) -> None:
+    def test_en_is_inline_with_mode_title(self) -> None:
         en_section = self.page._button_en_section
         waveform_section = self.page._button_waveform_section
-        self.assertIs(en_section.master, waveform_section.master)
+        self.assertIs(en_section.master, self.page.mode_title_label.master)
         self.assertEqual(int(en_section.grid_info()["row"]), 0)
-        self.assertEqual(int(waveform_section.grid_info()["row"]), 1)
-        self.assertLess(
-            int(en_section.grid_info()["row"]),
-            int(waveform_section.grid_info()["row"]),
-        )
+        self.assertEqual(int(en_section.grid_info()["column"]), 1)
+        self.assertEqual(int(waveform_section.grid_info()["row"]), 0)
 
     def test_default_rom_hides_sram_editor(self) -> None:
         self.assertIsInstance(self.page.sram_editor, AWP1221SramEditor)

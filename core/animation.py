@@ -136,12 +136,14 @@ class _Tween:
     ease: Callable[[float], float]
     step: Callable[[float], None]
     done: Callable[[], None] | None
+    suspended_at: float | None = None
 
 
 class Animator:
     def __init__(self, root: tk.Misc, *, enabled: bool = True) -> None:
         self.root = root
         self.enabled = enabled
+        self._in_tick = False
         self._tweens: dict[Hashable, _Tween] = {}
         self._after: str | None = None
         self._stopped = False
@@ -175,6 +177,21 @@ class Animator:
 
     def is_running(self, key: Hashable) -> bool:
         return key in self._tweens
+
+    def suspend(self, key: Hashable) -> None:
+        """Keep a layout tween's remaining time while its frame is painted."""
+        tween = self._tweens.get(key)
+        if tween is not None and tween.suspended_at is None:
+            tween.suspended_at = time.perf_counter()
+        if self._tweens and all(t.suspended_at is not None for t in self._tweens.values()):
+            self._cancel_timer()
+
+    def resume(self, key: Hashable) -> None:
+        tween = self._tweens.get(key)
+        if tween is not None and tween.suspended_at is not None:
+            tween.start += time.perf_counter()-tween.suspended_at
+            tween.suspended_at = None
+            self._ensure_ticking()
 
     def set_enabled(self, enabled: bool) -> None:
         self.enabled = bool(enabled)
@@ -212,34 +229,39 @@ class Animator:
             if done is not None:
                 self._call(done)
 
-    def _ensure_ticking(self) -> None:
-        if self._after is None and self._tweens and not self._stopped:
+    def _ensure_ticking(self, delay_ms: int = FRAME_MS) -> None:
+        if (self._after is None and any(t.suspended_at is None for t in self._tweens.values())
+                and not self._stopped and not self._in_tick):
             try:
-                self._after = self.root.after(FRAME_MS, self._tick)
+                self._after = self.root.after(delay_ms, self._tick)
             except (tk.TclError, RuntimeError):
                 self.stop()
 
     def _tick(self) -> None:
         self._after = None
         now = time.perf_counter()
+        self._in_tick = True
         try:
             for key, tween in list(self._tweens.items()):
-                if self._tweens.get(key) is not tween:
+                if self._tweens.get(key) is not tween or tween.suspended_at is not None:
                     continue
                 p = max(0.0, min(1.0, (now-tween.start)/tween.duration))
-                if p >= 1:
-                    self._tweens.pop(key)
-                    self._finish(tween.step, tween.done)
-                    continue
                 try:
-                    tween.step(tween.ease(p))
+                    tween.step(1.0 if p >= 1 else tween.ease(p))
                 except tk.TclError:
                     if self._tweens.get(key) is tween:
                         self._tweens.pop(key)
                     if tween.done is not None:
                         self._call(tween.done)
+                    continue
+                if p >= 1 and self._tweens.get(key) is tween and tween.suspended_at is None:
+                    self._tweens.pop(key)
+                    if tween.done is not None:
+                        self._call(tween.done)
         finally:
-            self._ensure_ticking()
+            self._in_tick = False
+            elapsed_ms = (time.perf_counter() - now) * 1000
+            self._ensure_ticking(max(1, round(FRAME_MS - elapsed_ms)))
 
 
 def animator_for(widget: tk.Misc) -> Animator | None:

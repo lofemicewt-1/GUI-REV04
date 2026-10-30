@@ -33,8 +33,8 @@ ZH = {
     "adc_legend_live_channel": "通道 {channel}",
     "adc_legend_live_shared_event": "收到事件，未提供触发通道",
     "adc_legend_live_tip": "蓝色：检测到按压；紫色：检测到松手；黄色：检测中（预计）；红色：错误；灰色：暂无事件。",
-    "adc_legend_wave_normal": "正常震感",
-    "adc_legend_wave_strong": "强震感",
+    "adc_legend_wave_normal": "正常振感",
+    "adc_legend_wave_strong": "强振感",
     "adc_legend_wave_custom": "自定义波形",
     "adc_legend_wave_rom_sine": "ROM 正弦",
 }

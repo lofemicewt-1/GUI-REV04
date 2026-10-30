@@ -457,6 +457,17 @@ def _build_rounded_button_images(root: tk.Misc, theme: str) -> dict[str, dict[st
         selected_fill=sidebar_selected_fill,
         selected_border=sidebar_selected_edge,
     )
+    # Match the parent surface at rest; preblend the translucent hover wash
+    # against that surface for consistent ttk rendering.
+    sidebar["normal"] = _make_rounded_button_image(
+        root, fill=colors["panel_alt"], border=colors["panel_alt"],
+        corner=colors["panel_alt"], border_width=0.0,
+    )
+    sidebar["disabled"] = sidebar["normal"]
+    sidebar["active"] = _make_rounded_button_image(
+        root, fill=_blend_hex(colors["panel_alt"], colors["primary"], 0.10),
+        border=colors["border"], corner=colors["panel_alt"],
+    )
     selected_image = sidebar["pressed"]
     return {
         "panel": make_set(colors["panel"]),
@@ -466,15 +477,7 @@ def _build_rounded_button_images(root: tk.Misc, theme: str) -> dict[str, dict[st
         "sidebar_mode_selected": {
             "normal": selected_image,
             "pressed": selected_image,
-            "disabled": _make_rounded_button_image(
-                root,
-                fill=colors["panel_alt"],
-                border=colors["muted"],
-                corner=colors["panel_alt"],
-                size=32,
-                radius=radius,
-                shadow=0.0,
-            ),
+            "disabled": sidebar["disabled"],
         },
     }
 
@@ -556,7 +559,7 @@ def _configure_rounded_button_styles(
             render["normal"],
             ("disabled", render["disabled"]),
             ("pressed", render["pressed"]),
-            ("active", render["normal"]),
+            ("active", render.get("active", render["normal"])),
             width=original_w,
             height=original_h,
             border=slice_border,
@@ -692,31 +695,33 @@ def _configure_rounded_button_styles(
     )
 
     configure_plain("Sidebar.TButton", sidebar_element, colors["panel_alt"], colors["text"])
-    if theme == "dark":
-        style.map(
-            "Sidebar.TButton",
-            foreground=[("disabled", colors["muted"]), ("pressed", sidebar_selected_text)],
-            background=[
-                ("disabled", colors["panel_alt"]),
-                ("pressed", sidebar_selected_fill),
-                ("active", colors["panel_alt"]),
-            ],
-            bordercolor=[
-                ("disabled", colors["muted"]),
-                ("pressed", sidebar_selected_edge),
-                ("active", colors["border"]),
-            ],
-            lightcolor=[
-                ("disabled", colors["muted"]),
-                ("pressed", sidebar_selected_edge),
-                ("active", colors["border"]),
-            ],
-            darkcolor=[
-                ("disabled", colors["muted"]),
-                ("pressed", sidebar_selected_edge),
-                ("active", colors["border"]),
-            ],
-        )
+    style.map(
+        "Sidebar.TButton",
+        foreground=[("disabled", colors["muted"]), ("pressed", sidebar_selected_text)],
+        background=[
+            ("disabled", colors["panel_alt"]),
+            ("pressed", sidebar_selected_fill),
+            ("active", _blend_hex(colors["panel_alt"], colors["primary"], 0.10)),
+        ],
+        bordercolor=[
+            ("disabled", colors["panel_alt"]),
+            ("pressed", sidebar_selected_edge),
+            ("active", colors["border"]),
+            ("!active", colors["panel_alt"]),
+        ],
+        lightcolor=[
+            ("disabled", colors["panel_alt"]),
+            ("pressed", sidebar_selected_edge),
+            ("active", colors["border"]),
+            ("!active", colors["panel_alt"]),
+        ],
+        darkcolor=[
+            ("disabled", colors["panel_alt"]),
+            ("pressed", sidebar_selected_edge),
+            ("active", colors["border"]),
+            ("!active", colors["panel_alt"]),
+        ],
+    )
     configure_plain("SidebarSelected.TButton", sidebar_selected_element, colors["panel_alt"], sidebar_selected_text)
     style.map(
         "SidebarSelected.TButton",
@@ -911,6 +916,19 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
         borderwidth=0,
     )
 
+    en_background = _blend_hex(colors["panel"], colors["primary"], 0.12)
+    style.configure("ButtonEn.TFrame", background=en_background, borderwidth=0)
+    style.configure("ButtonEnAccent.TFrame", background=colors["primary"])
+    style.configure(
+        "ButtonEnTitle.TLabel", background=en_background,
+        foreground=colors["primary"], font=("Microsoft YaHei UI", body_size, "bold"),
+    )
+    style.configure(
+        "ButtonEnStatus.TLabel", background=en_background,
+        foreground="#FBBF24" if theme == "dark" else "#B45309",
+        font=("Microsoft YaHei UI", body_size, "bold"),
+    )
+
     style.configure(
         "Card.TFrame",
         background=colors["panel"],
@@ -1099,6 +1117,16 @@ def apply_theme(root: tk.Misc, theme: str = "light", font_size: int = 10, window
                 darkcolor=[("pressed", pressed_edge), ("active", colors["border"])],
                 relief=[("disabled", "flat"), ("pressed", "flat" if button_style == "Quiet.TButton" else "sunken"), ("active", "flat")],
             )
+            if button_style in {"Sidebar.TButton", "SidebarMode.TButton"}:
+                style.configure(button_style, bordercolor=surface, lightcolor=surface, darkcolor=surface)
+                style.map(
+                    button_style,
+                    background=[("disabled", surface), ("pressed", pressed_fill),
+                                ("active", _blend_hex(surface, colors["primary"], 0.10))],
+                    **{option: [("disabled", surface), ("pressed", pressed_edge),
+                                ("active", colors["border"]), ("!active", surface)]
+                       for option in ("bordercolor", "lightcolor", "darkcolor")},
+                )
         for button_style, surface, fill, edge in (
             ("Selected.TButton", colors["panel"], selected_bg, selected_edge),
             ("Flash.TButton", colors["panel"], selected_bg, selected_edge),

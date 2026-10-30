@@ -93,7 +93,7 @@ class AdcLegendClickTests(unittest.TestCase):
 
         self.assertEqual(activated, ["Stage1"])
 
-    def test_whole_rule_table_row_clicks_and_highlights_only_that_row(self):
+    def test_whole_rule_table_row_clicks_keep_selection_after_hover(self):
         root = self.make_root()
         activated = []
         legend = self.make_legend(root, activated.append)
@@ -106,7 +106,7 @@ class AdcLegendClickTests(unittest.TestCase):
             root.update()
             self.assertTrue(all(str(item.cget("cursor")) == "hand2" for item in row))
             self.assertTrue(all(item.cget("background") != background for item in row))
-            # Exclusive hover: only the active row stays tinted.
+            # The other row remains unselected while this row is hovered.
             self.assertTrue(all(item.cget("background") == background for item in other))
             cell.event_generate("<Button-1>", x=2, y=2)
             root.update_idletasks()
@@ -115,7 +115,9 @@ class AdcLegendClickTests(unittest.TestCase):
             root.update_idletasks()
             root.update()
             self.assertTrue(all(str(item.cget("cursor")) == "" for item in row))
-            self.assertTrue(all(item.cget("background") == background for item in row))
+            self.assertTrue(all(item.cget("background") != background for item in row))
+            self.assertEqual(legend._rule_borders[1].cget("highlightbackground"), legend.colors["primary"])
+            self.assertEqual(row[0].cget("foreground"), legend.colors["primary"])
         self.assertEqual(activated, ["Stage0"] * 4)
 
     def assert_adc_target_is_legend(self, page, key):
@@ -272,7 +274,8 @@ class AdcLegendClickTests(unittest.TestCase):
         page = host.mode_pages["button_mode"]
         app.root.update()
 
-        self.assert_adc_target_is_legend(page, "adc")
+        metadata = page.step_progress._module_targets(page)
+        self.assertIs(metadata[3]["target"], page._button_adc_panels[1])
         self.assertTrue(callable(page.adc_legend._on_stage_activate))
         page.adc_legend.activate_stage("Stage1")
         app.root.update_idletasks()

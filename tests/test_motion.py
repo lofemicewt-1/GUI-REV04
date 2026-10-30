@@ -46,6 +46,17 @@ class MotionClockTests(unittest.TestCase):
         self.a.stop()
         self.patcher.stop()
 
+    def test_frame_delay_compensates_for_callback_cost(self):
+        def slow_step(progress):
+            if progress > 0:
+                self.clock += 0.008
+        self.a.animate("slow", 200, slow_step)
+        self.clock = 0.016
+        with patch.object(self.root, "after", wraps=self.root.after) as after:
+            self.root.tick()
+        self.assertEqual(after.call_args.args[0], 8)
+        self.assertEqual(len(self.root.jobs), 1)
+
     def test_busy_frame_catches_up_and_leaves_no_timer(self):
         seen, done = [], []
         self.a.animate("hover", anim.DUR_FAST, seen.append, done=lambda: done.append(True))
@@ -96,6 +107,56 @@ class MotionClockTests(unittest.TestCase):
         self.a.stop()
         self.a.animate("late", 60, lambda p: self.fail("late callback"))
         self.assertFalse(self.root.jobs)
+
+    def test_presentation_suspend_preserves_remaining_time_and_other_jobs(self):
+        seen, other = [], []
+        self.a.animate("layout", 200, seen.append, ease=lambda p: p)
+        self.a.animate("other", 200, other.append, ease=lambda p: p)
+        self.clock = .05
+        self.root.tick()
+        self.a.suspend("layout")
+        self.clock = .55
+        self.root.tick()
+        self.assertEqual(seen[-1], .25)
+        self.assertEqual(other[-1], 1)
+        self.assertFalse(self.root.jobs)
+        self.a.resume("layout")
+        self.clock = .6
+        self.root.tick()
+        self.assertAlmostEqual(seen[-1], .5)
+        self.clock = .71
+        self.root.tick()
+        self.assertEqual(seen[-1], 1)
+        self.assertFalse(self.root.jobs)
+
+    def test_terminal_suspend_waits_for_presentation_before_completion(self):
+        done = []
+        hold = [True]
+        def step(progress):
+            if progress == 1 and hold[0]:
+                self.a.suspend("layout")
+        self.a.animate("layout", 100, step, done=lambda: done.append(True))
+        self.clock = .2
+        self.root.tick()
+        self.assertEqual(done, [])
+        self.assertTrue(self.a.is_running("layout"))
+        hold[0] = False
+        self.a.resume("layout")
+        self.root.tick()
+        self.assertEqual(done, [True])
+
+    def test_terminal_replacement_does_not_finish_the_replaced_job(self):
+        done = []
+        def step(progress):
+            if progress == 1:
+                self.a.animate("layout", 100, lambda _p: None, done=lambda: done.append("new"))
+        self.a.animate("layout", 100, step, done=lambda: done.append("old"))
+        self.clock = .2
+        self.root.tick()
+        self.assertEqual(done, [])
+        self.clock = .4
+        self.root.tick()
+        self.assertEqual(done, ["new"])
 
 
 class MotionMathTests(unittest.TestCase):
@@ -176,7 +237,7 @@ class TkMotionTests(unittest.TestCase):
         self.assertEqual(self.errors, [])
         self.micro = self.animator = self.dispatcher = None
 
-    def test_popdown_opens_at_full_height_without_grow(self):
+    def test_popdown_keeps_full_list_geometry_during_entrance(self):
         combo = ttk.Combobox(self.root, values=[f"v{i}" for i in range(20)], state="readonly", height=5)
         combo.pack()
         combo.current(0)
@@ -286,6 +347,83 @@ class TkMotionTests(unittest.TestCase):
         self.assertEqual(alpha(), 1)
         call("ttk::combobox::Unpost", str(combo))
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows native dropdown clipping")
+    def test_popdown_reveals_from_top_without_resizing_the_list(self):
+        import ctypes
+        from ctypes import wintypes
+        from app.transitions import _physical_pixels
+        user = ctypes.WinDLL("user32", use_last_error=True)
+        gdi = ctypes.WinDLL("gdi32", use_last_error=True)
+        user.GetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN]
+        user.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        gdi.CreateRectRgn.argtypes = [ctypes.c_int] * 4
+        gdi.CreateRectRgn.restype = wintypes.HRGN
+        gdi.GetRgnBox.argtypes = [wintypes.HRGN, ctypes.POINTER(wintypes.RECT)]
+        gdi.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+        combo = ttk.Combobox(self.root, values=[f"v{i}" for i in range(20)], state="readonly", height=5)
+        combo.pack()
+        combo.current(17)
+        self.root.update()
+        call = self.root.tk.call
+        path = str(combo) + ".popdown"
+        def clip():
+            hwnd = wintypes.HWND(int(str(call("wm", "frame", path)), 0))
+            region = gdi.CreateRectRgn(0, 0, 0, 0)
+            try:
+                bounds, visible = wintypes.RECT(), wintypes.RECT()
+                with _physical_pixels():
+                    self.assertTrue(user.GetWindowRect(hwnd, ctypes.byref(bounds)))
+                    kind = user.GetWindowRgn(hwnd, region)
+                    if kind:
+                        gdi.GetRgnBox(region, ctypes.byref(visible))
+                full = bounds.bottom - bounds.top
+                return full, visible.bottom - visible.top if kind else full, visible.top
+            finally:
+                gdi.DeleteObject(region)
+
+        samples, sizes, tops = [], [], []
+        deadline = time.perf_counter()+1
+        def sample():
+            full, shown, top = clip()
+            sizes.append(full)
+            samples.append(shown)
+            tops.append(top)
+            if (len(samples) > 1 and shown == full) or time.perf_counter() >= deadline:
+                self.root.quit()
+            else:
+                self.root.after(8, sample)
+        def mapped(event):
+            if str(event.widget) == path:
+                sample()
+        binding = self.root.bind_class('ComboboxPopdown', '<Map>', mapped, add='+')
+        try:
+            call("ttk::combobox::Post", str(combo))
+            self.root.mainloop()
+        finally:
+            script = str(call('bind', 'ComboboxPopdown', '<Map>'))
+            call('bind', 'ComboboxPopdown', '<Map>', '\n'.join(
+                line for line in script.splitlines() if f'[{binding} ' not in line))
+            self.root.deletecommand(binding)
+        self.assertTrue(samples, 'native Map did not deliver an entrance frame')
+        full, initial, top = sizes[0], samples[0], tops[0]
+        self.assertLess(initial, full, "dropdown appeared at full height without a top-down entrance")
+        self.assertEqual(top, 0)
+        self.assertEqual(set(sizes), {full}, "entrance resized the native list layout")
+        self.assertEqual(set(tops), {0})
+        self.assertTrue(any(initial < height < full for height in samples))
+        self.assertEqual(samples, sorted(samples))
+        pump(self.root, .25)
+        self.assertEqual(clip()[1], full)
+        self.assertTrue(call(path + ".f.l", "bbox", 17), "selected item lost its scroll position")
+        call("ttk::combobox::Unpost", str(combo))
+        self.animator.set_enabled(False)
+        self.micro.reset()
+        call("ttk::combobox::Post", str(combo))
+        self.root.update()
+        self.assertFalse(self.animator.is_running(("popdown", path)))
+        self.assertEqual(clip()[1], full)
+        call("ttk::combobox::Unpost", str(combo))
+
     def test_popdown_reset_and_destroy_release_animation(self):
         combo = ttk.Combobox(self.root, values=['one', 'two'], state="readonly")
         combo.pack()
@@ -299,7 +437,7 @@ class TkMotionTests(unittest.TestCase):
         self.micro.reset()
         self.assertFalse(self.animator.is_running(key))
         self.assertEqual(float(call("wm", "attributes", path, "-alpha")), 1)
-        self.assertEqual(self.micro._popdowns, set())
+        self.assertFalse(self.micro._dropdown_motion.active)
         call("ttk::combobox::Unpost", str(combo))
         call("ttk::combobox::Post", str(combo))
         pump(self.root, .03)
@@ -307,7 +445,7 @@ class TkMotionTests(unittest.TestCase):
         combo.destroy()
         pump(self.root, .05)
         self.assertFalse(self.animator.is_running(key))
-        self.assertEqual(self.micro._popdowns, set())
+        self.assertFalse(self.micro._dropdown_motion.active)
 
     def test_popdown_withdrawn_before_map_delivery_does_not_animate_hidden_window(self):
         combo = ttk.Combobox(self.root, values=['one', 'two'], state="readonly")

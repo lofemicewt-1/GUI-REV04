@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import sys
+import time
 import tkinter as tk
 from typing import Callable, Any
+from weakref import WeakKeyDictionary
+from core.animation import FRAME_MS
 
 
 class ViewportPresentation:
@@ -17,6 +20,16 @@ class ViewportPresentation:
         self._scroll_job = None
         self._scroll_queue: list[tuple[tk.Canvas, Callable[[], Any]]] = []
         self._last_size = None
+        self._layout_area = None
+        self._layout_job = None
+        self._layout_owners = set()
+        self._layout_keys = set()
+        self._layout_queue = {}
+        self._layout_deadline = 0.0
+        self._layout_paint_pass = 0
+        self._layout_owner_bindings = {}
+        self._layout_scopes = WeakKeyDictionary()
+        self._layout_expose_binding = root.bind('<Expose>', self._layout_exposed, add='+')
         self._tag = f'ViewportPresentation{id(self)}'
         root._piezo_viewport_presentation = self
         root.bindtags((self._tag, *root.bindtags()))
@@ -134,9 +147,10 @@ class ViewportPresentation:
                 return ''
             return operation()
         self.flush_scroll(canvas)
-        # The native window stays mapped behind an opaque, owner-clipped frame.
+        # Compose the opaque frame before moving native child windows; otherwise
+        # the compositor can expose a mixture of the old and new scroll views.
         # Reveal atomically after its pending paint, with no cross-fade/row grow.
-        if not self.transition.cover(canvas, force=True, sync_present=False, pass_input=True):
+        if not self.transition.cover(canvas, force=True, sync_present=True, pass_input=True):
             return operation()
         self._scroll_canvas = canvas
         self.transition._abort = self._clear_scroll
@@ -149,6 +163,170 @@ class ViewportPresentation:
         except BaseException:
             self.transition.finish()
             raise
+
+    def present_layout(self, area, owner, key, operation):
+        """Commit a native layout frame before advancing its geometry tween."""
+        animator = self.transition.animator
+        if self._closed or sys.platform != 'win32':
+            return operation()
+        try:
+            visible = owner.winfo_viewable() and area.winfo_viewable()
+        except tk.TclError:
+            return
+        if not visible:
+            self.cancel_layout(owner)
+            return operation()
+        from pages.base_page import hide_scroll_chrome
+        hide_scroll_chrome()
+        self._layout_scopes.setdefault(area, [set(), 0.0])[0].add(key)
+        if owner not in self._layout_owner_bindings:
+            def hidden(event):
+                if event.widget is owner:
+                    self.cancel_layout(owner)
+                    if event.type == tk.EventType.Destroy:
+                        self._layout_owner_bindings.pop(owner, None)
+            self._layout_owner_bindings[owner] = [(sequence, owner.bind(sequence, hidden, add="+"))
+                                                  for sequence in ("<Unmap>", "<Destroy>")]
+        if self.transition.active and self._layout_area is not area:
+            # Navigation/scroll already owns the surface. Keep the latest
+            # request and its remaining animation time until it is released.
+            animator.suspend(key)
+            self._layout_queue[(area, owner, key)] = operation
+            self._queue_layout_poll()
+            return
+        if not self.transition.active:
+            if not self.transition.cover(area, force=True, sync_present=True, pass_input=True, composited=True):
+                return operation()
+            self._layout_area = area
+            self._layout_paint_pass = 0
+            self._layout_deadline = time.perf_counter()+1.5
+            self.transition._abort = self._clear_layout
+            self._layout_job = self.root.after_idle(self._prepare_layout)
+        else:
+            # A click can replace a suspended tween before its old frame opens.
+            # Keep the existing complete bitmap, but invalidate that reveal's
+            # token and paint the newest geometry before releasing the mask.
+            # Merely waiting for Configure cannot repair pixels moved after
+            # the preceding invalidation.
+            if not self.transition.cover(area, force=True, sync_present=True, pass_input=True):
+                return operation()
+            if self._layout_job is not None:
+                self.root.after_cancel(self._layout_job)
+            self._layout_paint_pass = 0
+            self._layout_deadline = time.perf_counter()+1.5
+            self._layout_job = self.root.after_idle(self._prepare_layout)
+        self._layout_owners.add(owner)
+        self._layout_keys.add(key)
+        animator.suspend(key)
+        try:
+            return operation()
+        except BaseException:
+            self.transition.finish()
+            raise
+
+    def _prepare_layout(self):
+        self._layout_job = None
+        area = self._layout_area
+        if area is None or not self.transition.active:
+            return
+        if time.perf_counter() > self._layout_deadline or not self.transition._owner_is_foreground():
+            self.transition.finish()
+            return
+        # A propagated height can still have native Configure events queued
+        # after the first idle callback. Erasing before those moves lets
+        # Windows copy stale pixels back into their old positions.
+        if (not self.navigation._page_layout_ready()
+                or time.perf_counter()-self.transition._paint_activity < FRAME_MS/1000):
+            self._layout_job = self.root.after(8, self._prepare_layout)
+            return
+        from app.transitions import _invalidate_native_area
+        if self._layout_paint_pass < 2:
+            # Tk can reclip native descendants while handling the first
+            # Expose batch. Repaint that settled clip in the next normal loop
+            # before revealing; no nested update or extra animation clock.
+            _invalidate_native_area(area)
+            self._layout_paint_pass += 1
+            self._layout_job = self.root.after(FRAME_MS, self._prepare_layout)
+            return
+        self.transition.reveal(0, self.navigation._page_layout_ready, wait_s=1,
+                               quiet_ms=FRAME_MS, stable_frames=2, on_ready=self._clear_layout)
+
+    def layout_geometry(self, area, operation):
+        """Include delayed scroll-region/endpoint repairs in an opted-in frame."""
+        scope = self._layout_scopes.get(area)
+        if scope is None or self._closed:
+            return operation()
+        if (self._layout_area is not area and time.perf_counter() > scope[1]
+                and not any(self.transition.animator.is_running(key) for key in scope[0])):
+            del self._layout_scopes[area]
+            return operation()
+        if self.transition.active and self._layout_area is not area:
+            # A navigation/scroll cover already protects the native layout.
+            # Apply now so its readiness check can observe settled geometry.
+            return operation()
+        return self.present_layout(area, area, ('viewport-layout', id(area)), operation)
+
+    @property
+    def layout_active(self):
+        return self._layout_area is not None or bool(self._layout_queue)
+
+    def _layout_exposed(self, event):
+        # RedrawWindow can clear a native update region before Tk receives its
+        # Expose and paints the text. Track those events only for layout frames;
+        # ordinary navigation need not wait for continuous log/ADC repaints.
+        if self._layout_area is not None:
+            try:
+                if event.widget.winfo_class() == 'Text':
+                    # Fixed-size live logs repaint on every append. Their
+                    # content does not move native siblings; tracking it here
+                    # can consume the whole layout deadline and reveal an
+                    # unpainted geometry frame. Configure remains tracked, as
+                    # do native pending regions and both invalidation passes.
+                    return
+            except (AttributeError, tk.TclError):
+                pass
+            self.transition._paint_changed(event)
+
+    def _clear_layout(self):
+        if self._layout_job is not None:
+            self.root.after_cancel(self._layout_job)
+            self._layout_job = None
+        scope = self._layout_scopes.get(self._layout_area)
+        if scope is not None:
+            scope[1] = time.perf_counter()+.25
+        keys, self._layout_keys = self._layout_keys, set()
+        self._layout_area = None
+        self._layout_owners.clear()
+        for key in keys:
+            self.transition.animator.resume(key)
+        self._queue_layout_poll()
+
+    def _queue_layout_poll(self):
+        if self._layout_queue and self._layout_job is None and self._layout_area is None and not self._closed:
+            self._layout_job = self.root.after(FRAME_MS, self._run_layout_queue)
+
+    def _run_layout_queue(self):
+        self._layout_job = None
+        if self.transition.active:
+            self._queue_layout_poll()
+            return
+        queued, self._layout_queue = self._layout_queue, {}
+        for (area, owner, key), operation in queued.items():
+            self.present_layout(area, owner, key, operation)
+            # An invisible/disposed owner must not leave its timer suspended.
+            if key not in self._layout_keys and (area, owner, key) not in self._layout_queue:
+                self.transition.animator.resume(key)
+
+    def cancel_layout(self, owner):
+        if owner in self._layout_owners and self.transition.active:
+            self.transition.finish()
+        for entry in tuple(self._layout_queue):
+            if entry[1] is owner:
+                del self._layout_queue[entry]
+                self.transition.animator.resume(entry[2])
+        if not self._layout_queue and self._layout_area is None and self._layout_job is not None:
+            self.root.after_cancel(self._layout_job)
+            self._layout_job = None
 
     def _clear_scroll(self) -> None:
         self._scroll_canvas = None
@@ -186,6 +364,8 @@ class ViewportPresentation:
         self._scroll_queue = [(target, operation) for target, operation in self._scroll_queue if target is not canvas]
         if self._scroll_canvas is canvas:
             self.transition.finish()
+        if self._layout_area is canvas:
+            self.transition.finish()
 
     def _on_destroy(self, event: tk.Event) -> None:
         if event.widget is self.root:
@@ -206,6 +386,25 @@ class ViewportPresentation:
             self._resize_check = None
         if self.resizing or self._scroll_canvas is not None:
             self.transition.finish()
+        if self._layout_area is not None:
+            self.transition.finish()
+        if self._layout_job is not None:
+            self.root.after_cancel(self._layout_job)
+            self._layout_job = None
+        for _area, _owner, key in self._layout_queue:
+            self.transition.animator.resume(key)
+        self._layout_queue.clear()
+        for owner, bindings in self._layout_owner_bindings.items():
+            for sequence, binding in bindings:
+                try:
+                    owner.unbind(sequence, binding)
+                except tk.TclError:
+                    pass
+        self._layout_owner_bindings.clear()
+        self._layout_scopes.clear()
+        if self._layout_expose_binding is not None:
+            self.root.unbind('<Expose>', self._layout_expose_binding)
+            self._layout_expose_binding = None
         self._closed = True
         for sequence in ('<Map>', '<Configure>', '<FocusIn>', '<Escape>', '<Destroy>'):
             self.root.unbind_class(self._tag, sequence)

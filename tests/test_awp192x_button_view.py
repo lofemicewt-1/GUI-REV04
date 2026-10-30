@@ -131,6 +131,27 @@ class ButtonDisplayTests(unittest.TestCase):
 
 
 class TimingCanvasTests(unittest.TestCase):
+    def test_three_sinc_durations_stay_on_one_row_in_narrow_preview(self):
+        import tkinter as tk
+        from config.languages import t
+        from styles.theme import get_colors
+        from pages.awp192x_button_view import draw_timed_waveform
+        prepare_tk_test(self)
+        root = tk.Tk()
+        attach_tk_cleanup(self, root)
+        canvas = tk.Canvas(root, highlightthickness=0)
+        canvas.pack(fill="both", expand=True)
+        for width in (360, 640, 820):
+            root.geometry(f"{width}x600")
+            root.update()
+            for language in ("zh", "en"):
+                segments = [(t(language, "awp1221_segment_" + key), [0, 10, 0, -2])
+                            for key in ("rise", "fall", "return")]
+                draw_timed_waveform(canvas, get_colors("light"), lambda key: t(language, key), segments, 10)
+                durations = canvas.find_withtag("segment_duration")
+                self.assertEqual(len(durations), 3)
+                self.assertEqual(len({canvas.coords(item)[1] for item in durations}), 1)
+
     def test_adc_legend_renders_stage_row_rules_and_live_state(self):
         import tkinter as tk
         from pages.adc_legend import AdcLegend

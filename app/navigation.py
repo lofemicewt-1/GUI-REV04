@@ -55,6 +55,14 @@ class Navigation:
         self.sidebar_shell.grid(row=0, column=0, sticky="nsew")
         self.sidebar_shell.rowconfigure(0, weight=1)
         self.sidebar_shell.columnconfigure(0, weight=1)
+        self._sidebar_divider = tk.Canvas(
+            self.sidebar_shell, width=self._scaled(4), height=1,
+            highlightthickness=0, borderwidth=0,
+        )
+        self._sidebar_divider.grid(
+            row=0, column=2, rowspan=2, sticky="ns", pady=self._scaled(60),
+        )
+        self._sidebar_divider.bind("<Configure>", self._redraw_sidebar_divider)
         self._sidebar_yview_key: tuple[str, str] | None = None
         self._content_yview_key: tuple[str, str] | None = None
         self._content_xview_key: tuple[str, str] | None = None
@@ -643,6 +651,9 @@ class Navigation:
 
     def refresh_layout(self) -> None:
         self.container.columnconfigure(0, minsize=self._scaled(round(224 * BRAND_ENLARGE)))
+        self._sidebar_divider.configure(width=self._scaled(4), bg=self.ctx.colors["panel_alt"])
+        self._sidebar_divider.grid_configure(pady=self._scaled(60))
+        self._redraw_sidebar_divider()
         self.sidebar.configure(padding=self._pad(10, 8))
         if getattr(self, "_settings_bar", None) is not None:
             self._settings_bar.configure(padding=self._pad(10, 8))
@@ -679,6 +690,19 @@ class Navigation:
             self.root.after_idle(self._align_home_panel)
         except tk.TclError:
             pass
+
+    def _redraw_sidebar_divider(self, _event: tk.Event | None = None) -> None:
+        canvas = self._sidebar_divider
+        width = self._scaled(4)
+        radius = width / 2
+        height = canvas.winfo_height()
+        canvas.delete("all")
+        if height >= width:
+            canvas.create_line(
+                radius, radius, radius, height - radius,
+                width=width, capstyle=tk.ROUND,
+                fill="#6B7280" if self.ctx.state.theme == "dark" else "#CBD5E1",
+            )
 
     def _fit_brand_font(self, family: str, weight: str, max_width: int) -> tkfont.Font:
         # 从大往小收，直到最长一行（CONTROL）恰好填满可用宽度，
@@ -1223,7 +1247,7 @@ class Navigation:
                 return
             delta = -1 if event.delta > 0 else 1
             self.sidebar_canvas.yview_scroll(delta * scaled_scroll_px(self._scale()), "units")
-        except (tk.TclError, AttributeError, TypeError, ValueError):
+        except (tk.TclError, KeyError, AttributeError, TypeError, ValueError):
             pass
 
     def _sync_mode_buttons(self, page: Any) -> None:
@@ -1288,16 +1312,18 @@ class Navigation:
             self._transition_pending = True
             self._refresh_version_label()
             def ready():
+                self._pending_mode = None
                 self._transition_pending = False
                 self._refresh_version_label()
+                self._refresh_mode_button_styles()
+                self.motion.refresh(animate=True)
             def restore():
-                ready()
                 if not getattr(self.ctx.app, '_closing', False):
                     page.show_mode(previous)
-                    self._refresh_mode_button_styles()
+                ready()
             transition.change(self.content_canvas, anim.DUR_SNAP, lambda: page.show_mode(key),
                               ready=self._page_layout_ready, wait_s=2.0,
-                              on_ready=ready, on_cancel=restore)
+                              on_ready=ready, on_timeout=ready, on_cancel=restore)
         else:
             page.show_mode(key)
         self.motion.refresh(animate=True)
@@ -1444,7 +1470,7 @@ class Navigation:
             widget = self.root.winfo_containing(int(event.x_root), int(event.y_root))
             if widget is not None:
                 return widget
-        except (tk.TclError, AttributeError, TypeError, ValueError):
+        except (tk.TclError, KeyError, AttributeError, TypeError, ValueError):
             pass
         return event.widget
 

@@ -13,6 +13,7 @@ from config.languages import t
 from core.ui_dispatch import post_to_ui
 from core.status_bus import StatusContext, StatusMessage, StatusToken
 from core import animation as anim
+from core.ui_motion import GridReveal, SegmentedButtonMotion
 from styles.fonts import sidebar_brand_font_spec, page_title_weight
 from styles.theme import get_colors
 from app.viewport_presentation import ViewportCanvas
@@ -163,6 +164,9 @@ class SimpleTooltip:
 
     def _show(self, _event: tk.Event) -> None:
         self._hide()
+        presentation = getattr(self.widget._root(), '_piezo_viewport_presentation', None)
+        if getattr(presentation, 'layout_active', False):
+            return  # Moving content must not reopen/bake a stale hover surface.
         text = self.text_getter() if callable(self.text_getter) else str(self.text_getter)
         if not text:
             return
@@ -603,7 +607,7 @@ class VerticalScrollArea(ttk.Frame):
                 if presentation is not None:
                     widget = presentation.pointer_target(widget)
                 return widget
-        except (tk.TclError, AttributeError, TypeError, ValueError):
+        except (tk.TclError, KeyError, AttributeError, TypeError, ValueError):
             pass
         return event.widget
 
@@ -652,47 +656,65 @@ class VerticalScrollArea(ttk.Frame):
                 width = max(natural_width, canvas_width)
             else:
                 width = canvas_width
-            if self._window_item_span("width") != width:
-                self.canvas.itemconfigure(self.window_id, width=width)
             height = natural_height + self.scroll_region_extra
+            requested_height = None
             if self.propagate_height:
                 requested_height = max(natural_height, canvas_height - self.scroll_region_extra)
-                if self._window_item_span("height") != requested_height:
-                    self.canvas.itemconfigure(self.window_id, height=requested_height)
                 height = max(height, requested_height)
                 if natural_height + self.scroll_region_extra <= canvas_height:
                     height = min(height, canvas_height)
             region = (0, 0, width, height)
-            if tuple(map(float, self.canvas.tk.splitlist(self.canvas.cget("scrollregion")))) != region:
-                first, last = self.canvas.yview()
-                keep_bottom = first > 0 and last >= 1.0
-                self.canvas.configure(scrollregion=region)
-                if keep_bottom:
-                    # Wrapping can finish after the user reaches the end.
-                    # Keep that endpoint when delayed geometry grows the body.
-                    self.canvas.tk.call(self.canvas._w, "yview", "moveto", 1.0)
             needs_scrollbar = height > canvas_height
             needs_horizontal_scrollbar = self.horizontal and not self.clamp_width and width > canvas_width
-            if needs_scrollbar and not self._scrollbar_visible:
-                self.scrollbar.grid(row=0, column=1, sticky="ns")
-                self._scrollbar_visible = True
-            elif not needs_scrollbar and self._scrollbar_visible:
-                # Keep a reserved gutter stable: removing the bar changes the
-                # canvas width and can fight wrapping titles forever.
-                if self.reserve_vertical_gutter:
-                    pass
+            changed = (self._window_item_span("width") != width
+                       or (requested_height is not None and self._window_item_span("height") != requested_height)
+                       or tuple(map(float, self.canvas.tk.splitlist(self.canvas.cget("scrollregion")))) != region
+                       or (needs_scrollbar and not self._scrollbar_visible)
+                       or (not needs_scrollbar and self._scrollbar_visible and not self.reserve_vertical_gutter)
+                       or needs_horizontal_scrollbar != self._horizontal_scrollbar_visible
+                       or (self.propagate_width and self.canvas.winfo_reqwidth() != self._requested_content_width()))
+            if changed:
+                operation = lambda: self._apply_scroll_region(width, requested_height, region,
+                                                              needs_scrollbar, needs_horizontal_scrollbar)
+                presenter = getattr(self._root(), '_piezo_viewport_presentation', None)
+                if presenter is not None:
+                    presenter.layout_geometry(self, operation)
                 else:
-                    self.scrollbar.grid_remove()
-                    self._scrollbar_visible = False
-            if needs_horizontal_scrollbar and not self._horizontal_scrollbar_visible:
-                self.horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
-                self._horizontal_scrollbar_visible = True
-            elif not needs_horizontal_scrollbar and self._horizontal_scrollbar_visible:
-                self.horizontal_scrollbar.grid_remove()
-                self._horizontal_scrollbar_visible = False
-            self._propagate_canvas_width()
+                    operation()
         except tk.TclError:
             pass
+
+    def _apply_scroll_region(self, width, requested_height, region, needs_scrollbar, needs_horizontal_scrollbar):
+        if self._window_item_span("width") != width:
+            self.canvas.itemconfigure(self.window_id, width=width)
+        if requested_height is not None and self._window_item_span("height") != requested_height:
+            self.canvas.itemconfigure(self.window_id, height=requested_height)
+        if tuple(map(float, self.canvas.tk.splitlist(self.canvas.cget("scrollregion")))) != region:
+            first, last = self.canvas.yview()
+            keep_bottom = first > 0 and last >= 1.0
+            self.canvas.configure(scrollregion=region)
+            if keep_bottom:
+                # Wrapping can finish after the user reaches the end.
+                # Keep that endpoint when delayed geometry grows the body.
+                self.canvas.tk.call(self.canvas._w, "yview", "moveto", 1.0)
+        if needs_scrollbar and not self._scrollbar_visible:
+            self.scrollbar.grid(row=0, column=1, sticky="ns")
+            self._scrollbar_visible = True
+        elif not needs_scrollbar and self._scrollbar_visible:
+            # Keep a reserved gutter stable: removing the bar changes the
+            # canvas width and can fight wrapping titles forever.
+            if self.reserve_vertical_gutter:
+                pass
+            else:
+                self.scrollbar.grid_remove()
+                self._scrollbar_visible = False
+        if needs_horizontal_scrollbar and not self._horizontal_scrollbar_visible:
+            self.horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+            self._horizontal_scrollbar_visible = True
+        elif not needs_horizontal_scrollbar and self._horizontal_scrollbar_visible:
+            self.horizontal_scrollbar.grid_remove()
+            self._horizontal_scrollbar_visible = False
+        self._propagate_canvas_width()
 
     def _requested_content_width(self) -> int:
         return max(1, self.min_content_width, self.content.winfo_reqwidth())
@@ -745,7 +767,12 @@ class VerticalScrollArea(ttk.Frame):
                     and abs(origin - previous[2]) < 0.5 and float(last) < 1.0):
                 # Use native calls: correcting geometry must not enqueue a new
                 # presentation. A changed origin means the user scrolled away.
-                canvas.tk.call(canvas._w, axis + "view", "moveto", 1.0)
+                operation = lambda: canvas.tk.call(canvas._w, axis + "view", "moveto", 1.0)
+                presenter = getattr(self._root(), '_piezo_viewport_presentation', None)
+                if presenter is not None:
+                    presenter.layout_geometry(self, operation)
+                else:
+                    operation()
                 first, last = map(str, canvas.tk.call(canvas._w, axis + "view"))
                 origin = float(canvas.tk.call(canvas._w, "canvas" + axis, 0))
             self._view_edges[axis] = (extent, span, origin, float(first) > 0 and float(last) >= 1.0)
@@ -767,12 +794,21 @@ class VerticalScrollArea(ttk.Frame):
         self._view_edges[axis] = (extent, region[index + 2] - region[index], origin,
                                   first > 0 and last >= 1.0)
 
-    def _on_mousewheel(self, event: tk.Event) -> None:
+    def _on_mousewheel(self, event: tk.Event) -> str | None:
         try:
             if not self.winfo_ismapped() or self._nearest_scroll_area(self._pointer_widget(event)) is not self:
                 return
             delta = -1 if event.delta > 0 else 1
-            self.canvas.yview_scroll(delta * self._y_increment(), "units")
+            area: VerticalScrollArea | None = self
+            while area is not None:
+                first, last = area.canvas.yview()
+                if (delta < 0 and first > 0) or (delta > 0 and last < 1):
+                    area.canvas.yview_scroll(delta * area._y_increment(), "units")
+                    break
+                # A horizontal-only viewport, or one at its vertical edge,
+                # must not trap wheel input above a scrollable parent page.
+                area = self._nearest_scroll_area(area.master)
+            return "break"
         except tk.TclError:
             pass
 
@@ -1451,6 +1487,11 @@ class BasePage(ttk.Frame):
         self._module_spacing_widgets: list[tuple[tk.Misc, bool, bool]] = []
         self._header_layout_job: str | None = None
         self._serial_log_text: tk.Text | None = None
+        self._serial_log_motion: GridReveal | None = None
+        self._serial_log_scroll_requested = False
+        self._serial_log_auto_scroll = False
+        self._selection_motions: list[SegmentedButtonMotion] = []
+        self._selection_refresh_job = None
         self._serial_log_listener: Any = None
         self._serial_log_clear_listener: Any = None
         self._vertical_scroll_areas: list[VerticalScrollArea] = []
@@ -1480,6 +1521,7 @@ class BasePage(ttk.Frame):
             ancestor = getattr(ancestor, "master", None)
         self.bind("<Configure>", self._queue_header_layout, add="+")
         self.bind("<Map>", self._on_page_map, add="+")
+        self.bind("<Unmap>", self._cancel_serial_log_scroll, add="+")
 
     @property
     def language(self) -> str:
@@ -1710,8 +1752,11 @@ class BasePage(ttk.Frame):
         self._refresh_module_title(self._module_title_bindings[-1])
         if step is not None:
             metadata_target = self._pending_module_step_target
-            # ADC navigation starts at the diagram; Stage activation only edits settings.
-            if title_key in {"awp1221_button_adc_settings", "awp1018_adc_threshold_detection"}:
+            # 192x reuses the 1221 title key, but keeps its original diagram target.
+            # AWP1221 keeps its parameter section heading visible.
+            awp192x_adc = (title_key == "awp1221_button_adc_settings"
+                           and getattr(self, "page_name", None) == "button_mode")
+            if title_key == "awp1018_adc_threshold_detection" or awp192x_adc:
                 legend = getattr(self, "adc_legend", None)
                 if legend is not None:
                     metadata_target = legend.canvas
@@ -1861,6 +1906,7 @@ class BasePage(ttk.Frame):
         return section, body
 
     def refresh_language(self) -> None:
+        self._queue_selection_refresh()
         for widget, key in self._text_widgets:
             try:
                 widget.configure(text=self.tr(key))
@@ -1924,6 +1970,7 @@ class BasePage(ttk.Frame):
         """
         子类里有 Canvas / Text 这种非 ttk 控件时，覆盖这个方法更新颜色。
         """
+        self._queue_selection_refresh()
         self._refresh_header_logos()
         self._refresh_canvas_titles()
         self._sync_header_chrome()
@@ -2745,6 +2792,48 @@ class BasePage(ttk.Frame):
             cache[key] = image
         return image
 
+    def make_segmented_selection(self, buttons: Sequence[ttk.Button]) -> SegmentedButtonMotion:
+        """Share the filled selection and its page lifetime across chip editors."""
+        motion = SegmentedButtonMotion(buttons, owner=self)
+        self._selection_motions.append(motion)
+        return motion
+
+    def _queue_selection_refresh(self) -> None:
+        if self._selection_motions and self._selection_refresh_job is None:
+            def refresh():
+                self._selection_refresh_job = None
+                for motion in self._selection_motions:
+                    motion.refresh()
+            self._selection_refresh_job = self.after_idle(refresh)
+
+    def _serial_log_surface(self):
+        current = self._serial_log_frame
+        while current is not None:
+            if isinstance(current, VerticalScrollArea):
+                return current
+            current = getattr(current, "master", None)
+        navigation = getattr(getattr(self.ctx, "app", None), "navigation", None)
+        return navigation.content_shell if navigation is not None else self
+
+    def _present_serial_log_frame(self, owner, key, apply):
+        presenter = getattr(self._root(), "_piezo_viewport_presentation", None)
+        if presenter is not None:
+            return presenter.present_layout(self._serial_log_surface(), owner, key, apply)
+        return apply()
+
+    def _cancel_serial_log_scroll(self, event):
+        if event.widget is self:
+            self._serial_log_scroll_requested = False
+
+    def _serial_log_settled(self):
+        requested, self._serial_log_scroll_requested = self._serial_log_scroll_requested, False
+        if not requested or not self.winfo_viewable() or not self._serial_log_motion.expanded:
+            return
+        area = self._serial_log_surface()
+        if isinstance(area, VerticalScrollArea):
+            area._sync_scroll_region()
+            area.canvas.yview_moveto(1)
+
     def make_serial_log(
         self,
         parent: tk.Misc,
@@ -2755,6 +2844,9 @@ class BasePage(ttk.Frame):
         collapsed: bool = True,
         toggle_command: Callable[[], None] | None = None,
         bordered: bool = True,
+        animated: bool = True,
+        motion_settled: Callable[[], None] | None = None,
+        motion_present: Callable | None = None,
     ) -> ttk.Frame:
         from pages.full_mode_layout import build_full_mode_log, is_full_mode
 
@@ -2789,8 +2881,14 @@ class BasePage(ttk.Frame):
         export_btn.grid(row=0, column=5, sticky="e")
         self.bind_text(export_btn, "export_serial_log")
 
-        body = ttk.Frame(frame, style="Panel.TFrame")
-        body.grid(row=1, column=0, sticky="ew")
+        clip = ttk.Frame(frame, style="Panel.TFrame", height=1)
+        clip.grid(row=1, column=0, sticky="ew")
+        clip.columnconfigure(0, weight=1)
+        if animated:
+            body = ttk.Frame(clip, style="Panel.TFrame")
+            body.grid(row=0, column=0, sticky="new")
+        else:
+            body = clip
         body.columnconfigure(0, weight=1)
         # Keep eight lines at every viewport size. The enclosing page scrolls
         # to accommodate this natural height instead of resizing the log.
@@ -2813,12 +2911,17 @@ class BasePage(ttk.Frame):
         self._serial_log_frame = frame
         self._serial_log_header = toolbar
         self._serial_log_title = title
-        self._serial_log_body = body
+        self._serial_log_body = clip
+        self._serial_log_content = body
+        self._serial_log_auto_scroll = motion_settled is None
+        self._serial_log_motion = (GridReveal(clip, body, expanded=not collapsed, owner=self,
+                                             on_settled=motion_settled or self._serial_log_settled,
+                                             present=motion_present or self._present_serial_log_frame) if animated else None)
+        if not animated and collapsed:
+            clip.grid_remove()
         self._serial_log_toggle = toggle
         self._serial_log_text = text
         self._refresh_serial_log_theme()
-        if collapsed:
-            body.grid_remove()
 
         if subscribe:
             self._serial_log_listener = self.append_serial_log
@@ -2831,13 +2934,19 @@ class BasePage(ttk.Frame):
         return frame
 
     def _toggle_serial_log(self) -> None:
-        body = self._serial_log_body
-        if body.winfo_manager():
-            body.grid_remove()
-            self._serial_log_toggle.configure(text="▸")
-        else:
-            body.grid()
-            self._serial_log_toggle.configure(text="▾")
+        motion = self._serial_log_motion
+        if motion is None:
+            body = self._serial_log_body
+            if body.winfo_manager():
+                body.grid_remove()
+                self._serial_log_toggle.configure(text="▸")
+            else:
+                body.grid()
+                self._serial_log_toggle.configure(text="▾")
+            return
+        self._serial_log_scroll_requested = self._serial_log_auto_scroll and not motion.expanded
+        motion.set_expanded(not motion.expanded)
+        self._serial_log_toggle.configure(text="▾" if motion.expanded else "▸")
 
     def export_serial_log(self) -> None:
         text = self._serial_log_text
@@ -2943,6 +3052,15 @@ class BasePage(ttk.Frame):
             pass
 
     def destroy(self) -> None:
+        if self._selection_refresh_job is not None:
+            self.after_cancel(self._selection_refresh_job)
+            self._selection_refresh_job = None
+        for motion in self._selection_motions:
+            motion.close()
+        self._selection_motions.clear()
+        log_motion = getattr(self, "_serial_log_motion", None)
+        if log_motion is not None:
+            log_motion.close()
         owner = self._layout_owner
         if owner is not None:
             try:

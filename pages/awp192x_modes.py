@@ -79,7 +79,7 @@ def build_awp192x_amp_options() -> list[tuple[str, float, int]]:
 
 
 def build_frequency_options() -> list[tuple[str, int, int]]:
-    freqs = [1000, 500, 333, 250, 200, 167, 142, 125, 111, 100]
+    freqs = [1000, 500, 333, 250, 200, 167, 142, 125, 111, 100, 91, 83, 77, 71]
     return [(f"{freq} Hz", freq, idx) for idx, freq in enumerate(freqs)]
 
 
@@ -917,7 +917,9 @@ class ButtonModePage(ButtonModeView, BasePage):
                 variable.trace_add("write", lambda *_: self._on_full_advanced_settings_changed())
 
     def _on_shared_settings_changed(self) -> None:
-        if getattr(self, "_syncing_chip_settings", False) or getattr(self, "_reading_current_settings", False):
+        if (getattr(self, "_syncing_chip_settings", False)
+                or getattr(self, "_reading_current_settings", False)
+                or getattr(self, "_batching_button_inputs", False)):
             return
         model = getattr(self, "_chip_settings_model", None)
         if model is None:
@@ -1026,7 +1028,7 @@ class ButtonModePage(ButtonModeView, BasePage):
         try:
             output = int(shared.get("output_amplitude", self._current_max_output_reg_value()))
             label = next(
-                (label for label, _voltage, code in self.amp_options if code == output),
+                (label for label, _voltage, code in self.amp_options if code == (output & 0x007F)),
                 self.max_voltage_var.get(),
             )
             self.max_voltage_var.set(label)
@@ -1297,6 +1299,10 @@ class ButtonModePage(ButtonModeView, BasePage):
         model = self._select_awp192x_settings_model()
         if model.shared:
             self._apply_shared_settings(model.shared)
+            waveform = getattr(self, "waveform_page", None)
+            if (self.page_name == "button_mode" and callable(getattr(waveform, "adopt_sine_registers", None))
+                    and waveform.waveform_type_var.get() == "sine"):
+                waveform._on_param_changed()
         if self.page_name == "full_mode" and model.advanced:
             self._apply_full_advanced_settings(model.advanced)
 
@@ -1309,10 +1315,14 @@ class ButtonModePage(ButtonModeView, BasePage):
             self._button_runtime_dirty = True
 
     def _on_button_runtime_waveform_changed(self) -> None:
+        if getattr(self, "_batching_button_inputs", False):
+            return
         self._mark_button_runtime_dirty()
         self._update_period_hint(write_register=False)
 
     def _on_button_runtime_duration_changed(self) -> None:
+        if getattr(self, "_batching_button_inputs", False):
+            return
         self._mark_button_runtime_dirty()
         self._update_period_hint(write_register=False)
 
@@ -1432,6 +1442,7 @@ class ButtonModePage(ButtonModeView, BasePage):
     def _on_button_progress_inputs_changed(self) -> None:
         if (
             getattr(self, "_syncing_chip_settings", False)
+            or getattr(self, "_batching_button_inputs", False)
             or getattr(self, "_reading_current_settings", False)
             or getattr(self, "_preparing", False)
         ):
@@ -2142,6 +2153,13 @@ class ButtonModePage(ButtonModeView, BasePage):
             "advanced": model.advanced,
             "waveforms": waveforms,
         }
+        if self.page_name == "button_mode":
+            editor = self._capture_full_waveform_editor_settings()
+            if editor is not None:
+                waveform = self.waveform_page
+                if hasattr(waveform, "sine_frequency_var"):
+                    editor["sine_frequency"] = waveform.sine_frequency_var.get()
+                payload["waveform_editor"] = editor
         raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
         metadata_line = f"# {AWP192X_PAGE_SETTINGS_TAG} {base64.urlsafe_b64encode(raw).decode('ascii')}\n"
         return metadata_line + content
@@ -2203,10 +2221,20 @@ class ButtonModePage(ButtonModeView, BasePage):
                         [int(value) for value in raw_item.get("values", [])],
                         power_on_recipe=recipe,
                     )
+            editor = payload.get("waveform_editor")
+            if self.page_name == "button_mode" and isinstance(editor, dict):
+                self._apply_full_waveform_editor_settings(editor)
+                waveform = getattr(self, "waveform_page", None)
+                if hasattr(waveform, "sine_frequency_var") and "sine_frequency" in editor:
+                    waveform.sine_frequency_var.set(str(editor["sine_frequency"]))
         except (KeyError, TypeError, ValueError) as exc:
             messagebox.showerror(self.tr("error"), f"{self.tr('invalid_input')}\n{exc}")
         finally:
             self._syncing_chip_settings = False
+
+        waveform = getattr(self, "waveform_page", None)
+        if self.page_name == "button_mode" and callable(getattr(waveform, "get_sine_plan", None)):
+            waveform._on_param_changed()
 
     def _set_register_script_buttons_state(self, state: str) -> None:
         for key in ("button_mode_import_user_preset", "button_mode_export_user_preset"):
@@ -2526,6 +2554,13 @@ class ButtonModePage(ButtonModeView, BasePage):
         )
 
     def _current_max_output_reg_value(self) -> int:
+        waveform = getattr(self, "waveform_page", None)
+        if (self.page_name == "button_mode" and callable(getattr(waveform, "get_sine_plan", None))
+                and not getattr(self, "_reading_current_settings", False)
+                and not getattr(self, "_syncing_chip_settings", False)):
+            plan = waveform.get_sine_plan()
+            if plan is not None:
+                return plan.reg14
         selected = self.max_voltage_var.get()
         for label, _voltage, reg_value in self.amp_options:
             if label == selected:
@@ -3711,7 +3746,7 @@ class ButtonModePage(ButtonModeView, BasePage):
                 self._apply_full_reg14_settings(max_output)
             else:
                 max_label = next(
-                    (label for label, _voltage, reg_value in self.amp_options if reg_value == max_output),
+                    (label for label, _voltage, reg_value in self.amp_options if reg_value == (max_output & 0x007F)),
                     f"0x{max_output:04X}",
                 )
                 self.max_voltage_var.set(max_label)
@@ -3819,6 +3854,10 @@ class ButtonModePage(ButtonModeView, BasePage):
         finally:
             self._reading_current_settings = previous_reading
 
+        waveform = getattr(self, "waveform_page", None)
+        if self.page_name == "button_mode" and callable(getattr(waveform, "adopt_sine_registers", None)):
+            waveform.adopt_sine_registers(registers[0x14], registers[0x15],
+                rom_selected=self.play_waveform_var.get().lower() == "0x1f")
         self._refresh_threshold_register_value_labels()
         self._update_period_hint(write_register=False)
         self._capture_shared_settings()
@@ -4308,7 +4347,8 @@ class ButtonModePage(ButtonModeView, BasePage):
                 "target": target,
                 "unused": False,
             })
-        legend.set_rules(stage_data, {"Stage0": []})
+        legend.set_rules(stage_data, {"Stage0": []},
+                         preview_stage=getattr(self, "_active_adc_stage_id", "Stage0"))
 
     def on_hide(self) -> None:
         progress = getattr(self, "step_progress", None)
@@ -7020,7 +7060,7 @@ class PumpModePage(BasePage):
             multiplier = 1024 / data_depth
             for reg_value in range(256):
                 freq = round(1000 * multiplier / (reg_value + 1))
-                if not 100 <= freq <= 1000:
+                if not 70 <= freq <= 1000:
                     continue
                 label = f"{freq}Hz -- Datadeep({data_depth_label})* Dac Sample Rate({reg_value})"
                 candidate = (label, freq, reg_value, data_depth_label, data_depth)
@@ -7064,7 +7104,7 @@ class PumpModePage(BasePage):
         frame.grid(row=row, column=1, sticky="ew", pady=8)
         frame.columnconfigure(0, weight=1)
 
-        combo = ttk.Combobox(frame, textvariable=self.freq_var, values=[], state="readonly")
+        combo = ttk.Combobox(frame, textvariable=self.freq_var, values=[], state="readonly", width=50)
         combo.grid(row=0, column=0, sticky="ew")
         self.freq_combo = combo
 
@@ -7073,7 +7113,7 @@ class PumpModePage(BasePage):
             variable=self.precise_frequency_var,
             command=self._on_precise_frequency_changed,
         )
-        precise_check.grid(row=0, column=1, sticky="e", padx=(10, 0))
+        precise_check.grid(row=1, column=0, sticky="w", pady=(6, 0))
         self._checks["precise_frequency"] = precise_check
 
     def refresh_language(self) -> None:

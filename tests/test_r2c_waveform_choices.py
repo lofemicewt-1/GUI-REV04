@@ -141,12 +141,12 @@ class R2cWaveformChoiceTests(unittest.TestCase):
     def test_language_snippet_has_namespaced_text_and_glossary_override(self):
         self.assertTrue(all(key.startswith("r2c_") for key in ZH))
         self.assertTrue(all(key.startswith("r2c_") for key in EN))
-        self.assertEqual(t("zh", "r2c_1221_normal_vibration"), "正常震感")
+        self.assertEqual(t("zh", "r2c_1221_normal_vibration"), "正常振感")
         self.assertEqual(t("en", "r2c_1221_normal_vibration"), "Normal vibration")
-        self.assertEqual(t("zh", "r2c_1221_strong_vibration"), "强震感")
+        self.assertEqual(t("zh", "r2c_1221_strong_vibration"), "强振感")
         self.assertEqual(t("en", "r2c_custom_waveform"), "Custom waveform")
         self.assertNotIn("中等振动效果", EXISTING_KEY_OVERRIDES[0][1])
-        self.assertIn("正常震感", t("zh", "glossary_serial"))
+        self.assertIn("正常振感", t("zh", "glossary_serial"))
         self.assertIn("normal vibration", t("en", "glossary_serial"))
 
     def test_1221_button_choices_and_full_options_remain_independent(self):
@@ -175,7 +175,7 @@ class R2cWaveformChoiceTests(unittest.TestCase):
             AWP1221ModePage._rom_combo(
                 owner, FakeWidget(), 1, "awp1221_sinc_serial_group", var, AWP1221_SINC_SERIAL_OPTIONS
             )
-        self.assertEqual(combo.options["values"], ("serial1", "serial3"))
+        self.assertEqual(combo.options["values"], ("正常振感", "强振感"))
 
         slice_var = FakeVariable("slice0")
         slice_combo = self.combo()
@@ -274,6 +274,8 @@ class R2cWaveformChoiceTests(unittest.TestCase):
         owner.rom_waveform_var = FakeVariable("SINE")
         owner._sinc_selected = lambda: False
         owner._refresh_waveform_controls = lambda: None
+        owner._settings_sync_depth = 0
+        owner._on_settings_model_var_changed = lambda: None
         AWP1221ModePage._select_button_wave_tab(owner, "sinc")
         self.assertFalse(owner.auto_serial_var.get())
         self.assertEqual(owner.rom_source_var.get(), "ROM")
